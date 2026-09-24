@@ -29,4 +29,5 @@ catalog:
   "@arethetypeswrong/cli": ^0.18.5
   tsx: ^4.23.15
 allowBuilds:
+  esbuild: true
   lefthook: true

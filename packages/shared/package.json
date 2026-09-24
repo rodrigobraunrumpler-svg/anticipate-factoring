@@ -70,6 +70,7 @@
     "fast-check": "catalog:",
     "publint": "catalog:",
     "tsdown": "catalog:",
+    "tsx": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"
   }
