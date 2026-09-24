@@ -2,37 +2,68 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Dejar listo el monorepo (pnpm, Biome, Vitest, TypeScript estricto, CI) y el paquete `@anticipate/shared` con todo el corazón del negocio testeado: validadores de identidad, dinero sin `float`, lector de XML UBL, reglas de factura parametrizadas, máquina de estados como datos, esquemas Zod del formulario y del pagador, y reglas de vigencia de documentos.
+**Goal:** Dejar listo el monorepo (pnpm 12, Turborepo, Biome, Vitest, TypeScript 6 estricto, CI) y el paquete `@anticipate/shared` con todo el corazón del negocio testeado: validadores de identidad, dinero sin `float`, fechas de calendario con date-fns, lector de XML UBL, reglas de factura parametrizadas, máquina de estados como datos, esquemas Zod del formulario y del pagador, y reglas de vigencia de documentos.
 
-**Architecture:** `packages/shared` es un paquete isomorfo sin código de servidor ni de navegador: solo tipos, esquemas Zod y funciones puras. Todo valor de negocio variable (RUC del pagador, porcentaje de adelanto, plazo mínimo, máximo de facturas, monedas permitidas, días de vigencia de poder, fecha "hoy") entra como parámetro en un objeto de contexto; nada vive como constante. Cada dominio es una carpeta con su `index.ts` y se expone como subruta del paquete (`@anticipate/shared/factura`), así la landing importa solo lo que usa y la API lo consume compilado. Los mensajes al usuario se resuelven por código estable (`CodigoProblema`) en una tabla en español, lista para más idiomas.
+**Architecture:** `packages/shared` es un paquete isomorfo sin código de servidor ni de navegador: solo tipos, esquemas Zod y funciones puras. Todo valor de negocio variable (RUC del pagador, porcentaje de adelanto, plazo mínimo, máximo de facturas, monedas permitidas, días de vigencia de poder, fecha "hoy") entra como parámetro en un objeto de contexto; nada vive como constante. Cada dominio es una carpeta con su `index.ts` y se expone como subruta del paquete (`@anticipate/shared/invoice`). Los mensajes al usuario se resuelven por código estable (`ProblemCode`) en una tabla en español, lista para más idiomas.
 
-**Tech Stack:** Node 24 LTS, pnpm 12 workspaces con `catalog`, Turborepo 2, TypeScript 6 en modo `strict` (nunca 7.0, ver restricciones), Biome 2.5, Vitest 5 (`projects`), Zod 4, `fast-xml-parser` 5, `tsdown` para compilar `shared` a ESM con tipos. Versiones verificadas contra el registro npm y la documentación oficial el 2026-09-23 (ver tabla al final).
+**Tech Stack:** Node 24 LTS, pnpm 12 workspaces con `catalog`, Turborepo 2, TypeScript 6 en modo `strict` (nunca 7.0, ver restricciones), Biome 2.5, Vitest 5 (`projects`), Zod 4, `fast-xml-parser` 5, date-fns 4 con `@date-fns/tz`, `tsdown` para compilar `shared` a ESM con tipos. Versiones verificadas contra el registro npm y la documentación oficial el 2026-09-23 (ver tabla al final).
 
 **Spec:** `docs/STACK.md` (v0.4). Este plan implementa las secciones 4, 5, 9 (modelo de dominio y reglas) y las convenciones de la 12.
 
 ## Global Constraints
 
+- **Convención de idioma** (decidida el 2026-09-24, igual que en `anticipate-health-backend` y los portales): identificadores de código en inglés (archivos, funciones, tipos, propiedades, valores de enums, modelos y columnas); español en todo lo que lee una persona (mensajes al usuario, textos, documentación, comentarios y commits). Los términos legales peruanos sin traducción real se quedan como préstamos: `ruc`, `dni`, `sunat`, `sunarp`, `cavali`. El glosario español ↔ inglés vive en STACK.md (Tarea 10) y es la única fuente de nombres de dominio.
 - TypeScript en modo `strict` con `noUncheckedIndexedAccess` y `exactOptionalPropertyTypes` en todo el monorepo (STACK §4).
-- `packages/shared` no depende de nada del monorepo y no tiene código de servidor ni de navegador: solo esquemas, tipos y funciones puras (STACK §5). Dependencias de runtime permitidas: `zod` y `fast-xml-parser`. Nada más.
+- `packages/shared` no depende de nada del monorepo y no tiene código de servidor ni de navegador (STACK §5). Dependencias de runtime permitidas: `zod`, `fast-xml-parser`, `date-fns`, `@date-fns/tz`. Nada más.
 - Montos siempre como texto con dos decimales (`"25000.00"`); nunca `float` (STACK §9, D14). Moneda en su propia propiedad (`PEN`, `USD`).
-- Fechas como texto ISO `YYYY-MM-DD` en el dominio; la conversión a hora de Lima es de las apps, no de `shared` (STACK §9).
-- Las reglas de factura reciben todo parámetro de negocio por contexto: RUC del pagador, RUC del proveedor, porcentaje de adelanto, plazo mínimo en días, máximo de facturas, monedas permitidas y fecha de hoy. Ninguna constante de negocio en el código (pedido explícito: "nada hardcodeado").
-- Las transiciones de estado viven en `shared` como datos con guardas nombradas; las implementaciones de las guardas viven en la API (STACK §9, reglas de la máquina de estados).
-- Versiones: se fijan en el `catalog` de `pnpm-workspace.yaml` (STACK §4); ninguna versión escrita a mano en los `package.json`. Pins obligatorios, verificados el 2026-09-23: Node `>=24.15 <27` (24 es el LTS activo, 22 ya está en mantenimiento), pnpm 12.6, **TypeScript 6.0.x instalado como `typescript@npm:@typescript/typescript6`** (7.0 es `latest` pero no tiene API programática, @nestjs/cli 12 exige ~6.0 y @nestjs/swagger 12 excluye 7), Zod 4.6, fast-xml-parser ≥ 5.3.5 (corrige la CVE-2026-25896 de entidades DOCTYPE), Vitest 5, Biome 2.5, tsdown (tsup está sin mantenimiento).
-- `packages/shared` se compila a ESM con tipos usando `tsdown`, sin CJS: NestJS 12 es ESM y Node ≥ 22.12 tiene `require(esm)` estable. Los imports internos llevan extensión `.js` (estilo NodeNext); Vitest los resuelve desde fuente y las apps consumen `dist`.
-- pnpm 12: la configuración vive en `pnpm-workspace.yaml`, no en `.npmrc` (desde pnpm 11 `.npmrc` es solo registro y auth). `catalogMode: strict`. Los paquetes con scripts de instalación se aprueban con `pnpm approve-builds`.
+- Fechas de dominio como texto ISO `YYYY-MM-DD`, sin hora ni zona. `shared` nunca pregunta qué día es hoy: lo recibe. El único helper que convierte un instante en fecha de Lima (`todayIn`) recibe el instante por parámetro.
+- Las reglas de factura reciben todo parámetro de negocio por contexto: RUC del pagador, RUC del proveedor, porcentaje de adelanto, plazo mínimo en días, máximo de facturas, monedas permitidas y fecha de hoy. Ninguna constante de negocio en el código.
+- Las transiciones de estado viven en `shared` como datos con guardas nombradas; la API calcula los hechos que resuelven las guardas (STACK §9).
+- Versiones: se fijan en el `catalog` de `pnpm-workspace.yaml`; ninguna versión escrita a mano en los `package.json`. Pins obligatorios, verificados el 2026-09-23: Node `>=24.15 <27` (24 es el LTS activo, 22 ya está en mantenimiento), pnpm 12.6, **TypeScript 6.0.x instalado como `typescript@npm:@typescript/typescript6`** (7.0 es `latest` pero no tiene API programática, @nestjs/cli 12 exige ~6.0 y @nestjs/swagger 12 excluye 7), Zod 4.6, fast-xml-parser ≥ 5.3.5 (corrige la CVE-2026-25896 de entidades DOCTYPE), date-fns 4, Vitest 5, Biome 2.5, tsdown (tsup está sin mantenimiento).
+- `packages/shared` se compila a ESM con tipos usando `tsdown`, sin CJS: NestJS 12 es ESM y Node ≥ 22.12 tiene `require(esm)` estable. Los imports internos llevan extensión `.js`.
+- pnpm 12: la configuración vive en `pnpm-workspace.yaml`, no en `.npmrc`. `catalogMode: strict`. Los paquetes con scripts de instalación se aprueban con `pnpm approve-builds`.
 - El XML se procesa sin resolver entidades (STACK §11): `processEntities: false`.
-- Mensajes al usuario final en español (STACK §8, convenciones).
-- Commits con Conventional Commits (STACK §12). Cada tarea termina en un commit.
+- Commits con Conventional Commits, cuerpo en español (STACK §12). Cada tarea termina en un commit.
 - Todo archivo nuevo pasa `biome check`, `tsc --noEmit` y `vitest run` antes del commit.
 
 ## Review Focus
 
-1. **XML con BOM, declaración `<?xml … encoding="ISO-8859-1"?>` o saltos de línea de Windows.** Los sistemas de facturación exportan de todo; el lector debe leerlo igual. Test en la Tarea 5.
-2. **XML con prefijos de espacio de nombres distintos (`n1:Invoice`, sin prefijo, o `ns2:`).** El mismo comprobante llega con prefijos diferentes según el emisor; el lector no puede depender de `cbc:`/`cac:`. Test en la Tarea 5.
-3. **Montos del XML sin dos decimales (`1180.5`, `1180`).** UBL no obliga a dos decimales; el dominio sí. Test en la Tarea 4 (`normalizarMonto`) y en la Tarea 5.
+1. **XML con BOM, declaración `encoding="ISO-8859-1"` o saltos de línea de Windows.** Los sistemas de facturación exportan de todo; el lector debe leerlo igual. Test en la Tarea 5.
+2. **XML con prefijos de espacio de nombres distintos (`n1:Invoice`, sin prefijo) o con la ruta legada del RUC (`PartyTaxScheme/CompanyID`).** El mismo comprobante llega con formas distintas según el emisor. Tests en la Tarea 5.
+3. **Montos del XML sin dos decimales (`1180.5`, `1180`).** UBL no obliga a dos decimales; el dominio sí. Tests en las Tareas 4 y 5.
 4. **Factura con varias cuotas donde una ya venció y otras no.** La regla debe señalar la cuota vencida, no aprobar por la primera futura. Test en la Tarea 6.
 5. **La misma factura dos veces en la misma solicitud, o dos facturas de emisores distintos.** Debe rechazarse antes de tocar la base de datos. Test en la Tarea 6.
+
+---
+
+## Glosario de nombres (español del documento → inglés del código)
+
+| Documento | Código | Notas |
+|---|---|---|
+| Pagador | `Payer`, `payer` | |
+| Proveedor | `Supplier`, `supplier` | |
+| Solicitud (de adelanto) | `AdvanceRequest`, `advanceRequest` | Evita chocar con `Request` de HTTP |
+| Factura | `Invoice`, `invoice` | |
+| Cuota | `Installment`, `installment` | |
+| Serie y número (`F001-123`) | `seriesNumber` | |
+| Emisor, receptor | `issuer`, `recipient` | |
+| Forma de pago (contado, crédito) | `paymentTerms`: `CASH`, `CREDIT` | |
+| Monto neto pendiente | `netPendingAmount` | |
+| Detracción, retención, percepción | `detraction`, `withholding`, `perception` | Términos de SUNAT en inglés |
+| Representante legal | `LegalRepresentative` | |
+| Documento del proveedor | `SupplierDocument` | |
+| DNI del representante, vigencia de poder, contrato marco | `REPRESENTATIVE_ID`, `POWER_OF_ATTORNEY_CERTIFICATE`, `MASTER_AGREEMENT` | |
+| Seguimiento | `FollowUp` | |
+| Historial de estado | `StatusHistory` | |
+| Consentimiento | `Consent` | |
+| Archivo | `StoredFile` | `File` choca con el tipo del navegador |
+| Auditoría | `AuditLog` | |
+| Proforma, cesión, desembolso | `Quote`, `Assignment`, `Disbursement` | |
+| Estados de la solicitud | `NEW`, `NO_ANSWER`, `CONTACTED`, `DOCUMENTS_PENDING`, `UNDER_REVIEW`, `QUOTE_SENT`, `APPROVED`, `DISBURSED`, `REJECTED`, `WITHDRAWN` | Orden del documento |
+| Motivos de cierre | `NO_RESPONSE`, `SPAM_OR_INVALID`, `SUPPLIER_WITHDREW`, `INVALID_DOCUMENTS`, `INVOICE_NOT_ELIGIBLE`, `UNACCEPTABLE_RISK`, `OTHER` | |
+| Roles | `AGENT` (gestor), `ADMIN` | |
+| Problema (error de negocio) | `Problem`, `ProblemCode` | |
+| Código público `ANT-2026-000123` | `publicCode` | No cambia |
 
 ---
 
@@ -44,11 +75,11 @@ anticipate-factoring/
 ├── .vscode/extensions.json             Recomienda Biome al abrir el repo
 ├── .editorconfig                       Indentación y finales de línea para cualquier editor
 ├── .node-version                       Versión de Node para nvm/fnm/volta
-├── turbo.json                          Grafo de tareas: build de packages antes que apps, caché local
 ├── biome.json                          Linter y formateador de todo el monorepo
-├── package.json                        Scripts raíz: lint, typecheck, test, build, verificar
+├── package.json                        Scripts raíz: lint, typecheck, test, build, verify
 ├── pnpm-workspace.yaml                 Workspaces + catálogo de versiones (único lugar con versiones)
-├── tsconfig.json                       Solución con referencias a los paquetes
+├── turbo.json                          Grafo de tareas: build de packages antes que apps, caché local
+├── tsconfig.json                       Para que el editor entienda los archivos de configuración de la raíz
 ├── vitest.config.ts                    Corre los tests de todos los paquetes desde la raíz
 ├── README.md                           Cómo instalar, correr y verificar
 ├── docs/
@@ -67,57 +98,56 @@ anticipate-factoring/
         ├── tsdown.config.ts
         ├── vitest.config.ts
         ├── test/fixtures/
-        │   └── factura-credito-pen.xml XML de referencia con forma legible
+        │   └── invoice-credit-pen.xml  XML de referencia con forma legible
         └── src/
             ├── index.ts                Reexporta todos los dominios
-            ├── errores/                Códigos de problema y mensajes en español
+            ├── errors/                 Códigos de problema y mensajes en español
             │   ├── index.ts
-            │   ├── codigos.ts
-            │   ├── mensajes.es.ts
-            │   └── problema.ts (+ problema.test.ts)
-            ├── identidad/              RUC y DNI: validación y esquemas Zod
+            │   ├── codes.ts
+            │   ├── messages.es.ts
+            │   └── problem.ts (+ problem.test.ts)
+            ├── identity/               RUC y DNI: validación y esquemas Zod
             │   ├── index.ts
             │   ├── ruc.ts (+ ruc.test.ts)
             │   └── dni.ts (+ dni.test.ts)
-            ├── dinero/                 Monedas y montos como texto, aritmética en céntimos (bigint)
+            ├── money/                  Monedas y montos como texto, aritmética en céntimos (bigint)
             │   ├── index.ts
-            │   ├── moneda.ts
-            │   └── monto.ts (+ monto.test.ts)
-            ├── fechas/                 Fechas ISO sin zona horaria, diferencia en días
+            │   ├── currency.ts
+            │   └── amount.ts (+ amount.test.ts)
+            ├── dates/                  Fechas ISO de calendario con date-fns; "hoy" en Lima con @date-fns/tz
             │   ├── index.ts
-            │   └── fecha-iso.ts (+ fecha-iso.test.ts)
-            ├── factura/                Códigos SUNAT, forma de la factura leída, lector UBL, reglas
+            │   └── iso-date.ts (+ iso-date.test.ts)
+            ├── invoice/                Códigos SUNAT, factura leída, fábrica de XML, lector UBL, reglas
             │   ├── index.ts
-            │   ├── codigos.ts
-            │   ├── factura-leida.ts
-            │   ├── lector-ubl.ts (+ lector-ubl.test.ts)
-            │   ├── construir-xml-prueba.ts   Fábrica de XML para tests (también la usará la landing en modo demo)
-            │   └── reglas.ts (+ reglas.test.ts)
-            ├── solicitud/              Estados, motivos de cierre, transiciones, esquema del formulario, código público
+            │   ├── codes.ts
+            │   ├── parsed-invoice.ts
+            │   ├── build-test-xml.ts   Fábrica de XML para tests (también la usará la landing en modo demo)
+            │   ├── ubl-parser.ts (+ ubl-parser.test.ts)
+            │   └── rules.ts (+ rules.test.ts)
+            ├── advance-request/        Estados, motivos de cierre, transiciones, formulario, código público
             │   ├── index.ts
-            │   ├── estados.ts
-            │   ├── motivos.ts
-            │   ├── transiciones.ts (+ transiciones.test.ts)
-            │   ├── formulario.ts (+ formulario.test.ts)
-            │   └── codigo.ts (+ codigo.test.ts)
-            ├── documento/              Tipos, estados y vigencia de documentos del proveedor
+            │   ├── statuses.ts
+            │   ├── close-reasons.ts
+            │   ├── transitions.ts (+ transitions.test.ts)
+            │   ├── form.ts (+ form.test.ts)
+            │   └── public-code.ts (+ public-code.test.ts)
+            ├── supplier-document/      Tipos, estados y vigencia de documentos del proveedor
             │   ├── index.ts
-            │   └── vigencia.ts (+ vigencia.test.ts)
-            ├── pagador/                Esquema público del pagador (lo que la landing recibe)
+            │   └── validity.ts (+ validity.test.ts)
+            ├── payer/                  Esquema público del pagador (lo que la landing recibe)
             │   ├── index.ts
-            │   └── esquema.ts (+ esquema.test.ts)
-            └── usuario/                Roles y jerarquía
+            │   └── schema.ts (+ schema.test.ts)
+            └── user/                   Roles y jerarquía
                 ├── index.ts
                 └── roles.ts (+ roles.test.ts)
 ```
 
 **Principios que aplican a todos los archivos de `shared`**
 
-- Un archivo, una responsabilidad. Los tests van al lado del código (`x.test.ts`).
+- Un archivo, una responsabilidad. Los tests van al lado del código (`x.test.ts`) y sus descripciones (`it('...')`) van en español, porque son texto para personas.
 - Exportar tipos derivados de constantes `as const`, nunca duplicar listas en un `enum` de TS y en un array.
 - Funciones puras: sin `Date.now()`, sin `process.env`, sin `fetch`, sin `window`. La fecha de hoy se recibe por parámetro.
-- Toda validación devuelve `Problema` con código estable; el texto sale de `mensajes.es.ts`. La API y la landing muestran el mensaje; los tests comparan códigos.
-- Nombres en español, en `camelCase` para código y en `snake_case` solo cuando toque la base de datos (paso 2).
+- Toda validación devuelve `Problem` con código estable; el texto sale de `messages.es.ts`. La API y la landing muestran el mensaje; los tests comparan códigos.
 
 ---
 
@@ -127,7 +157,7 @@ anticipate-factoring/
 - Create: `pnpm-workspace.yaml`, `package.json`, `turbo.json`, `.node-version`, `.editorconfig`, `tsconfig.json`, `biome.json`, `vitest.config.ts`, `.vscode/extensions.json`
 
 **Interfaces:**
-- Produces: el catálogo de versiones `catalog:` que todos los `package.json` usan; los scripts raíz `pnpm lint`, `pnpm typecheck`, `pnpm test`, `pnpm build`, `pnpm verificar`.
+- Produces: el catálogo de versiones `catalog:` que todos los `package.json` usan; los scripts raíz `pnpm lint`, `pnpm typecheck`, `pnpm test`, `pnpm build`, `pnpm verify`.
 
 - [ ] **Step 1: Confirmar Node y pnpm**
 
@@ -139,7 +169,7 @@ Expected: Node 24.15 o superior (24 es el LTS activo; 22 ya está en mantenimien
 Run:
 ```bash
 printf 'typescript (alias 6.x): %s\n' "$(pnpm view @typescript/typescript6 version)"
-for p in zod fast-xml-parser vitest @biomejs/biome @types/node tsdown turbo; do
+for p in zod fast-xml-parser date-fns @date-fns/tz vitest @biomejs/biome @types/node tsdown turbo; do
   printf '%s: ^%s\n' "$p" "$(pnpm view "$p" version)"
 done
 ```
@@ -163,6 +193,8 @@ catalog:
   typescript: npm:@typescript/typescript6@^<versión del paso 2>
   zod: ^<versión del paso 2>
   fast-xml-parser: ^<versión del paso 2>
+  date-fns: ^<versión del paso 2>
+  "@date-fns/tz": ^<versión del paso 2>
   vitest: ^<versión del paso 2>
   "@biomejs/biome": ^<versión del paso 2>
   "@types/node": ^<versión del paso 2>
@@ -190,7 +222,7 @@ catalog:
     "typecheck": "turbo run typecheck",
     "test": "turbo run test",
     "test:watch": "vitest",
-    "verificar": "pnpm lint && turbo run typecheck test build"
+    "verify": "pnpm lint && turbo run typecheck test build"
   },
   "devDependencies": {
     "@biomejs/biome": "catalog:",
@@ -256,7 +288,7 @@ trim_trailing_whitespace = false
 }
 ```
 
-`tsconfig.json` (solo para que el editor entienda los archivos de configuración de la raíz):
+`tsconfig.json`:
 ```json
 {
   "extends": "./packages/config/tsconfig.base.json",
@@ -296,16 +328,16 @@ git add pnpm-workspace.yaml package.json pnpm-lock.yaml turbo.json .node-version
 git commit -m "chore: raíz del monorepo con pnpm 12, Turborepo, Biome y Vitest"
 ```
 
-### Task 2: `packages/config`, esqueleto de `packages/shared` y dominio `errores`
+### Task 2: `packages/config`, esqueleto de `packages/shared` y dominio `errors`
 
 **Files:**
 - Create: `packages/config/package.json`, `packages/config/tsconfig.base.json`, `packages/config/tsconfig.library.json`, `packages/config/tsconfig.node.json`
 - Create: `packages/shared/package.json`, `packages/shared/tsconfig.json`, `packages/shared/tsdown.config.ts`, `packages/shared/vitest.config.ts`, `packages/shared/src/index.ts`
-- Create: `packages/shared/src/errores/codigos.ts`, `packages/shared/src/errores/mensajes.es.ts`, `packages/shared/src/errores/problema.ts`, `packages/shared/src/errores/index.ts`
-- Test: `packages/shared/src/errores/problema.test.ts`
+- Create: `packages/shared/src/errors/codes.ts`, `packages/shared/src/errors/messages.es.ts`, `packages/shared/src/errors/problem.ts`, `packages/shared/src/errors/index.ts`
+- Test: `packages/shared/src/errors/problem.test.ts`
 
 **Interfaces:**
-- Produces: `CodigoProblema` (unión de códigos), `Problema = { codigo, mensaje, factura?, campo? }`, `crearProblema(codigo, extra?)`, `MENSAJES_ES`. Todas las tareas siguientes devuelven `Problema` para señalar errores de negocio.
+- Produces: `ProblemCode` (unión de códigos), `Problem = { code, message, invoice?, field? }`, `createProblem(code, extra?)`, `MESSAGES_ES`. Todas las tareas siguientes devuelven `Problem` para señalar errores de negocio.
 
 - [ ] **Step 1: Crear `packages/config`**
 
@@ -385,15 +417,15 @@ git commit -m "chore: raíz del monorepo con pnpm 12, Turborepo, Biome y Vitest"
   "files": ["dist"],
   "exports": {
     ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
-    "./errores": { "types": "./dist/errores/index.d.ts", "default": "./dist/errores/index.js" },
-    "./identidad": { "types": "./dist/identidad/index.d.ts", "default": "./dist/identidad/index.js" },
-    "./dinero": { "types": "./dist/dinero/index.d.ts", "default": "./dist/dinero/index.js" },
-    "./fechas": { "types": "./dist/fechas/index.d.ts", "default": "./dist/fechas/index.js" },
-    "./factura": { "types": "./dist/factura/index.d.ts", "default": "./dist/factura/index.js" },
-    "./solicitud": { "types": "./dist/solicitud/index.d.ts", "default": "./dist/solicitud/index.js" },
-    "./documento": { "types": "./dist/documento/index.d.ts", "default": "./dist/documento/index.js" },
-    "./pagador": { "types": "./dist/pagador/index.d.ts", "default": "./dist/pagador/index.js" },
-    "./usuario": { "types": "./dist/usuario/index.d.ts", "default": "./dist/usuario/index.js" }
+    "./errors": { "types": "./dist/errors/index.d.ts", "default": "./dist/errors/index.js" },
+    "./identity": { "types": "./dist/identity/index.d.ts", "default": "./dist/identity/index.js" },
+    "./money": { "types": "./dist/money/index.d.ts", "default": "./dist/money/index.js" },
+    "./dates": { "types": "./dist/dates/index.d.ts", "default": "./dist/dates/index.js" },
+    "./invoice": { "types": "./dist/invoice/index.d.ts", "default": "./dist/invoice/index.js" },
+    "./advance-request": { "types": "./dist/advance-request/index.d.ts", "default": "./dist/advance-request/index.js" },
+    "./supplier-document": { "types": "./dist/supplier-document/index.d.ts", "default": "./dist/supplier-document/index.js" },
+    "./payer": { "types": "./dist/payer/index.d.ts", "default": "./dist/payer/index.js" },
+    "./user": { "types": "./dist/user/index.d.ts", "default": "./dist/user/index.js" }
   },
   "scripts": {
     "build": "tsdown",
@@ -402,6 +434,8 @@ git commit -m "chore: raíz del monorepo con pnpm 12, Turborepo, Biome y Vitest"
     "test": "vitest run"
   },
   "dependencies": {
+    "@date-fns/tz": "catalog:",
+    "date-fns": "catalog:",
     "fast-xml-parser": "catalog:",
     "zod": "catalog:"
   },
@@ -420,7 +454,7 @@ git commit -m "chore: raíz del monorepo con pnpm 12, Turborepo, Biome y Vitest"
 {
   "extends": "@anticipate/config/tsconfig.library.json",
   "compilerOptions": { "types": ["node"], "noEmit": true },
-  "include": ["src", "tsdown.config.ts", "vitest.config.ts"]
+  "include": ["src"]
 }
 ```
 
@@ -428,22 +462,22 @@ git commit -m "chore: raíz del monorepo con pnpm 12, Turborepo, Biome y Vitest"
 ```ts
 import { defineConfig } from 'tsdown'
 
-const dominios = [
-  'errores',
-  'identidad',
-  'dinero',
-  'fechas',
-  'factura',
-  'solicitud',
-  'documento',
-  'pagador',
-  'usuario',
+const domains = [
+  'errors',
+  'identity',
+  'money',
+  'dates',
+  'invoice',
+  'advance-request',
+  'supplier-document',
+  'payer',
+  'user',
 ] as const
 
 export default defineConfig({
   entry: {
     index: 'src/index.ts',
-    ...Object.fromEntries(dominios.map((d) => [`${d}/index`, `src/${d}/index.ts`])),
+    ...Object.fromEntries(domains.map((d) => [`${d}/index`, `src/${d}/index.ts`])),
   },
   format: 'esm',
   platform: 'neutral',
@@ -469,37 +503,37 @@ export default defineConfig({
 
 `packages/shared/src/index.ts` (se irá completando; por ahora solo errores):
 ```ts
-export * from './errores/index.js'
+export * from './errors/index.js'
 ```
 
-- [ ] **Step 3: Escribir el test que falla para `crearProblema`**
+- [ ] **Step 3: Escribir el test que falla para `createProblem`**
 
-`packages/shared/src/errores/problema.test.ts`:
+`packages/shared/src/errors/problem.test.ts`:
 ```ts
 import { describe, expect, it } from 'vitest'
-import { CODIGOS_PROBLEMA } from './codigos.js'
-import { MENSAJES_ES } from './mensajes.es.js'
-import { crearProblema } from './problema.js'
+import { PROBLEM_CODES } from './codes.js'
+import { MESSAGES_ES } from './messages.es.js'
+import { createProblem } from './problem.js'
 
-describe('crearProblema', () => {
+describe('createProblem', () => {
   it('devuelve el código y el mensaje en español', () => {
-    const p = crearProblema('RUC_INVALIDO', { campo: 'ruc' })
-    expect(p).toEqual({ codigo: 'RUC_INVALIDO', mensaje: 'El RUC no es válido.', campo: 'ruc' })
+    const p = createProblem('INVALID_RUC', { field: 'ruc' })
+    expect(p).toEqual({ code: 'INVALID_RUC', message: 'El RUC no es válido.', field: 'ruc' })
   })
 
   it('interpola datos en el mensaje', () => {
-    const p = crearProblema('DEMASIADAS_FACTURAS', { datos: { maximo: 10 } })
-    expect(p.mensaje).toBe('Puedes enviar como máximo 10 facturas por solicitud.')
+    const p = createProblem('TOO_MANY_INVOICES', { data: { max: 10 } })
+    expect(p.message).toBe('Puedes enviar como máximo 10 facturas por solicitud.')
   })
 
   it('omite las propiedades opcionales que no se pasan', () => {
-    const p = crearProblema('SIN_FACTURAS')
-    expect(Object.keys(p)).toEqual(['codigo', 'mensaje'])
+    const p = createProblem('NO_INVOICES')
+    expect(Object.keys(p)).toEqual(['code', 'message'])
   })
 
   it('todo código tiene mensaje', () => {
-    for (const codigo of CODIGOS_PROBLEMA) {
-      expect(MENSAJES_ES[codigo], codigo).toBeTypeOf('string')
+    for (const code of PROBLEM_CODES) {
+      expect(MESSAGES_ES[code], code).toBeTypeOf('string')
     }
   })
 })
@@ -508,119 +542,119 @@ describe('crearProblema', () => {
 - [ ] **Step 4: Correr el test y verificar que falla**
 
 Run: `pnpm install && pnpm --filter @anticipate/shared test`
-Expected: FAIL, "Cannot find module './codigos.js'" (o equivalente).
+Expected: FAIL, "Cannot find module './codes.js'" (o equivalente).
 
-- [ ] **Step 5: Implementar códigos, mensajes y `crearProblema`**
+- [ ] **Step 5: Implementar códigos, mensajes y `createProblem`**
 
-`packages/shared/src/errores/codigos.ts`:
+`packages/shared/src/errors/codes.ts`:
 ```ts
 /** Códigos estables de problemas de negocio. La API y la landing muestran el mensaje; los tests comparan el código. */
-export const CODIGOS_PROBLEMA = [
+export const PROBLEM_CODES = [
   // identidad
-  'RUC_INVALIDO',
-  'DNI_INVALIDO',
+  'INVALID_RUC',
+  'INVALID_DNI',
   // lectura del XML
-  'XML_ILEGIBLE',
-  'XML_NO_ES_FACTURA',
-  'XML_SIN_DATO_OBLIGATORIO',
+  'UNREADABLE_XML',
+  'XML_NOT_AN_INVOICE',
+  'XML_MISSING_REQUIRED_FIELD',
   // reglas por factura
-  'TIPO_COMPROBANTE_NO_PERMITIDO',
-  'RECEPTOR_NO_ES_PAGADOR',
-  'EMISOR_NO_ES_PROVEEDOR',
-  'FACTURA_AL_CONTADO',
-  'SIN_MONTO_PENDIENTE',
-  'MONEDA_NO_PERMITIDA',
-  'CUOTA_VENCIDA',
-  'PLAZO_INSUFICIENTE',
+  'DOCUMENT_TYPE_NOT_ALLOWED',
+  'RECIPIENT_IS_NOT_PAYER',
+  'ISSUER_IS_NOT_SUPPLIER',
+  'CASH_INVOICE',
+  'NO_PENDING_AMOUNT',
+  'CURRENCY_NOT_ALLOWED',
+  'INSTALLMENT_OVERDUE',
+  'INSUFFICIENT_TERM',
   // reglas del conjunto
-  'SIN_FACTURAS',
-  'DEMASIADAS_FACTURAS',
-  'EMISORES_DISTINTOS',
-  'MONEDAS_DISTINTAS',
-  'FACTURA_REPETIDA',
+  'NO_INVOICES',
+  'TOO_MANY_INVOICES',
+  'MIXED_ISSUERS',
+  'MIXED_CURRENCIES',
+  'DUPLICATE_INVOICE',
   // monto solicitado
-  'MONTO_INVALIDO',
-  'MONTO_SUPERA_MAXIMO',
+  'INVALID_AMOUNT',
+  'AMOUNT_EXCEEDS_MAXIMUM',
 ] as const
 
-export type CodigoProblema = (typeof CODIGOS_PROBLEMA)[number]
+export type ProblemCode = (typeof PROBLEM_CODES)[number]
 ```
 
-`packages/shared/src/errores/mensajes.es.ts`:
+`packages/shared/src/errors/messages.es.ts`:
 ```ts
-import type { CodigoProblema } from './codigos.js'
+import type { ProblemCode } from './codes.js'
 
-/** Mensajes para el usuario final. Los marcadores `{nombre}` se reemplazan con `datos`. */
-export const MENSAJES_ES: Record<CodigoProblema, string> = {
-  RUC_INVALIDO: 'El RUC no es válido.',
-  DNI_INVALIDO: 'El DNI debe tener 8 dígitos.',
-  XML_ILEGIBLE: 'No pudimos leer el archivo XML. Verifica que sea el XML original de la factura.',
-  XML_NO_ES_FACTURA: 'El archivo no es una factura electrónica ({tipo}).',
-  XML_SIN_DATO_OBLIGATORIO: 'El XML no contiene el dato "{dato}".',
-  TIPO_COMPROBANTE_NO_PERMITIDO: 'Solo aceptamos facturas electrónicas (tipo 01). Este comprobante es de tipo {tipo}.',
-  RECEPTOR_NO_ES_PAGADOR: 'La factura no está emitida a {pagador}.',
-  EMISOR_NO_ES_PROVEEDOR: 'La factura fue emitida por otro RUC ({emisor}), no por el de tu empresa.',
-  FACTURA_AL_CONTADO: 'La factura es al contado; solo podemos adelantar facturas al crédito.',
-  SIN_MONTO_PENDIENTE: 'La factura no declara un monto neto pendiente de pago.',
-  MONEDA_NO_PERMITIDA: 'No trabajamos con la moneda {moneda}.',
-  CUOTA_VENCIDA: 'La cuota {cuota} venció el {fecha}.',
-  PLAZO_INSUFICIENTE: 'La cuota {cuota} vence en menos de {dias} días.',
-  SIN_FACTURAS: 'Adjunta al menos una factura.',
-  DEMASIADAS_FACTURAS: 'Puedes enviar como máximo {maximo} facturas por solicitud.',
-  EMISORES_DISTINTOS: 'Todas las facturas deben ser de la misma empresa emisora.',
-  MONEDAS_DISTINTAS: 'Todas las facturas de una solicitud deben estar en la misma moneda.',
-  FACTURA_REPETIDA: 'La factura {factura} está repetida en esta solicitud.',
-  MONTO_INVALIDO: 'El monto debe ser un número mayor que cero con dos decimales.',
-  MONTO_SUPERA_MAXIMO: 'El monto solicitado supera el máximo de {maximo} {moneda}.',
+/** Mensajes para el usuario final. Los marcadores `{nombre}` se reemplazan con `data`. */
+export const MESSAGES_ES: Record<ProblemCode, string> = {
+  INVALID_RUC: 'El RUC no es válido.',
+  INVALID_DNI: 'El DNI debe tener 8 dígitos.',
+  UNREADABLE_XML: 'No pudimos leer el archivo XML. Verifica que sea el XML original de la factura.',
+  XML_NOT_AN_INVOICE: 'El archivo no es una factura electrónica ({kind}).',
+  XML_MISSING_REQUIRED_FIELD: 'El XML no contiene el dato "{field}".',
+  DOCUMENT_TYPE_NOT_ALLOWED: 'Solo aceptamos facturas electrónicas (tipo 01). Este comprobante es de tipo {kind}.',
+  RECIPIENT_IS_NOT_PAYER: 'La factura no está emitida a {payer}.',
+  ISSUER_IS_NOT_SUPPLIER: 'La factura fue emitida por otro RUC ({issuer}), no por el de tu empresa.',
+  CASH_INVOICE: 'La factura es al contado; solo podemos adelantar facturas al crédito.',
+  NO_PENDING_AMOUNT: 'La factura no declara un monto neto pendiente de pago.',
+  CURRENCY_NOT_ALLOWED: 'No trabajamos con la moneda {currency}.',
+  INSTALLMENT_OVERDUE: 'La cuota {installment} venció el {date}.',
+  INSUFFICIENT_TERM: 'La cuota {installment} vence en menos de {days} días.',
+  NO_INVOICES: 'Adjunta al menos una factura.',
+  TOO_MANY_INVOICES: 'Puedes enviar como máximo {max} facturas por solicitud.',
+  MIXED_ISSUERS: 'Todas las facturas deben ser de la misma empresa emisora.',
+  MIXED_CURRENCIES: 'Todas las facturas de una solicitud deben estar en la misma moneda.',
+  DUPLICATE_INVOICE: 'La factura {invoice} está repetida en esta solicitud.',
+  INVALID_AMOUNT: 'El monto debe ser un número mayor que cero con dos decimales.',
+  AMOUNT_EXCEEDS_MAXIMUM: 'El monto solicitado supera el máximo de {max} {currency}.',
 }
 ```
 
-`packages/shared/src/errores/problema.ts`:
+`packages/shared/src/errors/problem.ts`:
 ```ts
-import type { CodigoProblema } from './codigos.js'
-import { MENSAJES_ES } from './mensajes.es.js'
+import type { ProblemCode } from './codes.js'
+import { MESSAGES_ES } from './messages.es.js'
 
-export type Problema = {
-  codigo: CodigoProblema
-  mensaje: string
+export type Problem = {
+  code: ProblemCode
+  message: string
   /** Serie-número de la factura a la que se refiere, si aplica. */
-  factura?: string
+  invoice?: string
   /** Campo del formulario al que se refiere, si aplica. */
-  campo?: string
+  field?: string
 }
 
-export type ExtraProblema = {
-  factura?: string
-  campo?: string
-  datos?: Record<string, string | number>
+export type ProblemExtra = {
+  invoice?: string
+  field?: string
+  data?: Record<string, string | number>
 }
 
-function interpolar(plantilla: string, datos: Record<string, string | number> = {}): string {
-  return plantilla.replace(/\{(\w+)\}/g, (marca, clave: string) => {
-    const valor = datos[clave]
-    return valor === undefined ? marca : String(valor)
+function interpolate(template: string, data: Record<string, string | number> = {}): string {
+  return template.replace(/\{(\w+)\}/g, (placeholder, key: string) => {
+    const value = data[key]
+    return value === undefined ? placeholder : String(value)
   })
 }
 
-export function crearProblema(codigo: CodigoProblema, extra: ExtraProblema = {}): Problema {
-  const problema: Problema = { codigo, mensaje: interpolar(MENSAJES_ES[codigo], extra.datos) }
-  if (extra.factura !== undefined) problema.factura = extra.factura
-  if (extra.campo !== undefined) problema.campo = extra.campo
-  return problema
+export function createProblem(code: ProblemCode, extra: ProblemExtra = {}): Problem {
+  const problem: Problem = { code, message: interpolate(MESSAGES_ES[code], extra.data) }
+  if (extra.invoice !== undefined) problem.invoice = extra.invoice
+  if (extra.field !== undefined) problem.field = extra.field
+  return problem
 }
 ```
 
-`packages/shared/src/errores/index.ts`:
+`packages/shared/src/errors/index.ts`:
 ```ts
-export { CODIGOS_PROBLEMA, type CodigoProblema } from './codigos.js'
-export { MENSAJES_ES } from './mensajes.es.js'
-export { crearProblema, type ExtraProblema, type Problema } from './problema.js'
+export { PROBLEM_CODES, type ProblemCode } from './codes.js'
+export { MESSAGES_ES } from './messages.es.js'
+export { createProblem, type Problem, type ProblemExtra } from './problem.js'
 ```
 
 - [ ] **Step 6: Correr tests, tipos, lint y build**
 
 Run: `pnpm --filter @anticipate/shared test && pnpm typecheck && pnpm lint && pnpm build`
-Expected: 4 tests PASS; `tsc` sin errores; Biome sin errores; `dist/` con `index.js`, `index.d.ts` y la carpeta `errores/`. Sin `.cjs`.
+Expected: 4 tests PASS; `tsc` sin errores; Biome sin errores; `dist/` con `index.js`, `index.d.ts` y la carpeta `errors/`. Sin `.cjs`.
 
 - [ ] **Step 7: Commit**
 
@@ -631,31 +665,31 @@ git commit -m "feat(shared): esqueleto del paquete y dominio de errores con mens
 
 ---
 
-### Task 3: Dominio `identidad` (RUC y DNI)
+### Task 3: Dominio `identity` (RUC y DNI)
 
 **Files:**
-- Create: `packages/shared/src/identidad/ruc.ts`, `packages/shared/src/identidad/dni.ts`, `packages/shared/src/identidad/index.ts`
-- Test: `packages/shared/src/identidad/ruc.test.ts`, `packages/shared/src/identidad/dni.test.ts`
+- Create: `packages/shared/src/identity/ruc.ts`, `packages/shared/src/identity/dni.ts`, `packages/shared/src/identity/index.ts`
+- Test: `packages/shared/src/identity/ruc.test.ts`, `packages/shared/src/identity/dni.test.ts`
 - Modify: `packages/shared/src/index.ts`
 
 **Interfaces:**
-- Consumes: `MENSAJES_ES` de la Tarea 2.
-- Produces: `esRucValido(valor: string): boolean`, `rucSchema: ZodString`, `esDniValido(valor: string): boolean`, `dniSchema: ZodString`. El formulario (Tarea 8) y las reglas (Tarea 6) los usan.
+- Consumes: `MESSAGES_ES` de la Tarea 2.
+- Produces: `isValidRuc(value: string): boolean`, `rucSchema`, `isValidDni(value: string): boolean`, `dniSchema`. El formulario (Tarea 8) y las reglas (Tarea 6) los usan.
 
 - [ ] **Step 1: Escribir los tests que fallan**
 
-`packages/shared/src/identidad/ruc.test.ts`:
+`packages/shared/src/identity/ruc.test.ts`:
 ```ts
 import { describe, expect, it } from 'vitest'
-import { esRucValido, rucSchema } from './ruc.js'
+import { isValidRuc, rucSchema } from './ruc.js'
 
-describe('esRucValido', () => {
+describe('isValidRuc', () => {
   it.each([
     ['20100070970', 'empresa (prefijo 20)'],
     ['20131312955', 'entidad pública (prefijo 20)'],
     ['10467286736', 'persona natural con negocio (prefijo 10)'],
   ])('acepta %s (%s)', (ruc) => {
-    expect(esRucValido(ruc)).toBe(true)
+    expect(isValidRuc(ruc)).toBe(true)
   })
 
   it.each([
@@ -666,7 +700,7 @@ describe('esRucValido', () => {
     ['2010007097A', 'con letra'],
     ['', 'vacío'],
   ])('rechaza %s (%s)', (ruc) => {
-    expect(esRucValido(ruc)).toBe(false)
+    expect(isValidRuc(ruc)).toBe(false)
   })
 })
 
@@ -683,19 +717,19 @@ describe('rucSchema', () => {
 })
 ```
 
-`packages/shared/src/identidad/dni.test.ts`:
+`packages/shared/src/identity/dni.test.ts`:
 ```ts
 import { describe, expect, it } from 'vitest'
-import { dniSchema, esDniValido } from './dni.js'
+import { dniSchema, isValidDni } from './dni.js'
 
-describe('esDniValido', () => {
+describe('isValidDni', () => {
   it('acepta 8 dígitos', () => {
-    expect(esDniValido('46728673')).toBe(true)
-    expect(esDniValido('00000001')).toBe(true)
+    expect(isValidDni('46728673')).toBe(true)
+    expect(isValidDni('00000001')).toBe(true)
   })
 
   it.each(['4672867', '467286731', '4672867A', ''])('rechaza %s', (dni) => {
-    expect(esDniValido(dni)).toBe(false)
+    expect(isValidDni(dni)).toBe(false)
   })
 })
 
@@ -714,61 +748,61 @@ describe('dniSchema', () => {
 
 - [ ] **Step 2: Correr y verificar que fallan**
 
-Run: `pnpm --filter @anticipate/shared test -- identidad`
+Run: `pnpm --filter @anticipate/shared test -- identity`
 Expected: FAIL por módulos inexistentes.
 
 - [ ] **Step 3: Implementar**
 
-`packages/shared/src/identidad/ruc.ts`:
+`packages/shared/src/identity/ruc.ts`:
 ```ts
 import { z } from 'zod'
-import { MENSAJES_ES } from '../errores/index.js'
+import { MESSAGES_ES } from '../errors/index.js'
 
 /** Pesos del algoritmo módulo 11 de SUNAT para los diez primeros dígitos. */
-const PESOS = [5, 4, 3, 2, 7, 6, 5, 4, 3, 2] as const
+const WEIGHTS = [5, 4, 3, 2, 7, 6, 5, 4, 3, 2] as const
 
 /** Prefijos que SUNAT asigna: 10 persona natural, 15/16/17 otros tipos, 20 persona jurídica. */
-const PREFIJOS_VALIDOS = new Set(['10', '15', '16', '17', '20'])
+const VALID_PREFIXES = new Set(['10', '15', '16', '17', '20'])
 
-export function esRucValido(valor: string): boolean {
-  if (!/^\d{11}$/.test(valor)) return false
-  if (!PREFIJOS_VALIDOS.has(valor.slice(0, 2))) return false
-  const suma = PESOS.reduce((acc, peso, i) => acc + peso * Number(valor[i]), 0)
-  const resto = 11 - (suma % 11)
-  const verificador = resto === 10 ? 0 : resto === 11 ? 1 : resto
-  return verificador === Number(valor[10])
+export function isValidRuc(value: string): boolean {
+  if (!/^\d{11}$/.test(value)) return false
+  if (!VALID_PREFIXES.has(value.slice(0, 2))) return false
+  const sum = WEIGHTS.reduce((acc, weight, i) => acc + weight * Number(value[i]), 0)
+  const remainder = 11 - (sum % 11)
+  const checkDigit = remainder === 10 ? 0 : remainder === 11 ? 1 : remainder
+  return checkDigit === Number(value[10])
 }
 
 export const rucSchema = z
   .string()
   .trim()
-  .refine(esRucValido, { error: MENSAJES_ES.RUC_INVALIDO })
+  .refine(isValidRuc, { error: MESSAGES_ES.INVALID_RUC })
 ```
 
-`packages/shared/src/identidad/dni.ts`:
+`packages/shared/src/identity/dni.ts`:
 ```ts
 import { z } from 'zod'
-import { MENSAJES_ES } from '../errores/index.js'
+import { MESSAGES_ES } from '../errors/index.js'
 
-export function esDniValido(valor: string): boolean {
-  return /^\d{8}$/.test(valor)
+export function isValidDni(value: string): boolean {
+  return /^\d{8}$/.test(value)
 }
 
 export const dniSchema = z
   .string()
   .trim()
-  .refine(esDniValido, { error: MENSAJES_ES.DNI_INVALIDO })
+  .refine(isValidDni, { error: MESSAGES_ES.INVALID_DNI })
 ```
 
-`packages/shared/src/identidad/index.ts`:
+`packages/shared/src/identity/index.ts`:
 ```ts
-export { dniSchema, esDniValido } from './dni.js'
-export { esRucValido, rucSchema } from './ruc.js'
+export { dniSchema, isValidDni } from './dni.js'
+export { isValidRuc, rucSchema } from './ruc.js'
 ```
 
 Agregar a `packages/shared/src/index.ts`:
 ```ts
-export * from './identidad/index.js'
+export * from './identity/index.js'
 ```
 
 - [ ] **Step 4: Correr tests y verificación completa**
@@ -785,114 +819,136 @@ git commit -m "feat(shared): validadores de RUC (módulo 11) y DNI con esquemas 
 
 ---
 
-### Task 4: Dominios `dinero` y `fechas`
+### Task 4: Dominios `money` y `dates`
 
 **Files:**
-- Create: `packages/shared/src/dinero/moneda.ts`, `packages/shared/src/dinero/monto.ts`, `packages/shared/src/dinero/index.ts`
-- Create: `packages/shared/src/fechas/fecha-iso.ts`, `packages/shared/src/fechas/index.ts`
-- Test: `packages/shared/src/dinero/monto.test.ts`, `packages/shared/src/fechas/fecha-iso.test.ts`
+- Create: `packages/shared/src/money/currency.ts`, `packages/shared/src/money/amount.ts`, `packages/shared/src/money/index.ts`
+- Create: `packages/shared/src/dates/iso-date.ts`, `packages/shared/src/dates/index.ts`
+- Test: `packages/shared/src/money/amount.test.ts`, `packages/shared/src/dates/iso-date.test.ts`
 - Modify: `packages/shared/src/index.ts`
 
 **Interfaces:**
-- Produces: `MONEDAS`, `Moneda`, `monedaSchema`; `Monto` (texto `"25000.00"`), `montoSchema`, `normalizarMonto(valor): Monto | null`, `aCentimos(m): bigint`, `deCentimos(c): Monto`, `sumarMontos(...m): Monto`, `porcentajeDe(m, pct): Monto`, `compararMontos(a, b): -1 | 0 | 1`; `fechaIsoSchema`, `esFechaIso(v)`, `diasEntre(desde, hasta): number`.
+- Produces: `CURRENCIES`, `Currency`, `currencySchema`; `Amount` (texto `"25000.00"`), `amountSchema`, `normalizeAmount(value): Amount | null`, `toCents(a): bigint`, `fromCents(c): Amount`, `sumAmounts(...a): Amount`, `percentOf(a, pct): Amount`, `compareAmounts(a, b): -1 | 0 | 1`; `IsoDate`, `isoDateSchema`, `isIsoDate(v)`, `daysBetween(from, to): number`, `addDaysIso(date, days): IsoDate`, `todayIn(timeZone, now): IsoDate`, `LIMA_TIME_ZONE`.
+
+**Diseño de fechas.** Las fechas del dominio son fechas de calendario (`2026-11-30`), no instantes. date-fns hace la aritmética (`differenceInCalendarDays`, `addDays`, `parseISO`, `isValid`, `formatISO`). `todayIn` convierte un instante en la fecha de calendario de una zona con `TZDate` de `@date-fns/tz`; recibe el instante por parámetro para que `shared` siga siendo puro y testeable. La API y la landing llaman `todayIn(LIMA_TIME_ZONE, new Date())` una sola vez y pasan el resultado como `today`.
 
 - [ ] **Step 1: Escribir los tests que fallan**
 
-`packages/shared/src/dinero/monto.test.ts`:
+`packages/shared/src/money/amount.test.ts`:
 ```ts
 import { describe, expect, it } from 'vitest'
 import {
-  aCentimos,
-  compararMontos,
-  deCentimos,
-  montoSchema,
-  normalizarMonto,
-  porcentajeDe,
-  sumarMontos,
-} from './monto.js'
+  amountSchema,
+  compareAmounts,
+  fromCents,
+  normalizeAmount,
+  percentOf,
+  sumAmounts,
+  toCents,
+} from './amount.js'
 
-describe('normalizarMonto', () => {
+describe('normalizeAmount', () => {
   it.each([
     ['1180.5', '1180.50'],
     ['1180', '1180.00'],
     ['0.1', '0.10'],
     [1180.5, '1180.50'],
     [' 25000.00 ', '25000.00'],
-  ])('convierte %s en %s', (entrada, esperado) => {
-    expect(normalizarMonto(entrada)).toBe(esperado)
+  ])('convierte %s en %s', (input, expected) => {
+    expect(normalizeAmount(input)).toBe(expected)
   })
 
-  it.each(['', 'abc', '-5.00', '1,180.50', '1.234', Number.NaN])('rechaza %s', (entrada) => {
-    expect(normalizarMonto(entrada)).toBeNull()
+  it.each(['', 'abc', '-5.00', '1,180.50', '1.234', Number.NaN])('rechaza %s', (input) => {
+    expect(normalizeAmount(input)).toBeNull()
   })
 })
 
 describe('aritmética en céntimos', () => {
   it('convierte ida y vuelta sin perder precisión', () => {
-    expect(aCentimos('25000.00')).toBe(25_000_00n)
-    expect(deCentimos(25_000_00n)).toBe('25000.00')
-    expect(deCentimos(5n)).toBe('0.05')
-    expect(deCentimos(0n)).toBe('0.00')
+    expect(toCents('25000.00')).toBe(25_000_00n)
+    expect(fromCents(25_000_00n)).toBe('25000.00')
+    expect(fromCents(5n)).toBe('0.05')
+    expect(fromCents(0n)).toBe('0.00')
   })
 
   it('suma sin errores de coma flotante', () => {
-    expect(sumarMontos('0.10', '0.20')).toBe('0.30')
-    expect(sumarMontos('10620.00', '5310.50', '0.01')).toBe('15930.51')
+    expect(sumAmounts('0.10', '0.20')).toBe('0.30')
+    expect(sumAmounts('10620.00', '5310.50', '0.01')).toBe('15930.51')
   })
 
   it('calcula porcentajes redondeando hacia abajo al céntimo', () => {
-    expect(porcentajeDe('10620.00', 80)).toBe('8496.00')
-    expect(porcentajeDe('100.00', 33.33)).toBe('33.33')
-    expect(porcentajeDe('0.01', 50)).toBe('0.00')
+    expect(percentOf('10620.00', 80)).toBe('8496.00')
+    expect(percentOf('100.00', 33.33)).toBe('33.33')
+    expect(percentOf('0.01', 50)).toBe('0.00')
   })
 
   it('compara montos', () => {
-    expect(compararMontos('100.00', '100.00')).toBe(0)
-    expect(compararMontos('99.99', '100.00')).toBe(-1)
-    expect(compararMontos('100.01', '100.00')).toBe(1)
+    expect(compareAmounts('100.00', '100.00')).toBe(0)
+    expect(compareAmounts('99.99', '100.00')).toBe(-1)
+    expect(compareAmounts('100.01', '100.00')).toBe(1)
   })
 })
 
-describe('montoSchema', () => {
+describe('amountSchema', () => {
   it('acepta solo texto con dos decimales y mayor que cero', () => {
-    expect(montoSchema.safeParse('25000.00').success).toBe(true)
-    expect(montoSchema.safeParse('0.00').success).toBe(false)
-    expect(montoSchema.safeParse('25000').success).toBe(false)
-    expect(montoSchema.safeParse(25000).success).toBe(false)
+    expect(amountSchema.safeParse('25000.00').success).toBe(true)
+    expect(amountSchema.safeParse('0.00').success).toBe(false)
+    expect(amountSchema.safeParse('25000').success).toBe(false)
+    expect(amountSchema.safeParse(25000).success).toBe(false)
   })
 })
 ```
 
-`packages/shared/src/fechas/fecha-iso.test.ts`:
+`packages/shared/src/dates/iso-date.test.ts`:
 ```ts
 import { describe, expect, it } from 'vitest'
-import { diasEntre, esFechaIso, fechaIsoSchema } from './fecha-iso.js'
+import { LIMA_TIME_ZONE, addDaysIso, daysBetween, isIsoDate, isoDateSchema, todayIn } from './iso-date.js'
 
-describe('esFechaIso', () => {
+describe('isIsoDate', () => {
   it.each(['2026-09-23', '2024-02-29'])('acepta %s', (v) => {
-    expect(esFechaIso(v)).toBe(true)
+    expect(isIsoDate(v)).toBe(true)
   })
 
   it.each(['2026-9-3', '23/09/2026', '2026-13-01', '2023-02-29', '2026-09-23T00:00:00Z', ''])(
     'rechaza %s',
     (v) => {
-      expect(esFechaIso(v)).toBe(false)
+      expect(isIsoDate(v)).toBe(false)
     },
   )
 })
 
-describe('diasEntre', () => {
-  it('cuenta días de calendario sin zona horaria', () => {
-    expect(diasEntre('2026-09-23', '2026-09-23')).toBe(0)
-    expect(diasEntre('2026-09-23', '2026-10-08')).toBe(15)
-    expect(diasEntre('2026-09-23', '2026-09-22')).toBe(-1)
-    expect(diasEntre('2026-02-28', '2026-03-01')).toBe(1)
+describe('daysBetween', () => {
+  it('cuenta días de calendario', () => {
+    expect(daysBetween('2026-09-23', '2026-09-23')).toBe(0)
+    expect(daysBetween('2026-09-23', '2026-10-08')).toBe(15)
+    expect(daysBetween('2026-09-23', '2026-09-22')).toBe(-1)
+    expect(daysBetween('2026-02-28', '2026-03-01')).toBe(1)
+  })
+
+  it('lanza si una fecha es inválida', () => {
+    expect(() => daysBetween('2026-09-23', '2026-13-01')).toThrow()
   })
 })
 
-describe('fechaIsoSchema', () => {
+describe('addDaysIso', () => {
+  it('suma días de calendario cruzando mes y año', () => {
+    expect(addDaysIso('2026-09-01', 90)).toBe('2026-11-30')
+    expect(addDaysIso('2026-12-31', 1)).toBe('2027-01-01')
+  })
+})
+
+describe('todayIn', () => {
+  it('devuelve la fecha de calendario de Lima para un instante dado', () => {
+    // 2026-09-24T03:30:00Z es 2026-09-23 22:30 en Lima (UTC-5, sin horario de verano)
+    expect(todayIn(LIMA_TIME_ZONE, new Date('2026-09-24T03:30:00Z'))).toBe('2026-09-23')
+    expect(todayIn(LIMA_TIME_ZONE, new Date('2026-09-24T05:00:00Z'))).toBe('2026-09-24')
+    expect(todayIn('UTC', new Date('2026-09-24T03:30:00Z'))).toBe('2026-09-24')
+  })
+})
+
+describe('isoDateSchema', () => {
   it('rechaza con mensaje en español', () => {
-    const r = fechaIsoSchema.safeParse('23/09/2026')
+    const r = isoDateSchema.safeParse('23/09/2026')
     expect(r.success).toBe(false)
     if (!r.success) expect(r.error.issues[0]?.message).toBe('La fecha debe tener el formato AAAA-MM-DD.')
   })
@@ -901,139 +957,152 @@ describe('fechaIsoSchema', () => {
 
 - [ ] **Step 2: Correr y verificar que fallan**
 
-Run: `pnpm --filter @anticipate/shared test -- dinero fechas`
+Run: `pnpm --filter @anticipate/shared test -- money dates`
 Expected: FAIL por módulos inexistentes.
 
-- [ ] **Step 3: Implementar `dinero`**
+- [ ] **Step 3: Implementar `money`**
 
-`packages/shared/src/dinero/moneda.ts`:
+`packages/shared/src/money/currency.ts`:
 ```ts
 import { z } from 'zod'
 
 /** Monedas que el sistema sabe representar. Cuáles acepta cada pagador es un dato de contexto, no una constante. */
-export const MONEDAS = ['PEN', 'USD'] as const
-export type Moneda = (typeof MONEDAS)[number]
-export const monedaSchema = z.enum(MONEDAS)
+export const CURRENCIES = ['PEN', 'USD'] as const
+export type Currency = (typeof CURRENCIES)[number]
+export const currencySchema = z.enum(CURRENCIES)
 ```
 
-`packages/shared/src/dinero/monto.ts`:
+`packages/shared/src/money/amount.ts`:
 ```ts
 import { z } from 'zod'
-import { MENSAJES_ES } from '../errores/index.js'
+import { MESSAGES_ES } from '../errors/index.js'
 
 /** Monto como texto con exactamente dos decimales, por ejemplo "25000.00". Nunca `number`. */
-export type Monto = string
+export type Amount = string
 
-const FORMATO_MONTO = /^\d{1,13}\.\d{2}$/
+const AMOUNT_FORMAT = /^\d{1,13}\.\d{2}$/
 
-/** Acepta lo que venga de un XML o de un input y lo lleva a `Monto`. Devuelve null si no es un número no negativo. */
-export function normalizarMonto(valor: string | number): Monto | null {
-  const texto = typeof valor === 'number' ? (Number.isFinite(valor) ? valor.toString() : '') : valor.trim()
-  const partes = /^(\d{1,13})(?:\.(\d{1,2}))?$/.exec(texto)
-  if (!partes) return null
-  const entero = partes[1] ?? '0'
-  const decimales = (partes[2] ?? '').padEnd(2, '0')
-  return `${entero}.${decimales}`
+/** Acepta lo que venga de un XML o de un input y lo lleva a `Amount`. Devuelve null si no es un número no negativo. */
+export function normalizeAmount(value: string | number): Amount | null {
+  const text = typeof value === 'number' ? (Number.isFinite(value) ? value.toString() : '') : value.trim()
+  const parts = /^(\d{1,13})(?:\.(\d{1,2}))?$/.exec(text)
+  if (!parts) return null
+  const whole = parts[1] ?? '0'
+  const decimals = (parts[2] ?? '').padEnd(2, '0')
+  return `${whole}.${decimals}`
 }
 
-export function aCentimos(monto: Monto): bigint {
-  const [entero = '0', decimales = '00'] = monto.split('.')
-  return BigInt(entero) * 100n + BigInt(decimales.padEnd(2, '0').slice(0, 2))
+export function toCents(amount: Amount): bigint {
+  const [whole = '0', decimals = '00'] = amount.split('.')
+  return BigInt(whole) * 100n + BigInt(decimals.padEnd(2, '0').slice(0, 2))
 }
 
-export function deCentimos(centimos: bigint): Monto {
-  const texto = centimos.toString().padStart(3, '0')
-  return `${texto.slice(0, -2)}.${texto.slice(-2)}`
+export function fromCents(cents: bigint): Amount {
+  const text = cents.toString().padStart(3, '0')
+  return `${text.slice(0, -2)}.${text.slice(-2)}`
 }
 
-export function sumarMontos(...montos: Monto[]): Monto {
-  return deCentimos(montos.reduce((acc, m) => acc + aCentimos(m), 0n))
+export function sumAmounts(...amounts: Amount[]): Amount {
+  return fromCents(amounts.reduce((acc, a) => acc + toCents(a), 0n))
 }
 
 /** `pct` en escala 0 a 100, con hasta dos decimales (80, 33.33). Redondea hacia abajo al céntimo. */
-export function porcentajeDe(monto: Monto, pct: number): Monto {
-  const pctEnCentesimas = BigInt(Math.round(pct * 100))
-  return deCentimos((aCentimos(monto) * pctEnCentesimas) / 10_000n)
+export function percentOf(amount: Amount, pct: number): Amount {
+  const pctInHundredths = BigInt(Math.round(pct * 100))
+  return fromCents((toCents(amount) * pctInHundredths) / 10_000n)
 }
 
-export function compararMontos(a: Monto, b: Monto): -1 | 0 | 1 {
-  const ca = aCentimos(a)
-  const cb = aCentimos(b)
+export function compareAmounts(a: Amount, b: Amount): -1 | 0 | 1 {
+  const ca = toCents(a)
+  const cb = toCents(b)
   return ca < cb ? -1 : ca > cb ? 1 : 0
 }
 
 /** Monto ingresado por una persona: dos decimales obligatorios y mayor que cero. */
-export const montoSchema = z
+export const amountSchema = z
   .string()
   .trim()
-  .refine((v) => FORMATO_MONTO.test(v) && aCentimos(v) > 0n, { error: MENSAJES_ES.MONTO_INVALIDO })
+  .refine((v) => AMOUNT_FORMAT.test(v) && toCents(v) > 0n, { error: MESSAGES_ES.INVALID_AMOUNT })
 ```
 
-`packages/shared/src/dinero/index.ts`:
+`packages/shared/src/money/index.ts`:
 ```ts
-export { MONEDAS, type Moneda, monedaSchema } from './moneda.js'
 export {
-  aCentimos,
-  compararMontos,
-  deCentimos,
-  type Monto,
-  montoSchema,
-  normalizarMonto,
-  porcentajeDe,
-  sumarMontos,
-} from './monto.js'
+  type Amount,
+  amountSchema,
+  compareAmounts,
+  fromCents,
+  normalizeAmount,
+  percentOf,
+  sumAmounts,
+  toCents,
+} from './amount.js'
+export { CURRENCIES, type Currency, currencySchema } from './currency.js'
 ```
 
-- [ ] **Step 4: Implementar `fechas`**
+- [ ] **Step 4: Implementar `dates`**
 
-`packages/shared/src/fechas/fecha-iso.ts`:
+`packages/shared/src/dates/iso-date.ts`:
 ```ts
+import { TZDate } from '@date-fns/tz'
+import { addDays, differenceInCalendarDays, format, formatISO, isValid, parseISO } from 'date-fns'
 import { z } from 'zod'
 
 /** Fecha de calendario sin hora ni zona: "2026-09-23". */
-export type FechaIso = string
+export type IsoDate = string
 
-const FORMATO = /^(\d{4})-(\d{2})-(\d{2})$/
+/** Zona horaria de operación. Perú no tiene horario de verano. */
+export const LIMA_TIME_ZONE = 'America/Lima'
 
-function aUtc(fecha: FechaIso): number | null {
-  const m = FORMATO.exec(fecha)
-  if (!m) return null
-  const anio = Number(m[1])
-  const mes = Number(m[2])
-  const dia = Number(m[3])
-  const ms = Date.UTC(anio, mes - 1, dia)
-  const d = new Date(ms)
-  const valida = d.getUTCFullYear() === anio && d.getUTCMonth() === mes - 1 && d.getUTCDate() === dia
-  return valida ? ms : null
+const ISO_DATE_FORMAT = /^\d{4}-\d{2}-\d{2}$/
+
+function parse(date: IsoDate): Date {
+  if (!ISO_DATE_FORMAT.test(date)) throw new Error(`Fecha inválida: ${date}`)
+  const parsed = parseISO(date)
+  if (!isValid(parsed) || formatISO(parsed, { representation: 'date' }) !== date) {
+    throw new Error(`Fecha inválida: ${date}`)
+  }
+  return parsed
 }
 
-export function esFechaIso(valor: string): boolean {
-  return aUtc(valor) !== null
+export function isIsoDate(value: string): boolean {
+  try {
+    parse(value)
+    return true
+  } catch {
+    return false
+  }
 }
 
-/** Días de calendario de `desde` a `hasta`. Negativo si `hasta` es anterior. Lanza si alguna fecha es inválida. */
-export function diasEntre(desde: FechaIso, hasta: FechaIso): number {
-  const a = aUtc(desde)
-  const b = aUtc(hasta)
-  if (a === null || b === null) throw new Error(`Fecha inválida: ${a === null ? desde : hasta}`)
-  return Math.round((b - a) / 86_400_000)
+/** Días de calendario de `from` a `to`. Negativo si `to` es anterior. Lanza si alguna fecha es inválida. */
+export function daysBetween(from: IsoDate, to: IsoDate): number {
+  return differenceInCalendarDays(parse(to), parse(from))
 }
 
-export const fechaIsoSchema = z
+export function addDaysIso(date: IsoDate, days: number): IsoDate {
+  return formatISO(addDays(parse(date), days), { representation: 'date' })
+}
+
+/** Fecha de calendario de `now` vista desde `timeZone`. `now` se recibe por parámetro: shared no consulta el reloj. */
+export function todayIn(timeZone: string, now: Date): IsoDate {
+  return format(new TZDate(now, timeZone), 'yyyy-MM-dd')
+}
+
+export const isoDateSchema = z
   .string()
   .trim()
-  .refine(esFechaIso, { error: 'La fecha debe tener el formato AAAA-MM-DD.' })
+  .refine(isIsoDate, { error: 'La fecha debe tener el formato AAAA-MM-DD.' })
 ```
 
-`packages/shared/src/fechas/index.ts`:
+`packages/shared/src/dates/index.ts`:
 ```ts
-export { diasEntre, esFechaIso, type FechaIso, fechaIsoSchema } from './fecha-iso.js'
+export { LIMA_TIME_ZONE, addDaysIso, daysBetween, type IsoDate, isIsoDate, isoDateSchema, todayIn } from './iso-date.js'
 ```
 
 Agregar a `packages/shared/src/index.ts`:
 ```ts
-export * from './dinero/index.js'
-export * from './fechas/index.js'
+export * from './money/index.js'
+export * from './dates/index.js'
 ```
 
 - [ ] **Step 5: Correr tests y verificación completa**
@@ -1045,22 +1114,22 @@ Expected: todos PASS.
 
 ```bash
 git add packages/shared/src
-git commit -m "feat(shared): montos como texto con aritmética en céntimos y fechas ISO"
+git commit -m "feat(shared): montos como texto con aritmética en céntimos y fechas de calendario con date-fns"
 ```
 
 ---
 
-### Task 5: Dominio `factura` · códigos, forma de la factura leída, fábrica de XML y lector UBL
+### Task 5: Dominio `invoice` · códigos, factura leída, fábrica de XML y lector UBL
 
 **Files:**
-- Create: `packages/shared/src/factura/codigos.ts`, `packages/shared/src/factura/factura-leida.ts`, `packages/shared/src/factura/construir-xml-prueba.ts`, `packages/shared/src/factura/lector-ubl.ts`, `packages/shared/src/factura/index.ts`
-- Create: `packages/shared/test/fixtures/factura-credito-pen.xml`
-- Test: `packages/shared/src/factura/lector-ubl.test.ts`
+- Create: `packages/shared/src/invoice/codes.ts`, `packages/shared/src/invoice/parsed-invoice.ts`, `packages/shared/src/invoice/build-test-xml.ts`, `packages/shared/src/invoice/ubl-parser.ts`, `packages/shared/src/invoice/index.ts`
+- Create: `packages/shared/test/fixtures/invoice-credit-pen.xml`
+- Test: `packages/shared/src/invoice/ubl-parser.test.ts`
 - Modify: `packages/shared/src/index.ts`
 
 **Interfaces:**
-- Consumes: `Monto`, `normalizarMonto` (Tarea 4); `FechaIso`, `esFechaIso` (Tarea 4); `crearProblema`, `Problema` (Tarea 2).
-- Produces: `TIPO_COMPROBANTE`, `FORMAS_PAGO`, `FormaPago`; `FacturaLeida`, `Cuota`, `facturaLeidaSchema`; `construirXmlFactura(opciones)`, `construirXmlCdr()`; `decodificarXml(bytes: Uint8Array): string`; `leerFacturaUbl(xml: string): ResultadoLectura` con `ResultadoLectura = { ok: true; factura: FacturaLeida } | { ok: false; problema: Problema }`. La Tarea 6 (reglas) consume `FacturaLeida`.
+- Consumes: `Amount`, `normalizeAmount` (Tarea 4); `IsoDate`, `isIsoDate` (Tarea 4); `createProblem`, `Problem` (Tarea 2).
+- Produces: `DOCUMENT_TYPE`, `DOCUMENT_TYPE_NAMES`, `PAYMENT_TERMS`, `PaymentTerms`; `ParsedInvoice`, `Installment`, `parsedInvoiceSchema`; `buildInvoiceXml(options)`, `buildCdrXml()`, `DEFAULT_TEST_XML`; `decodeXml(bytes: Uint8Array): string`; `parseUblInvoice(xml: string): ParseResult` con `ParseResult = { ok: true; invoice: ParsedInvoice } | { ok: false; problem: Problem }`. La Tarea 6 (reglas) consume `ParsedInvoice`.
 
 **Contexto para quien implementa.** La factura electrónica peruana es un XML UBL 2.1 firmado. Los datos que necesitamos y dónde viven (rutas sin prefijos de espacio de nombres, porque el lector los elimina):
 
@@ -1078,235 +1147,232 @@ git commit -m "feat(shared): montos como texto con aritmética en céntimos y fe
 | Detracción | `Invoice.PaymentTerms[]` con `ID = Detraccion`, `PaymentPercent` y `Amount` |
 | Firma | existe `Invoice.UBLExtensions…Signature` |
 
-Un CDR (constancia de recepción de SUNAT) tiene raíz `ApplicationResponse`; una nota de crédito, `CreditNote`. Ninguna es factura. La retención del IGV no va en `PaymentTerms` sino en `Invoice.AllowanceCharge` con código 62 del catálogo 53 (verificado en la guía de SUNAT); se lee en una fase posterior porque el neto pendiente ya viene descontado. La forma de pago es obligatoria solo en facturas emitidas desde el 2021-09-01 (RS 042-2021): una factura anterior sin `FormaPago` no tiene neto pendiente declarado y las reglas la rechazan, que es lo correcto para factoring.
+Un CDR (constancia de recepción de SUNAT) tiene raíz `ApplicationResponse`; una nota de crédito, `CreditNote`. Ninguna es factura. La retención del IGV no va en `PaymentTerms` sino en `Invoice.AllowanceCharge` con código 62 del catálogo 53 (verificado en la guía de SUNAT); se lee en una fase posterior porque el neto pendiente ya viene descontado. La forma de pago es obligatoria solo en facturas emitidas desde el 2021-09-01 (RS 042-2021): una factura anterior sin `FormaPago` no tiene neto pendiente declarado y las reglas la rechazan, que es lo correcto para factoring. Los literales del XML (`FormaPago`, `Credito`, `Cuota001`) son de SUNAT y no se traducen.
 
 - [ ] **Step 1: Códigos y forma de la factura leída**
 
-`packages/shared/src/factura/codigos.ts`:
+`packages/shared/src/invoice/codes.ts`:
 ```ts
 /** Catálogo 01 de SUNAT: tipo de comprobante. */
-export const TIPO_COMPROBANTE = {
-  FACTURA: '01',
-  BOLETA: '03',
-  NOTA_CREDITO: '07',
-  NOTA_DEBITO: '08',
+export const DOCUMENT_TYPE = {
+  INVOICE: '01',
+  RECEIPT: '03',
+  CREDIT_NOTE: '07',
+  DEBIT_NOTE: '08',
 } as const
-export type TipoComprobante = (typeof TIPO_COMPROBANTE)[keyof typeof TIPO_COMPROBANTE]
+export type DocumentType = (typeof DOCUMENT_TYPE)[keyof typeof DOCUMENT_TYPE]
 
-export const NOMBRE_TIPO_COMPROBANTE: Record<string, string> = {
+/** Nombres en español para mensajes al usuario. */
+export const DOCUMENT_TYPE_NAMES: Record<string, string> = {
   '01': 'factura',
   '03': 'boleta de venta',
   '07': 'nota de crédito',
   '08': 'nota de débito',
 }
 
-export const FORMAS_PAGO = ['CONTADO', 'CREDITO'] as const
-export type FormaPago = (typeof FORMAS_PAGO)[number]
+export const PAYMENT_TERMS = ['CASH', 'CREDIT'] as const
+export type PaymentTerms = (typeof PAYMENT_TERMS)[number]
 ```
 
-`packages/shared/src/factura/factura-leida.ts`:
+`packages/shared/src/invoice/parsed-invoice.ts`:
 ```ts
 import { z } from 'zod'
-import { montoSchema } from '../dinero/index.js'
-import { fechaIsoSchema } from '../fechas/index.js'
-import { FORMAS_PAGO } from './codigos.js'
+import { isoDateSchema } from '../dates/index.js'
+import { PAYMENT_TERMS } from './codes.js'
 
-const montoLeidoSchema = z.string().regex(/^\d{1,13}\.\d{2}$/)
+const parsedAmountSchema = z.string().regex(/^\d{1,13}\.\d{2}$/)
 
-export const cuotaSchema = z.object({
+export const installmentSchema = z.object({
   id: z.string().min(1),
-  monto: montoLeidoSchema,
-  vence: fechaIsoSchema,
+  amount: parsedAmountSchema,
+  dueDate: isoDateSchema,
 })
-export type Cuota = z.infer<typeof cuotaSchema>
+export type Installment = z.infer<typeof installmentSchema>
 
 /** Lo que el lector extrae de un XML. Es la forma que viaja entre landing, API y admin. */
-export const facturaLeidaSchema = z.object({
-  tipoComprobante: z.string().min(1),
-  serieNumero: z.string().min(1),
-  fechaEmision: fechaIsoSchema,
-  moneda: z.string().length(3),
-  rucEmisor: z.string().min(1),
-  razonSocialEmisor: z.string(),
-  rucReceptor: z.string().min(1),
-  razonSocialReceptor: z.string().nullable(),
-  /** Total a pagar del comprobante. Puede ser 0.00 en casos raros; por eso no usa montoSchema. */
-  total: montoLeidoSchema,
-  formaPago: z.enum(FORMAS_PAGO).nullable(),
+export const parsedInvoiceSchema = z.object({
+  documentType: z.string().min(1),
+  seriesNumber: z.string().min(1),
+  issueDate: isoDateSchema,
+  currency: z.string().length(3),
+  issuerRuc: z.string().min(1),
+  issuerName: z.string(),
+  recipientRuc: z.string().min(1),
+  recipientName: z.string().nullable(),
+  /** Total a pagar del comprobante. Puede ser 0.00 en casos raros; por eso no usa amountSchema. */
+  total: parsedAmountSchema,
+  paymentTerms: z.enum(PAYMENT_TERMS).nullable(),
   /** Solo al crédito: monto neto pendiente de pago declarado en el XML (ya descuenta detracción o retención). */
-  montoNetoPendiente: montoLeidoSchema.nullable(),
-  cuotas: z.array(cuotaSchema),
-  detraccion: z.object({ porcentaje: z.number().min(0).max(100), monto: montoLeidoSchema }).nullable(),
-  firmada: z.boolean(),
+  netPendingAmount: parsedAmountSchema.nullable(),
+  installments: z.array(installmentSchema),
+  detraction: z.object({ percent: z.number().min(0).max(100), amount: parsedAmountSchema }).nullable(),
+  signed: z.boolean(),
 })
-export type FacturaLeida = z.infer<typeof facturaLeidaSchema>
-
-export { montoSchema as montoIngresadoSchema }
+export type ParsedInvoice = z.infer<typeof parsedInvoiceSchema>
 ```
 
 - [ ] **Step 2: Fábrica de XML de prueba**
 
-`packages/shared/src/factura/construir-xml-prueba.ts`:
+`packages/shared/src/invoice/build-test-xml.ts`:
 ```ts
 /**
  * Construye XML UBL 2.1 con la forma de una factura electrónica de SUNAT, para tests y para el modo
  * demostración de la landing. No es un XML válido ante SUNAT (no está firmado de verdad).
  */
-export type CuotaPrueba = { id: string; monto: string; vence: string }
+export type TestInstallment = { id: string; amount: string; dueDate: string }
 
-export type OpcionesXmlPrueba = {
-  raiz?: 'Invoice' | 'CreditNote' | 'ApplicationResponse'
+export type TestXmlOptions = {
+  root?: 'Invoice' | 'CreditNote' | 'ApplicationResponse'
   /** Prefijos de espacio de nombres. `''` produce elementos sin prefijo. */
-  prefijos?: { cbc: string; cac: string }
-  tipoComprobante?: string
-  serieNumero?: string
-  fechaEmision?: string
-  moneda?: string
-  rucEmisor?: string
-  razonSocialEmisor?: string
-  rucReceptor?: string
-  razonSocialReceptor?: string | null
+  prefixes?: { cbc: string; cac: string }
+  documentType?: string
+  seriesNumber?: string
+  issueDate?: string
+  currency?: string
+  issuerRuc?: string
+  issuerName?: string
+  recipientRuc?: string
+  recipientName?: string | null
   total?: string
-  formaPago?: 'Contado' | 'Credito' | null
-  montoNetoPendiente?: string | null
-  cuotas?: CuotaPrueba[]
-  detraccion?: { porcentaje: string; monto: string } | null
-  firmada?: boolean
+  paymentTerms?: 'Contado' | 'Credito' | null
+  netPendingAmount?: string | null
+  installments?: TestInstallment[]
+  detraction?: { percent: string; amount: string } | null
+  signed?: boolean
   /** Emite el RUC por la ruta legada PartyTaxScheme/CompanyID en vez de PartyIdentification/ID. */
-  rutaRucLegada?: boolean
+  legacyRucPath?: boolean
   bom?: boolean
-  codificacionDeclarada?: string
-  finalesDeLineaWindows?: boolean
+  declaredEncoding?: string
+  windowsLineEndings?: boolean
   /** Elementos a omitir, para probar datos obligatorios ausentes. */
-  omitir?: Array<'ID' | 'IssueDate' | 'DocumentCurrencyCode' | 'InvoiceTypeCode' | 'PayableAmount'>
+  omit?: Array<'ID' | 'IssueDate' | 'DocumentCurrencyCode' | 'InvoiceTypeCode' | 'PayableAmount'>
 }
 
-export const XML_PRUEBA_POR_DEFECTO = {
-  raiz: 'Invoice',
-  prefijos: { cbc: 'cbc', cac: 'cac' },
-  tipoComprobante: '01',
-  serieNumero: 'F001-123',
-  fechaEmision: '2026-09-01',
-  moneda: 'PEN',
-  rucEmisor: '20100070970',
-  razonSocialEmisor: 'PROVEEDOR EJEMPLO S.A.C.',
-  rucReceptor: '20131312955',
-  razonSocialReceptor: 'SERVICIOS ENERGETICOS AMBIENTALES S.A.',
+export const DEFAULT_TEST_XML = {
+  root: 'Invoice',
+  prefixes: { cbc: 'cbc', cac: 'cac' },
+  documentType: '01',
+  seriesNumber: 'F001-123',
+  issueDate: '2026-09-01',
+  currency: 'PEN',
+  issuerRuc: '20100070970',
+  issuerName: 'PROVEEDOR EJEMPLO S.A.C.',
+  recipientRuc: '20131312955',
+  recipientName: 'SERVICIOS ENERGETICOS AMBIENTALES S.A.',
   total: '11800.00',
-  formaPago: 'Credito',
-  montoNetoPendiente: '10620.00',
-  cuotas: [{ id: 'Cuota001', monto: '10620.00', vence: '2026-11-30' }],
-  detraccion: { porcentaje: '10', monto: '1180.00' },
-  firmada: true,
-  rutaRucLegada: false,
+  paymentTerms: 'Credito',
+  netPendingAmount: '10620.00',
+  installments: [{ id: 'Cuota001', amount: '10620.00', dueDate: '2026-11-30' }],
+  detraction: { percent: '10', amount: '1180.00' },
+  signed: true,
+  legacyRucPath: false,
   bom: false,
-  codificacionDeclarada: 'UTF-8',
-  finalesDeLineaWindows: false,
-  omitir: [],
-} as const satisfies Required<OpcionesXmlPrueba>
+  declaredEncoding: 'UTF-8',
+  windowsLineEndings: false,
+  omit: [],
+} as const satisfies Required<TestXmlOptions>
 
-export function construirXmlFactura(opciones: OpcionesXmlPrueba = {}): string {
-  const o = { ...XML_PRUEBA_POR_DEFECTO, ...opciones }
-  const cbc = (t: string) => (o.prefijos.cbc ? `${o.prefijos.cbc}:${t}` : t)
-  const cac = (t: string) => (o.prefijos.cac ? `${o.prefijos.cac}:${t}` : t)
-  const el = (nombre: string, contenido: string, atributos = ''): string =>
-    `<${nombre}${atributos}>${contenido}</${nombre}>`
-  const omitido = (nombre: (typeof o.omitir)[number]) => o.omitir.includes(nombre)
-  const monto = (nombre: string, valor: string) => el(cbc(nombre), valor, ` currencyID="${o.moneda}"`)
+export function buildInvoiceXml(options: TestXmlOptions = {}): string {
+  const o = { ...DEFAULT_TEST_XML, ...options }
+  const cbc = (t: string) => (o.prefixes.cbc ? `${o.prefixes.cbc}:${t}` : t)
+  const cac = (t: string) => (o.prefixes.cac ? `${o.prefixes.cac}:${t}` : t)
+  const el = (name: string, content: string, attributes = ''): string => `<${name}${attributes}>${content}</${name}>`
+  const omitted = (name: (typeof o.omit)[number]) => o.omit.includes(name)
+  const money = (name: string, value: string) => el(cbc(name), value, ` currencyID="${o.currency}"`)
 
-  const parte = (rol: 'AccountingSupplierParty' | 'AccountingCustomerParty', ruc: string, razon: string | null) =>
+  const party = (role: 'AccountingSupplierParty' | 'AccountingCustomerParty', ruc: string, name: string | null) =>
     el(
-      cac(rol),
+      cac(role),
       el(
         cac('Party'),
-        o.rutaRucLegada
+        o.legacyRucPath
           ? el(
               cac('PartyTaxScheme'),
-              (razon === null ? '' : el(cbc('RegistrationName'), razon)) + el(cbc('CompanyID'), ruc, ' schemeID="6"'),
+              (name === null ? '' : el(cbc('RegistrationName'), name)) + el(cbc('CompanyID'), ruc, ' schemeID="6"'),
             )
           : el(cac('PartyIdentification'), el(cbc('ID'), ruc, ' schemeID="6"')) +
-              (razon === null ? '' : el(cac('PartyLegalEntity'), el(cbc('RegistrationName'), razon))),
+              (name === null ? '' : el(cac('PartyLegalEntity'), el(cbc('RegistrationName'), name))),
       ),
     )
 
-  const terminosPago: string[] = []
-  if (o.detraccion) {
-    terminosPago.push(
+  const paymentTermsBlocks: string[] = []
+  if (o.detraction) {
+    paymentTermsBlocks.push(
       el(
         cac('PaymentTerms'),
         el(cbc('ID'), 'Detraccion') +
           el(cbc('PaymentMeansID'), '001') +
-          el(cbc('PaymentPercent'), o.detraccion.porcentaje) +
-          monto('Amount', o.detraccion.monto),
+          el(cbc('PaymentPercent'), o.detraction.percent) +
+          money('Amount', o.detraction.amount),
       ),
     )
   }
-  if (o.formaPago) {
-    terminosPago.push(
+  if (o.paymentTerms) {
+    paymentTermsBlocks.push(
       el(
         cac('PaymentTerms'),
         el(cbc('ID'), 'FormaPago') +
-          el(cbc('PaymentMeansID'), o.formaPago) +
-          (o.formaPago === 'Credito' && o.montoNetoPendiente !== null ? monto('Amount', o.montoNetoPendiente) : ''),
+          el(cbc('PaymentMeansID'), o.paymentTerms) +
+          (o.paymentTerms === 'Credito' && o.netPendingAmount !== null ? money('Amount', o.netPendingAmount) : ''),
       ),
     )
   }
-  for (const c of o.cuotas) {
-    terminosPago.push(
+  for (const i of o.installments) {
+    paymentTermsBlocks.push(
       el(
         cac('PaymentTerms'),
         el(cbc('ID'), 'FormaPago') +
-          el(cbc('PaymentMeansID'), c.id) +
-          monto('Amount', c.monto) +
-          el(cbc('PaymentDueDate'), c.vence),
+          el(cbc('PaymentMeansID'), i.id) +
+          money('Amount', i.amount) +
+          el(cbc('PaymentDueDate'), i.dueDate),
       ),
     )
   }
 
-  const firma = o.firmada
+  const signature = o.signed
     ? el(
         'ext:UBLExtensions',
         el('ext:UBLExtension', el('ext:ExtensionContent', el('ds:Signature', el('ds:SignatureValue', 'ZmlybWE='), ' Id="SignSUNAT"'))),
       )
     : ''
 
-  const tipoTag = o.raiz === 'CreditNote' ? 'CreditNoteTypeCode' : 'InvoiceTypeCode'
-  const cuerpo = [
-    firma,
+  const typeTag = o.root === 'CreditNote' ? 'CreditNoteTypeCode' : 'InvoiceTypeCode'
+  const body = [
+    signature,
     el(cbc('UBLVersionID'), '2.1'),
     el(cbc('CustomizationID'), '2.0'),
-    omitido('ID') ? '' : el(cbc('ID'), o.serieNumero),
-    omitido('IssueDate') ? '' : el(cbc('IssueDate'), o.fechaEmision),
-    omitido('InvoiceTypeCode') ? '' : el(cbc(tipoTag), o.tipoComprobante, ' listID="0101"'),
-    omitido('DocumentCurrencyCode') ? '' : el(cbc('DocumentCurrencyCode'), o.moneda),
-    parte('AccountingSupplierParty', o.rucEmisor, o.razonSocialEmisor),
-    parte('AccountingCustomerParty', o.rucReceptor, o.razonSocialReceptor),
-    ...terminosPago,
+    omitted('ID') ? '' : el(cbc('ID'), o.seriesNumber),
+    omitted('IssueDate') ? '' : el(cbc('IssueDate'), o.issueDate),
+    omitted('InvoiceTypeCode') ? '' : el(cbc(typeTag), o.documentType, ' listID="0101"'),
+    omitted('DocumentCurrencyCode') ? '' : el(cbc('DocumentCurrencyCode'), o.currency),
+    party('AccountingSupplierParty', o.issuerRuc, o.issuerName),
+    party('AccountingCustomerParty', o.recipientRuc, o.recipientName),
+    ...paymentTermsBlocks,
     el(
       cac('LegalMonetaryTotal'),
-      monto('TaxInclusiveAmount', o.total) + (omitido('PayableAmount') ? '' : monto('PayableAmount', o.total)),
+      money('TaxInclusiveAmount', o.total) + (omitted('PayableAmount') ? '' : money('PayableAmount', o.total)),
     ),
   ].join('\n  ')
 
-  const ns = [
-    `xmlns="urn:oasis:names:specification:ubl:schema:xsd:${o.raiz}-2"`,
+  const namespaces = [
+    `xmlns="urn:oasis:names:specification:ubl:schema:xsd:${o.root}-2"`,
     'xmlns:cac="urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2"',
     'xmlns:cbc="urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2"',
     'xmlns:ds="http://www.w3.org/2000/09/xmldsig#"',
     'xmlns:ext="urn:oasis:names:specification:ubl:schema:xsd:CommonExtensionComponents-2"',
   ]
-  for (const p of [o.prefijos.cbc, o.prefijos.cac]) {
-    if (p && p !== 'cbc' && p !== 'cac') ns.push(`xmlns:${p}="urn:ejemplo:${p}"`)
+  for (const p of [o.prefixes.cbc, o.prefixes.cac]) {
+    if (p && p !== 'cbc' && p !== 'cac') namespaces.push(`xmlns:${p}="urn:example:${p}"`)
   }
 
-  let xml = `<?xml version="1.0" encoding="${o.codificacionDeclarada}"?>\n<${o.raiz} ${ns.join(' ')}>\n  ${cuerpo}\n</${o.raiz}>\n`
-  if (o.finalesDeLineaWindows) xml = xml.replace(/\n/g, '\r\n')
+  let xml = `<?xml version="1.0" encoding="${o.declaredEncoding}"?>\n<${o.root} ${namespaces.join(' ')}>\n  ${body}\n</${o.root}>\n`
+  if (o.windowsLineEndings) xml = xml.replace(/\n/g, '\r\n')
   if (o.bom) xml = `﻿${xml}`
   return xml
 }
 
 /** Constancia de recepción (CDR) de SUNAT: no es una factura. */
-export function construirXmlCdr(): string {
+export function buildCdrXml(): string {
   return [
     '<?xml version="1.0" encoding="UTF-8"?>',
     '<ApplicationResponse xmlns="urn:oasis:names:specification:ubl:schema:xsd:ApplicationResponse-2"',
@@ -1319,149 +1385,149 @@ export function construirXmlCdr(): string {
 }
 ```
 
-Crear `packages/shared/test/fixtures/factura-credito-pen.xml` con el resultado de `construirXmlFactura()` sin opciones. Se genera una vez con este comando y se commitea, para que una persona pueda abrirlo y ver la forma:
+Crear `packages/shared/test/fixtures/invoice-credit-pen.xml` con el resultado de `buildInvoiceXml()` sin opciones. Se genera una vez con este comando y se commitea, para que una persona pueda abrirlo y ver la forma:
 
-Run: `pnpm --filter @anticipate/shared exec tsx -e "import('./src/factura/construir-xml-prueba.ts').then(m => process.stdout.write(m.construirXmlFactura()))" > packages/shared/test/fixtures/factura-credito-pen.xml`
+Run: `pnpm --filter @anticipate/shared exec tsx -e "import('./src/invoice/build-test-xml.ts').then(m => process.stdout.write(m.buildInvoiceXml()))" > packages/shared/test/fixtures/invoice-credit-pen.xml`
 (Si `tsx` no está instalado: `pnpm add -Dw tsx` y agregarlo al catálogo. Es solo para este paso y para scripts de desarrollo.)
 
 - [ ] **Step 3: Escribir los tests del lector que fallan**
 
-`packages/shared/src/factura/lector-ubl.test.ts`:
+`packages/shared/src/invoice/ubl-parser.test.ts`:
 ```ts
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
-import { construirXmlCdr, construirXmlFactura } from './construir-xml-prueba.js'
-import { decodificarXml, leerFacturaUbl } from './lector-ubl.js'
+import { buildCdrXml, buildInvoiceXml } from './build-test-xml.js'
+import { decodeXml, parseUblInvoice } from './ubl-parser.js'
 
-function leerOk(xml: string) {
-  const r = leerFacturaUbl(xml)
-  if (!r.ok) throw new Error(`Se esperaba lectura correcta: ${r.problema.codigo}`)
-  return r.factura
+function parseOk(xml: string) {
+  const r = parseUblInvoice(xml)
+  if (!r.ok) throw new Error(`Se esperaba lectura correcta: ${r.problem.code}`)
+  return r.invoice
 }
 
-function leerError(xml: string) {
-  const r = leerFacturaUbl(xml)
+function parseError(xml: string) {
+  const r = parseUblInvoice(xml)
   if (r.ok) throw new Error('Se esperaba un problema')
-  return r.problema
+  return r.problem
 }
 
-describe('leerFacturaUbl · factura al crédito', () => {
-  const f = leerOk(construirXmlFactura())
+describe('parseUblInvoice · factura al crédito', () => {
+  const inv = parseOk(buildInvoiceXml())
 
   it('lee identificación, fechas y moneda', () => {
-    expect(f.tipoComprobante).toBe('01')
-    expect(f.serieNumero).toBe('F001-123')
-    expect(f.fechaEmision).toBe('2026-09-01')
-    expect(f.moneda).toBe('PEN')
+    expect(inv.documentType).toBe('01')
+    expect(inv.seriesNumber).toBe('F001-123')
+    expect(inv.issueDate).toBe('2026-09-01')
+    expect(inv.currency).toBe('PEN')
   })
 
   it('lee emisor y receptor', () => {
-    expect(f.rucEmisor).toBe('20100070970')
-    expect(f.razonSocialEmisor).toBe('PROVEEDOR EJEMPLO S.A.C.')
-    expect(f.rucReceptor).toBe('20131312955')
-    expect(f.razonSocialReceptor).toBe('SERVICIOS ENERGETICOS AMBIENTALES S.A.')
+    expect(inv.issuerRuc).toBe('20100070970')
+    expect(inv.issuerName).toBe('PROVEEDOR EJEMPLO S.A.C.')
+    expect(inv.recipientRuc).toBe('20131312955')
+    expect(inv.recipientName).toBe('SERVICIOS ENERGETICOS AMBIENTALES S.A.')
   })
 
   it('lee total, forma de pago, neto pendiente, cuotas y detracción', () => {
-    expect(f.total).toBe('11800.00')
-    expect(f.formaPago).toBe('CREDITO')
-    expect(f.montoNetoPendiente).toBe('10620.00')
-    expect(f.cuotas).toEqual([{ id: 'Cuota001', monto: '10620.00', vence: '2026-11-30' }])
-    expect(f.detraccion).toEqual({ porcentaje: 10, monto: '1180.00' })
-    expect(f.firmada).toBe(true)
+    expect(inv.total).toBe('11800.00')
+    expect(inv.paymentTerms).toBe('CREDIT')
+    expect(inv.netPendingAmount).toBe('10620.00')
+    expect(inv.installments).toEqual([{ id: 'Cuota001', amount: '10620.00', dueDate: '2026-11-30' }])
+    expect(inv.detraction).toEqual({ percent: 10, amount: '1180.00' })
+    expect(inv.signed).toBe(true)
   })
 
   it('lee el fixture estático igual que el XML generado', () => {
-    const estatico = readFileSync(new URL('../../test/fixtures/factura-credito-pen.xml', import.meta.url), 'utf8')
-    expect(leerOk(estatico)).toEqual(f)
+    const fixture = readFileSync(new URL('../../test/fixtures/invoice-credit-pen.xml', import.meta.url), 'utf8')
+    expect(parseOk(fixture)).toEqual(inv)
   })
 })
 
-describe('leerFacturaUbl · variantes', () => {
+describe('parseUblInvoice · variantes', () => {
   it('factura al contado: sin neto pendiente ni cuotas', () => {
-    const f = leerOk(construirXmlFactura({ formaPago: 'Contado', montoNetoPendiente: null, cuotas: [] }))
-    expect(f.formaPago).toBe('CONTADO')
-    expect(f.montoNetoPendiente).toBeNull()
-    expect(f.cuotas).toEqual([])
+    const inv = parseOk(buildInvoiceXml({ paymentTerms: 'Contado', netPendingAmount: null, installments: [] }))
+    expect(inv.paymentTerms).toBe('CASH')
+    expect(inv.netPendingAmount).toBeNull()
+    expect(inv.installments).toEqual([])
   })
 
-  it('sin bloque de forma de pago: formaPago null', () => {
-    const f = leerOk(construirXmlFactura({ formaPago: null, cuotas: [] }))
-    expect(f.formaPago).toBeNull()
+  it('sin bloque de forma de pago: paymentTerms null', () => {
+    const inv = parseOk(buildInvoiceXml({ paymentTerms: null, installments: [] }))
+    expect(inv.paymentTerms).toBeNull()
   })
 
   it('varias cuotas', () => {
-    const cuotas = [
-      { id: 'Cuota001', monto: '5000.00', vence: '2026-10-30' },
-      { id: 'Cuota002', monto: '5620.00', vence: '2026-11-30' },
+    const installments = [
+      { id: 'Cuota001', amount: '5000.00', dueDate: '2026-10-30' },
+      { id: 'Cuota002', amount: '5620.00', dueDate: '2026-11-30' },
     ]
-    expect(leerOk(construirXmlFactura({ cuotas })).cuotas).toEqual(cuotas)
+    expect(parseOk(buildInvoiceXml({ installments })).installments).toEqual(installments)
   })
 
   it('sin detracción ni razón social del receptor', () => {
-    const f = leerOk(construirXmlFactura({ detraccion: null, razonSocialReceptor: null }))
-    expect(f.detraccion).toBeNull()
-    expect(f.razonSocialReceptor).toBeNull()
+    const inv = parseOk(buildInvoiceXml({ detraction: null, recipientName: null }))
+    expect(inv.detraction).toBeNull()
+    expect(inv.recipientName).toBeNull()
   })
 
   it('normaliza montos sin dos decimales', () => {
-    const f = leerOk(construirXmlFactura({ total: '11800.5', montoNetoPendiente: '10620' }))
-    expect(f.total).toBe('11800.50')
-    expect(f.montoNetoPendiente).toBe('10620.00')
+    const inv = parseOk(buildInvoiceXml({ total: '11800.5', netPendingAmount: '10620' }))
+    expect(inv.total).toBe('11800.50')
+    expect(inv.netPendingAmount).toBe('10620.00')
   })
 
   it('no firmada', () => {
-    expect(leerOk(construirXmlFactura({ firmada: false })).firmada).toBe(false)
+    expect(parseOk(buildInvoiceXml({ signed: false })).signed).toBe(false)
   })
 
   it('lee una boleta (tipo 03) sin rechazarla; la regla de tipo decide después', () => {
-    expect(leerOk(construirXmlFactura({ tipoComprobante: '03' })).tipoComprobante).toBe('03')
+    expect(parseOk(buildInvoiceXml({ documentType: '03' })).documentType).toBe('03')
   })
 })
 
-describe('leerFacturaUbl · robustez de formato', () => {
+describe('parseUblInvoice · robustez de formato', () => {
   it('tolera BOM y finales de línea de Windows', () => {
-    const f = leerOk(construirXmlFactura({ bom: true, finalesDeLineaWindows: true }))
-    expect(f.serieNumero).toBe('F001-123')
+    const inv = parseOk(buildInvoiceXml({ bom: true, windowsLineEndings: true }))
+    expect(inv.seriesNumber).toBe('F001-123')
   })
 
   it('tolera elementos sin prefijo de espacio de nombres', () => {
-    const f = leerOk(construirXmlFactura({ prefijos: { cbc: '', cac: '' } }))
-    expect(f.rucEmisor).toBe('20100070970')
+    const inv = parseOk(buildInvoiceXml({ prefixes: { cbc: '', cac: '' } }))
+    expect(inv.issuerRuc).toBe('20100070970')
   })
 
   it('tolera prefijos distintos de cbc/cac', () => {
-    const f = leerOk(construirXmlFactura({ prefijos: { cbc: 'n1', cac: 'n2' } }))
-    expect(f.montoNetoPendiente).toBe('10620.00')
+    const inv = parseOk(buildInvoiceXml({ prefixes: { cbc: 'n1', cac: 'n2' } }))
+    expect(inv.netPendingAmount).toBe('10620.00')
   })
 
   it('tolera la ruta legada del RUC (PartyTaxScheme/CompanyID)', () => {
-    const f = leerOk(construirXmlFactura({ rutaRucLegada: true }))
-    expect(f.rucEmisor).toBe('20100070970')
-    expect(f.rucReceptor).toBe('20131312955')
-    expect(f.razonSocialEmisor).toBe('PROVEEDOR EJEMPLO S.A.C.')
+    const inv = parseOk(buildInvoiceXml({ legacyRucPath: true }))
+    expect(inv.issuerRuc).toBe('20100070970')
+    expect(inv.recipientRuc).toBe('20131312955')
+    expect(inv.issuerName).toBe('PROVEEDOR EJEMPLO S.A.C.')
   })
 })
 
-describe('leerFacturaUbl · errores', () => {
+describe('parseUblInvoice · errores', () => {
   it('XML malformado', () => {
-    expect(leerError('<Invoice><cbc:ID>F001-1</Invoice>').codigo).toBe('XML_ILEGIBLE')
+    expect(parseError('<Invoice><cbc:ID>F001-1</Invoice>').code).toBe('UNREADABLE_XML')
   })
 
   it('texto que no es XML', () => {
-    expect(leerError('%PDF-1.7 ...').codigo).toBe('XML_ILEGIBLE')
+    expect(parseError('%PDF-1.7 ...').code).toBe('UNREADABLE_XML')
   })
 
   it('CDR de SUNAT', () => {
-    const p = leerError(construirXmlCdr())
-    expect(p.codigo).toBe('XML_NO_ES_FACTURA')
-    expect(p.mensaje).toContain('constancia de recepción')
+    const p = parseError(buildCdrXml())
+    expect(p.code).toBe('XML_NOT_AN_INVOICE')
+    expect(p.message).toContain('constancia de recepción')
   })
 
   it('nota de crédito', () => {
-    const p = leerError(construirXmlFactura({ raiz: 'CreditNote' }))
-    expect(p.codigo).toBe('XML_NO_ES_FACTURA')
-    expect(p.mensaje).toContain('nota de crédito')
+    const p = parseError(buildInvoiceXml({ root: 'CreditNote' }))
+    expect(p.code).toBe('XML_NOT_AN_INVOICE')
+    expect(p.message).toContain('nota de crédito')
   })
 
   it.each([
@@ -1470,60 +1536,59 @@ describe('leerFacturaUbl · errores', () => {
     ['InvoiceTypeCode', 'tipo de comprobante'],
     ['DocumentCurrencyCode', 'moneda'],
     ['PayableAmount', 'total'],
-  ] as const)('falta %s', (elemento, nombre) => {
-    const p = leerError(construirXmlFactura({ omitir: [elemento] }))
-    expect(p.codigo).toBe('XML_SIN_DATO_OBLIGATORIO')
-    expect(p.mensaje).toContain(nombre)
+  ] as const)('falta %s', (element, name) => {
+    const p = parseError(buildInvoiceXml({ omit: [element] }))
+    expect(p.code).toBe('XML_MISSING_REQUIRED_FIELD')
+    expect(p.message).toContain(name)
   })
 
   it('no resuelve entidades externas', () => {
-    const xml = construirXmlFactura().replace(
-      '<?xml version="1.0" encoding="UTF-8"?>',
-      '<?xml version="1.0"?><!DOCTYPE x [<!ENTITY xxe SYSTEM "file:///etc/passwd">]>',
-    ).replace('F001-123', '&xxe;')
-    const r = leerFacturaUbl(xml)
-    if (r.ok) expect(r.factura.serieNumero).not.toContain('root:')
+    const xml = buildInvoiceXml()
+      .replace('<?xml version="1.0" encoding="UTF-8"?>', '<?xml version="1.0"?><!DOCTYPE x [<!ENTITY xxe SYSTEM "file:///etc/passwd">]>')
+      .replace('F001-123', '&xxe;')
+    const r = parseUblInvoice(xml)
+    if (r.ok) expect(r.invoice.seriesNumber).not.toContain('root:')
   })
 })
 
-describe('decodificarXml', () => {
+describe('decodeXml', () => {
   it('decodifica UTF-8 con BOM', () => {
     const bytes = new TextEncoder().encode('﻿<?xml version="1.0" encoding="UTF-8"?><a>Ñ</a>')
-    expect(decodificarXml(bytes)).toContain('<a>Ñ</a>')
+    expect(decodeXml(bytes)).toContain('<a>Ñ</a>')
   })
 
   it('respeta la codificación declarada (ISO-8859-1)', () => {
-    const texto = '<?xml version="1.0" encoding="ISO-8859-1"?><a>Ñ</a>'
-    const bytes = Uint8Array.from(texto, (ch) => ch.charCodeAt(0))
-    expect(decodificarXml(bytes)).toContain('<a>Ñ</a>')
+    const text = '<?xml version="1.0" encoding="ISO-8859-1"?><a>Ñ</a>'
+    const bytes = Uint8Array.from(text, (ch) => ch.charCodeAt(0))
+    expect(decodeXml(bytes)).toContain('<a>Ñ</a>')
   })
 })
 ```
 
 - [ ] **Step 4: Correr y verificar que fallan**
 
-Run: `pnpm --filter @anticipate/shared test -- factura`
-Expected: FAIL, "Cannot find module './lector-ubl.js'".
+Run: `pnpm --filter @anticipate/shared test -- invoice`
+Expected: FAIL, "Cannot find module './ubl-parser.js'".
 
 - [ ] **Step 5: Implementar el lector**
 
-`packages/shared/src/factura/lector-ubl.ts`:
+`packages/shared/src/invoice/ubl-parser.ts`:
 ```ts
 import { XMLParser, XMLValidator } from 'fast-xml-parser'
-import { normalizarMonto } from '../dinero/index.js'
-import { esFechaIso } from '../fechas/index.js'
-import { type Problema, crearProblema } from '../errores/index.js'
-import { type FormaPago } from './codigos.js'
-import { type Cuota, type FacturaLeida, facturaLeidaSchema } from './factura-leida.js'
+import { isIsoDate } from '../dates/index.js'
+import { type Problem, createProblem } from '../errors/index.js'
+import { normalizeAmount } from '../money/index.js'
+import type { PaymentTerms } from './codes.js'
+import { type Installment, type ParsedInvoice, parsedInvoiceSchema } from './parsed-invoice.js'
 
-export type ResultadoLectura = { ok: true; factura: FacturaLeida } | { ok: false; problema: Problema }
+export type ParseResult = { ok: true; invoice: ParsedInvoice } | { ok: false; problem: Problem }
 
-const TEXTO = '#texto'
+const TEXT = '#text'
 
 const parser = new XMLParser({
   ignoreAttributes: false,
   attributeNamePrefix: '@',
-  textNodeName: TEXTO,
+  textNodeName: TEXT,
   removeNSPrefix: true,
   processEntities: false,
   parseTagValue: false,
@@ -1531,32 +1596,33 @@ const parser = new XMLParser({
   trimValues: true,
 })
 
-type Nodo = string | { [clave: string]: unknown } | undefined
+type Node = string | { [key: string]: unknown } | undefined
 
-function texto(nodo: unknown): string | undefined {
-  if (typeof nodo === 'string') return nodo
-  if (nodo && typeof nodo === 'object' && TEXTO in nodo) {
-    const t = (nodo as Record<string, unknown>)[TEXTO]
+function text(node: unknown): string | undefined {
+  if (typeof node === 'string') return node
+  if (node && typeof node === 'object' && TEXT in node) {
+    const t = (node as Record<string, unknown>)[TEXT]
     return typeof t === 'string' ? t : undefined
   }
   return undefined
 }
 
-function lista<T>(valor: T | T[] | undefined): T[] {
-  if (valor === undefined) return []
-  return Array.isArray(valor) ? valor : [valor]
+function asList<T>(value: T | T[] | undefined): T[] {
+  if (value === undefined) return []
+  return Array.isArray(value) ? value : [value]
 }
 
-function ruta(raiz: unknown, ...pasos: string[]): unknown {
-  let actual: unknown = raiz
-  for (const paso of pasos) {
-    if (!actual || typeof actual !== 'object') return undefined
-    actual = lista((actual as Record<string, unknown>)[paso])[0]
+function path(root: unknown, ...steps: string[]): unknown {
+  let current: unknown = root
+  for (const step of steps) {
+    if (!current || typeof current !== 'object') return undefined
+    current = asList((current as Record<string, unknown>)[step])[0]
   }
-  return actual
+  return current
 }
 
-const NOMBRE_RAIZ: Record<string, string> = {
+/** Nombres en español para el mensaje XML_NOT_AN_INVOICE. */
+const ROOT_KINDS: Record<string, string> = {
   ApplicationResponse: 'constancia de recepción (CDR)',
   CreditNote: 'nota de crédito',
   DebitNote: 'nota de débito',
@@ -1565,145 +1631,142 @@ const NOMBRE_RAIZ: Record<string, string> = {
 }
 
 /** Decodifica los bytes de un XML respetando su BOM o la codificación declarada en el prólogo. */
-export function decodificarXml(bytes: Uint8Array): string {
-  const cabecera = new TextDecoder('latin1').decode(bytes.subarray(0, 200))
-  const declarada = /encoding=["']([\w-]+)["']/i.exec(cabecera)?.[1]
-  const tieneBom = bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf
-  const codificacion = tieneBom ? 'utf-8' : (declarada ?? 'utf-8')
-  let decodificador: TextDecoder
+export function decodeXml(bytes: Uint8Array): string {
+  const header = new TextDecoder('latin1').decode(bytes.subarray(0, 200))
+  const declared = /encoding=["']([\w-]+)["']/i.exec(header)?.[1]
+  const hasBom = bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf
+  const encoding = hasBom ? 'utf-8' : (declared ?? 'utf-8')
+  let decoder: TextDecoder
   try {
-    decodificador = new TextDecoder(codificacion)
+    decoder = new TextDecoder(encoding)
   } catch {
-    decodificador = new TextDecoder('utf-8')
+    decoder = new TextDecoder('utf-8')
   }
-  return decodificador.decode(bytes).replace(/^﻿/, '')
+  return decoder.decode(bytes).replace(/^﻿/, '')
 }
 
-function fallo(problema: Problema): ResultadoLectura {
-  return { ok: false, problema }
+function fail(problem: Problem): ParseResult {
+  return { ok: false, problem }
 }
 
 /** Ruta vigente (PartyIdentification/ID) con fallback a la legada (PartyTaxScheme/CompanyID). */
-function rucDe(inv: Record<string, unknown>, rol: string): string | undefined {
+function rucOf(inv: Record<string, unknown>, role: string): string | undefined {
+  return text(path(inv, role, 'Party', 'PartyIdentification', 'ID')) ?? text(path(inv, role, 'Party', 'PartyTaxScheme', 'CompanyID'))
+}
+
+function nameOf(inv: Record<string, unknown>, role: string): string | undefined {
   return (
-    texto(ruta(inv, rol, 'Party', 'PartyIdentification', 'ID')) ??
-    texto(ruta(inv, rol, 'Party', 'PartyTaxScheme', 'CompanyID'))
+    text(path(inv, role, 'Party', 'PartyLegalEntity', 'RegistrationName')) ??
+    text(path(inv, role, 'Party', 'PartyTaxScheme', 'RegistrationName'))
   )
 }
 
-function razonSocialDe(inv: Record<string, unknown>, rol: string): string | undefined {
-  return (
-    texto(ruta(inv, rol, 'Party', 'PartyLegalEntity', 'RegistrationName')) ??
-    texto(ruta(inv, rol, 'Party', 'PartyTaxScheme', 'RegistrationName'))
-  )
-}
-
-export function leerFacturaUbl(xmlCrudo: string): ResultadoLectura {
-  const xml = xmlCrudo.replace(/^﻿/, '')
+export function parseUblInvoice(rawXml: string): ParseResult {
+  const xml = rawXml.replace(/^﻿/, '')
   if (!xml.trimStart().startsWith('<') || XMLValidator.validate(xml) !== true) {
-    return fallo(crearProblema('XML_ILEGIBLE'))
+    return fail(createProblem('UNREADABLE_XML'))
   }
 
-  let documento: Record<string, unknown>
+  let document: Record<string, unknown>
   try {
-    documento = parser.parse(xml) as Record<string, unknown>
+    document = parser.parse(xml) as Record<string, unknown>
   } catch {
-    return fallo(crearProblema('XML_ILEGIBLE'))
+    return fail(createProblem('UNREADABLE_XML'))
   }
 
-  const nombreRaiz = Object.keys(documento).find((k) => k !== '?xml')
-  if (nombreRaiz !== 'Invoice') {
-    const tipo = (nombreRaiz && NOMBRE_RAIZ[nombreRaiz]) ?? nombreRaiz ?? 'desconocido'
-    return fallo(crearProblema('XML_NO_ES_FACTURA', { datos: { tipo } }))
+  const rootName = Object.keys(document).find((k) => k !== '?xml')
+  if (rootName !== 'Invoice') {
+    const kind = (rootName && ROOT_KINDS[rootName]) ?? rootName ?? 'desconocido'
+    return fail(createProblem('XML_NOT_AN_INVOICE', { data: { kind } }))
   }
-  const inv = documento.Invoice as Record<string, unknown>
+  const inv = document.Invoice as Record<string, unknown>
 
-  const obligatorio = (nombre: string, valor: string | undefined): string | ResultadoLectura =>
-    valor && valor.length > 0 ? valor : fallo(crearProblema('XML_SIN_DATO_OBLIGATORIO', { datos: { dato: nombre } }))
+  const required = (name: string, value: string | undefined): string | ParseResult =>
+    value && value.length > 0 ? value : fail(createProblem('XML_MISSING_REQUIRED_FIELD', { data: { field: name } }))
 
-  const serieNumero = obligatorio('serie y número', texto(inv.ID))
-  if (typeof serieNumero !== 'string') return serieNumero
-  const fechaEmision = obligatorio('fecha de emisión', texto(inv.IssueDate))
-  if (typeof fechaEmision !== 'string') return fechaEmision
-  const tipoComprobante = obligatorio('tipo de comprobante', texto(inv.InvoiceTypeCode))
-  if (typeof tipoComprobante !== 'string') return tipoComprobante
-  const moneda = obligatorio('moneda', texto(inv.DocumentCurrencyCode))
-  if (typeof moneda !== 'string') return moneda
-  const rucEmisor = obligatorio('RUC del emisor', rucDe(inv, 'AccountingSupplierParty'))
-  if (typeof rucEmisor !== 'string') return rucEmisor
-  const rucReceptor = obligatorio('RUC del receptor', rucDe(inv, 'AccountingCustomerParty'))
-  if (typeof rucReceptor !== 'string') return rucReceptor
-  const totalCrudo = obligatorio('total', texto(ruta(inv, 'LegalMonetaryTotal', 'PayableAmount')))
-  if (typeof totalCrudo !== 'string') return totalCrudo
-  const total = normalizarMonto(totalCrudo)
-  if (total === null) return fallo(crearProblema('XML_SIN_DATO_OBLIGATORIO', { datos: { dato: 'total' } }))
-  if (!esFechaIso(fechaEmision)) {
-    return fallo(crearProblema('XML_SIN_DATO_OBLIGATORIO', { datos: { dato: 'fecha de emisión' } }))
+  const seriesNumber = required('serie y número', text(inv.ID))
+  if (typeof seriesNumber !== 'string') return seriesNumber
+  const issueDate = required('fecha de emisión', text(inv.IssueDate))
+  if (typeof issueDate !== 'string') return issueDate
+  const documentType = required('tipo de comprobante', text(inv.InvoiceTypeCode))
+  if (typeof documentType !== 'string') return documentType
+  const currency = required('moneda', text(inv.DocumentCurrencyCode))
+  if (typeof currency !== 'string') return currency
+  const issuerRuc = required('RUC del emisor', rucOf(inv, 'AccountingSupplierParty'))
+  if (typeof issuerRuc !== 'string') return issuerRuc
+  const recipientRuc = required('RUC del receptor', rucOf(inv, 'AccountingCustomerParty'))
+  if (typeof recipientRuc !== 'string') return recipientRuc
+  const rawTotal = required('total', text(path(inv, 'LegalMonetaryTotal', 'PayableAmount')))
+  if (typeof rawTotal !== 'string') return rawTotal
+  const total = normalizeAmount(rawTotal)
+  if (total === null) return fail(createProblem('XML_MISSING_REQUIRED_FIELD', { data: { field: 'total' } }))
+  if (!isIsoDate(issueDate)) {
+    return fail(createProblem('XML_MISSING_REQUIRED_FIELD', { data: { field: 'fecha de emisión' } }))
   }
 
-  let formaPago: FormaPago | null = null
-  let montoNetoPendiente: string | null = null
-  const cuotas: Cuota[] = []
-  let detraccion: FacturaLeida['detraccion'] = null
+  let paymentTerms: PaymentTerms | null = null
+  let netPendingAmount: string | null = null
+  const installments: Installment[] = []
+  let detraction: ParsedInvoice['detraction'] = null
 
-  for (const termino of lista(inv.PaymentTerms as Nodo | Nodo[])) {
-    const id = texto(ruta(termino, 'ID'))
-    const medio = texto(ruta(termino, 'PaymentMeansID')) ?? ''
-    const monto = normalizarMonto(texto(ruta(termino, 'Amount')) ?? '')
+  for (const term of asList(inv.PaymentTerms as Node | Node[])) {
+    const id = text(path(term, 'ID'))
+    const means = text(path(term, 'PaymentMeansID')) ?? ''
+    const amount = normalizeAmount(text(path(term, 'Amount')) ?? '')
     if (id === 'FormaPago') {
-      if (medio === 'Contado') formaPago = 'CONTADO'
-      else if (medio === 'Credito') {
-        formaPago = 'CREDITO'
-        montoNetoPendiente = monto
-      } else if (/^Cuota\d+$/i.test(medio)) {
-        const vence = texto(ruta(termino, 'PaymentDueDate')) ?? ''
-        if (monto !== null && esFechaIso(vence)) cuotas.push({ id: medio, monto, vence })
+      if (means === 'Contado') paymentTerms = 'CASH'
+      else if (means === 'Credito') {
+        paymentTerms = 'CREDIT'
+        netPendingAmount = amount
+      } else if (/^Cuota\d+$/i.test(means)) {
+        const dueDate = text(path(term, 'PaymentDueDate')) ?? ''
+        if (amount !== null && isIsoDate(dueDate)) installments.push({ id: means, amount, dueDate })
       }
     } else if (id === 'Detraccion') {
-      const porcentaje = Number(texto(ruta(termino, 'PaymentPercent')) ?? Number.NaN)
-      if (monto !== null && Number.isFinite(porcentaje)) detraccion = { porcentaje, monto }
+      const percent = Number(text(path(term, 'PaymentPercent')) ?? Number.NaN)
+      if (amount !== null && Number.isFinite(percent)) detraction = { percent, amount }
     }
   }
 
-  const factura: FacturaLeida = {
-    tipoComprobante,
-    serieNumero,
-    fechaEmision,
-    moneda,
-    rucEmisor,
-    razonSocialEmisor: razonSocialDe(inv, 'AccountingSupplierParty') ?? '',
-    rucReceptor,
-    razonSocialReceptor: razonSocialDe(inv, 'AccountingCustomerParty') ?? null,
+  const invoice: ParsedInvoice = {
+    documentType,
+    seriesNumber,
+    issueDate,
+    currency,
+    issuerRuc,
+    issuerName: nameOf(inv, 'AccountingSupplierParty') ?? '',
+    recipientRuc,
+    recipientName: nameOf(inv, 'AccountingCustomerParty') ?? null,
     total,
-    formaPago,
-    montoNetoPendiente,
-    cuotas,
-    detraccion,
-    firmada: ruta(inv, 'UBLExtensions', 'UBLExtension', 'ExtensionContent', 'Signature') !== undefined,
+    paymentTerms,
+    netPendingAmount,
+    installments,
+    detraction,
+    signed: path(inv, 'UBLExtensions', 'UBLExtension', 'ExtensionContent', 'Signature') !== undefined,
   }
 
-  const validada = facturaLeidaSchema.safeParse(factura)
-  return validada.success ? { ok: true, factura: validada.data } : fallo(crearProblema('XML_ILEGIBLE'))
+  const validated = parsedInvoiceSchema.safeParse(invoice)
+  return validated.success ? { ok: true, invoice: validated.data } : fail(createProblem('UNREADABLE_XML'))
 }
 ```
 
-`packages/shared/src/factura/index.ts` (las reglas se agregan en la Tarea 6):
+`packages/shared/src/invoice/index.ts` (las reglas se agregan en la Tarea 6):
 ```ts
-export { FORMAS_PAGO, type FormaPago, NOMBRE_TIPO_COMPROBANTE, TIPO_COMPROBANTE, type TipoComprobante } from './codigos.js'
 export {
-  type CuotaPrueba,
-  construirXmlCdr,
-  construirXmlFactura,
-  type OpcionesXmlPrueba,
-  XML_PRUEBA_POR_DEFECTO,
-} from './construir-xml-prueba.js'
-export { type Cuota, cuotaSchema, type FacturaLeida, facturaLeidaSchema } from './factura-leida.js'
-export { decodificarXml, leerFacturaUbl, type ResultadoLectura } from './lector-ubl.js'
+  DEFAULT_TEST_XML,
+  buildCdrXml,
+  buildInvoiceXml,
+  type TestInstallment,
+  type TestXmlOptions,
+} from './build-test-xml.js'
+export { DOCUMENT_TYPE, DOCUMENT_TYPE_NAMES, type DocumentType, PAYMENT_TERMS, type PaymentTerms } from './codes.js'
+export { type Installment, installmentSchema, type ParsedInvoice, parsedInvoiceSchema } from './parsed-invoice.js'
+export { decodeXml, type ParseResult, parseUblInvoice } from './ubl-parser.js'
 ```
 
 Agregar a `packages/shared/src/index.ts`:
 ```ts
-export * from './factura/index.js'
+export * from './invoice/index.js'
 ```
 
 - [ ] **Step 6: Correr tests y verificación completa**
@@ -1720,380 +1783,382 @@ git commit -m "feat(shared): lector de factura electrónica UBL 2.1 con fábrica
 
 ---
 
-### Task 6: Dominio `factura` · reglas de validación parametrizadas
+### Task 6: Dominio `invoice` · reglas de validación parametrizadas
 
 **Files:**
-- Create: `packages/shared/src/factura/reglas.ts`
-- Test: `packages/shared/src/factura/reglas.test.ts`
-- Modify: `packages/shared/src/factura/index.ts`
+- Create: `packages/shared/src/invoice/rules.ts`
+- Test: `packages/shared/src/invoice/rules.test.ts`
+- Modify: `packages/shared/src/invoice/index.ts`
 
 **Interfaces:**
-- Consumes: `FacturaLeida`, `leerFacturaUbl`, `construirXmlFactura` (Tarea 5); `Monto`, `sumarMontos`, `porcentajeDe`, `compararMontos`, `normalizarMonto` (Tarea 4); `diasEntre` (Tarea 4); `crearProblema` (Tarea 2).
-- Produces: `ContextoValidacion`, `ReglaFactura`, `REGLAS_POR_FACTURA`, `validarFacturas(facturas, ctx): ResultadoValidacion`, `validarMontoSolicitado(monto, resultado): Problema | null`. La landing los corre en el navegador y la API en el servidor con el mismo contexto (D24).
+- Consumes: `ParsedInvoice`, `parseUblInvoice`, `buildInvoiceXml` (Tarea 5); `Amount`, `sumAmounts`, `percentOf`, `compareAmounts`, `normalizeAmount`, `toCents` (Tarea 4); `daysBetween` (Tarea 4); `createProblem` (Tarea 2).
+- Produces: `ValidationContext`, `InvoiceRule`, `INVOICE_RULES`, `validateInvoices(invoices, ctx): ValidationResult`, `validateRequestedAmount(amount, result): Problem | null`. La landing los corre en el navegador y la API en el servidor con el mismo contexto (D24).
 
-**Diseño.** Cada regla es una función pura `(factura, contexto) => Problema[]`. El contexto trae todo lo que varía por pagador o por configuración; ninguna regla contiene un valor de negocio. `rucProveedor` es opcional porque en la landing las facturas se leen antes de que el proveedor confirme su RUC (D22): si no viene, la regla del emisor se omite y la del conjunto exige que todas las facturas compartan emisor.
+**Diseño.** Cada regla es una función pura `(invoice, context) => Problem[]`. El contexto trae todo lo que varía por pagador o por configuración; ninguna regla contiene un valor de negocio. `supplierRuc` es opcional porque en la landing las facturas se leen antes de que el proveedor confirme su RUC (D22): si no viene, la regla del emisor se omite y la del conjunto exige que todas las facturas compartan emisor.
 
 - [ ] **Step 1: Escribir los tests que fallan**
 
-`packages/shared/src/factura/reglas.test.ts`:
+`packages/shared/src/invoice/rules.test.ts`:
 ```ts
 import { describe, expect, it } from 'vitest'
-import { construirXmlFactura, type OpcionesXmlPrueba } from './construir-xml-prueba.js'
-import { leerFacturaUbl } from './lector-ubl.js'
-import { type ContextoValidacion, validarFacturas, validarMontoSolicitado } from './reglas.js'
+import { buildInvoiceXml, type TestXmlOptions } from './build-test-xml.js'
+import { type ValidationContext, validateInvoices, validateRequestedAmount } from './rules.js'
+import { parseUblInvoice } from './ubl-parser.js'
 
-function factura(opciones: OpcionesXmlPrueba = {}) {
-  const r = leerFacturaUbl(construirXmlFactura(opciones))
-  if (!r.ok) throw new Error(r.problema.codigo)
-  return r.factura
+function invoice(options: TestXmlOptions = {}) {
+  const r = parseUblInvoice(buildInvoiceXml(options))
+  if (!r.ok) throw new Error(r.problem.code)
+  return r.invoice
 }
 
-const ctx: ContextoValidacion = {
-  rucPagador: '20131312955',
-  nombrePagador: 'SEA',
-  rucProveedor: '20100070970',
-  porcentajeAdelanto: 80,
-  plazoMinimoDias: 15,
-  maxFacturas: 10,
-  monedasPermitidas: ['PEN', 'USD'],
-  hoy: '2026-09-23',
+const ctx: ValidationContext = {
+  payerRuc: '20131312955',
+  payerName: 'SEA',
+  supplierRuc: '20100070970',
+  advancePercent: 80,
+  minTermDays: 15,
+  maxInvoices: 10,
+  allowedCurrencies: ['PEN', 'USD'],
+  today: '2026-09-23',
 }
 
-const codigos = (r: ReturnType<typeof validarFacturas>) => r.problemas.map((p) => p.codigo)
+const codes = (r: ReturnType<typeof validateInvoices>) => r.problems.map((p) => p.code)
 
-describe('validarFacturas · caso válido', () => {
+describe('validateInvoices · caso válido', () => {
   it('acepta una factura al crédito al pagador, del proveedor, con cuota futura', () => {
-    const r = validarFacturas([factura()], ctx)
-    expect(r.problemas).toEqual([])
-    expect(r.facturasValidas).toHaveLength(1)
-    expect(r.moneda).toBe('PEN')
-    expect(r.netoPendienteTotal).toBe('10620.00')
-    expect(r.montoMaximo).toBe('8496.00')
+    const r = validateInvoices([invoice()], ctx)
+    expect(r.problems).toEqual([])
+    expect(r.validInvoices).toHaveLength(1)
+    expect(r.currency).toBe('PEN')
+    expect(r.totalNetPending).toBe('10620.00')
+    expect(r.maxAmount).toBe('8496.00')
   })
 
   it('suma el neto pendiente de varias facturas y calcula el máximo con el porcentaje del contexto', () => {
-    const r = validarFacturas(
-      [factura(), factura({ serieNumero: 'F001-124', montoNetoPendiente: '1000.00' })],
-      { ...ctx, porcentajeAdelanto: 50 },
+    const r = validateInvoices(
+      [invoice(), invoice({ seriesNumber: 'F001-124', netPendingAmount: '1000.00' })],
+      { ...ctx, advancePercent: 50 },
     )
-    expect(r.netoPendienteTotal).toBe('11620.00')
-    expect(r.montoMaximo).toBe('5810.00')
+    expect(r.totalNetPending).toBe('11620.00')
+    expect(r.maxAmount).toBe('5810.00')
   })
 })
 
-describe('validarFacturas · reglas por factura', () => {
+describe('validateInvoices · reglas por factura', () => {
   it('rechaza una boleta', () => {
-    const r = validarFacturas([factura({ tipoComprobante: '03' })], ctx)
-    expect(codigos(r)).toEqual(['TIPO_COMPROBANTE_NO_PERMITIDO'])
-    expect(r.problemas[0]?.factura).toBe('F001-123')
-    expect(r.problemas[0]?.mensaje).toContain('boleta de venta')
+    const r = validateInvoices([invoice({ documentType: '03' })], ctx)
+    expect(codes(r)).toEqual(['DOCUMENT_TYPE_NOT_ALLOWED'])
+    expect(r.problems[0]?.invoice).toBe('F001-123')
+    expect(r.problems[0]?.message).toContain('boleta de venta')
   })
 
   it('rechaza una factura emitida a otro receptor', () => {
-    const r = validarFacturas([factura({ rucReceptor: '20100070970' })], ctx)
-    expect(codigos(r)).toEqual(['RECEPTOR_NO_ES_PAGADOR'])
-    expect(r.problemas[0]?.mensaje).toContain('SEA')
+    const r = validateInvoices([invoice({ recipientRuc: '20100070970' })], ctx)
+    expect(codes(r)).toEqual(['RECIPIENT_IS_NOT_PAYER'])
+    expect(r.problems[0]?.message).toContain('SEA')
   })
 
   it('rechaza una factura de otro emisor cuando el contexto trae el RUC del proveedor', () => {
-    const r = validarFacturas([factura({ rucEmisor: '10467286736' })], ctx)
-    expect(codigos(r)).toEqual(['EMISOR_NO_ES_PROVEEDOR'])
+    const r = validateInvoices([invoice({ issuerRuc: '10467286736' })], ctx)
+    expect(codes(r)).toEqual(['ISSUER_IS_NOT_SUPPLIER'])
   })
 
   it('no aplica la regla del emisor si el contexto no trae el RUC del proveedor', () => {
-    const { rucProveedor: _omitido, ...sinProveedor } = ctx
-    const r = validarFacturas([factura({ rucEmisor: '10467286736' })], sinProveedor)
-    expect(codigos(r)).toEqual([])
+    const { supplierRuc: _omitted, ...withoutSupplier } = ctx
+    const r = validateInvoices([invoice({ issuerRuc: '10467286736' })], withoutSupplier)
+    expect(codes(r)).toEqual([])
   })
 
   it('rechaza una factura al contado', () => {
-    const r = validarFacturas([factura({ formaPago: 'Contado', montoNetoPendiente: null, cuotas: [] })], ctx)
-    expect(codigos(r)).toEqual(['FACTURA_AL_CONTADO'])
+    const r = validateInvoices([invoice({ paymentTerms: 'Contado', netPendingAmount: null, installments: [] })], ctx)
+    expect(codes(r)).toEqual(['CASH_INVOICE'])
   })
 
   it('rechaza una factura sin forma de pago o sin neto pendiente', () => {
-    expect(codigos(validarFacturas([factura({ formaPago: null, cuotas: [] })], ctx))).toEqual(['SIN_MONTO_PENDIENTE'])
-    expect(codigos(validarFacturas([factura({ montoNetoPendiente: '0.00' })], ctx))).toEqual(['SIN_MONTO_PENDIENTE'])
+    expect(codes(validateInvoices([invoice({ paymentTerms: null, installments: [] })], ctx))).toEqual(['NO_PENDING_AMOUNT'])
+    expect(codes(validateInvoices([invoice({ netPendingAmount: '0.00' })], ctx))).toEqual(['NO_PENDING_AMOUNT'])
   })
 
   it('rechaza una moneda que el pagador no acepta', () => {
-    const r = validarFacturas([factura({ moneda: 'EUR' })], { ...ctx, monedasPermitidas: ['PEN'] })
-    expect(codigos(r)).toEqual(['MONEDA_NO_PERMITIDA'])
+    const r = validateInvoices([invoice({ currency: 'EUR' })], { ...ctx, allowedCurrencies: ['PEN'] })
+    expect(codes(r)).toEqual(['CURRENCY_NOT_ALLOWED'])
   })
 
   it('señala la cuota vencida aunque otra sea futura', () => {
-    const r = validarFacturas(
+    const r = validateInvoices(
       [
-        factura({
-          cuotas: [
-            { id: 'Cuota001', monto: '5000.00', vence: '2026-09-01' },
-            { id: 'Cuota002', monto: '5620.00', vence: '2026-12-01' },
+        invoice({
+          installments: [
+            { id: 'Cuota001', amount: '5000.00', dueDate: '2026-09-01' },
+            { id: 'Cuota002', amount: '5620.00', dueDate: '2026-12-01' },
           ],
         }),
       ],
       ctx,
     )
-    expect(codigos(r)).toEqual(['CUOTA_VENCIDA'])
-    expect(r.problemas[0]?.mensaje).toContain('Cuota001')
+    expect(codes(r)).toEqual(['INSTALLMENT_OVERDUE'])
+    expect(r.problems[0]?.message).toContain('Cuota001')
   })
 
   it('exige el plazo mínimo del contexto', () => {
-    const r = validarFacturas([factura({ cuotas: [{ id: 'Cuota001', monto: '10620.00', vence: '2026-10-01' }] })], ctx)
-    expect(codigos(r)).toEqual(['PLAZO_INSUFICIENTE'])
-    const ok = validarFacturas([factura({ cuotas: [{ id: 'Cuota001', monto: '10620.00', vence: '2026-10-08' }] })], ctx)
-    expect(codigos(ok)).toEqual([])
+    const r = validateInvoices([invoice({ installments: [{ id: 'Cuota001', amount: '10620.00', dueDate: '2026-10-01' }] })], ctx)
+    expect(codes(r)).toEqual(['INSUFFICIENT_TERM'])
+    const ok = validateInvoices([invoice({ installments: [{ id: 'Cuota001', amount: '10620.00', dueDate: '2026-10-08' }] })], ctx)
+    expect(codes(ok)).toEqual([])
   })
 
   it('una factura al crédito sin cuotas es un dato obligatorio ausente', () => {
-    expect(codigos(validarFacturas([factura({ cuotas: [] })], ctx))).toEqual(['XML_SIN_DATO_OBLIGATORIO'])
+    expect(codes(validateInvoices([invoice({ installments: [] })], ctx))).toEqual(['XML_MISSING_REQUIRED_FIELD'])
   })
 })
 
-describe('validarFacturas · reglas del conjunto', () => {
+describe('validateInvoices · reglas del conjunto', () => {
   it('rechaza una solicitud sin facturas', () => {
-    expect(codigos(validarFacturas([], ctx))).toEqual(['SIN_FACTURAS'])
+    expect(codes(validateInvoices([], ctx))).toEqual(['NO_INVOICES'])
   })
 
   it('rechaza más facturas que el máximo del contexto', () => {
-    const tres = ['F001-1', 'F001-2', 'F001-3'].map((serieNumero) => factura({ serieNumero }))
-    expect(codigos(validarFacturas(tres, { ...ctx, maxFacturas: 2 }))).toEqual(['DEMASIADAS_FACTURAS'])
+    const three = ['F001-1', 'F001-2', 'F001-3'].map((seriesNumber) => invoice({ seriesNumber }))
+    expect(codes(validateInvoices(three, { ...ctx, maxInvoices: 2 }))).toEqual(['TOO_MANY_INVOICES'])
   })
 
   it('rechaza la misma factura repetida, ignorando mayúsculas y espacios', () => {
-    const r = validarFacturas([factura(), factura({ serieNumero: ' f001-123 ' })], ctx)
-    expect(codigos(r)).toEqual(['FACTURA_REPETIDA'])
+    const r = validateInvoices([invoice(), invoice({ seriesNumber: ' f001-123 ' })], ctx)
+    expect(codes(r)).toEqual(['DUPLICATE_INVOICE'])
   })
 
   it('rechaza emisores distintos cuando no hay RUC del proveedor en el contexto', () => {
-    const { rucProveedor: _omitido, ...sinProveedor } = ctx
-    const r = validarFacturas([factura(), factura({ serieNumero: 'F001-9', rucEmisor: '10467286736' })], sinProveedor)
-    expect(codigos(r)).toEqual(['EMISORES_DISTINTOS'])
+    const { supplierRuc: _omitted, ...withoutSupplier } = ctx
+    const r = validateInvoices([invoice(), invoice({ seriesNumber: 'F001-9', issuerRuc: '10467286736' })], withoutSupplier)
+    expect(codes(r)).toEqual(['MIXED_ISSUERS'])
   })
 
   it('rechaza monedas distintas y no calcula máximo', () => {
-    const r = validarFacturas([factura(), factura({ serieNumero: 'F001-9', moneda: 'USD' })], ctx)
-    expect(codigos(r)).toEqual(['MONEDAS_DISTINTAS'])
-    expect(r.moneda).toBeNull()
-    expect(r.montoMaximo).toBe('0.00')
+    const r = validateInvoices([invoice(), invoice({ seriesNumber: 'F001-9', currency: 'USD' })], ctx)
+    expect(codes(r)).toEqual(['MIXED_CURRENCIES'])
+    expect(r.currency).toBeNull()
+    expect(r.maxAmount).toBe('0.00')
   })
 
   it('las facturas con problemas no cuentan para el máximo', () => {
-    const r = validarFacturas([factura(), factura({ serieNumero: 'F001-9', formaPago: 'Contado', cuotas: [] })], ctx)
-    expect(r.facturasValidas).toHaveLength(1)
-    expect(r.montoMaximo).toBe('8496.00')
+    const r = validateInvoices([invoice(), invoice({ seriesNumber: 'F001-9', paymentTerms: 'Contado', installments: [] })], ctx)
+    expect(r.validInvoices).toHaveLength(1)
+    expect(r.maxAmount).toBe('8496.00')
   })
 })
 
-describe('validarMontoSolicitado', () => {
-  const resultado = validarFacturas([factura()], ctx)
+describe('validateRequestedAmount', () => {
+  const result = validateInvoices([invoice()], ctx)
 
   it('acepta un monto hasta el máximo', () => {
-    expect(validarMontoSolicitado('8496.00', resultado)).toBeNull()
-    expect(validarMontoSolicitado('100.00', resultado)).toBeNull()
+    expect(validateRequestedAmount('8496.00', result)).toBeNull()
+    expect(validateRequestedAmount('100.00', result)).toBeNull()
   })
 
   it('rechaza un monto mayor al máximo con el máximo y la moneda en el mensaje', () => {
-    const p = validarMontoSolicitado('8496.01', resultado)
-    expect(p?.codigo).toBe('MONTO_SUPERA_MAXIMO')
-    expect(p?.mensaje).toBe('El monto solicitado supera el máximo de 8496.00 PEN.')
+    const p = validateRequestedAmount('8496.01', result)
+    expect(p?.code).toBe('AMOUNT_EXCEEDS_MAXIMUM')
+    expect(p?.message).toBe('El monto solicitado supera el máximo de 8496.00 PEN.')
   })
 
   it('rechaza montos inválidos', () => {
-    expect(validarMontoSolicitado('abc', resultado)?.codigo).toBe('MONTO_INVALIDO')
-    expect(validarMontoSolicitado('0.00', resultado)?.codigo).toBe('MONTO_INVALIDO')
+    expect(validateRequestedAmount('abc', result)?.code).toBe('INVALID_AMOUNT')
+    expect(validateRequestedAmount('0.00', result)?.code).toBe('INVALID_AMOUNT')
   })
 })
 ```
 
 - [ ] **Step 2: Correr y verificar que fallan**
 
-Run: `pnpm --filter @anticipate/shared test -- reglas`
-Expected: FAIL, "Cannot find module './reglas.js'".
+Run: `pnpm --filter @anticipate/shared test -- rules`
+Expected: FAIL, "Cannot find module './rules.js'".
 
 - [ ] **Step 3: Implementar**
 
-`packages/shared/src/factura/reglas.ts`:
+`packages/shared/src/invoice/rules.ts`:
 ```ts
-import { type Monto, compararMontos, normalizarMonto, porcentajeDe, sumarMontos, aCentimos } from '../dinero/index.js'
-import { type Problema, crearProblema } from '../errores/index.js'
-import { type FechaIso, diasEntre } from '../fechas/index.js'
-import { NOMBRE_TIPO_COMPROBANTE, TIPO_COMPROBANTE } from './codigos.js'
-import type { FacturaLeida } from './factura-leida.js'
+import { type IsoDate, daysBetween } from '../dates/index.js'
+import { type Problem, createProblem } from '../errors/index.js'
+import { type Amount, compareAmounts, normalizeAmount, percentOf, sumAmounts, toCents } from '../money/index.js'
+import { DOCUMENT_TYPE, DOCUMENT_TYPE_NAMES } from './codes.js'
+import type { ParsedInvoice } from './parsed-invoice.js'
 
 /** Todo lo que varía por pagador o por configuración. Ninguna regla guarda valores propios. */
-export type ContextoValidacion = {
-  rucPagador: string
-  nombrePagador: string
+export type ValidationContext = {
+  payerRuc: string
+  payerName: string
   /** Opcional: en la landing las facturas se leen antes de conocer el RUC del proveedor. */
-  rucProveedor?: string
+  supplierRuc?: string
   /** 0 a 100. */
-  porcentajeAdelanto: number
-  plazoMinimoDias: number
-  maxFacturas: number
-  monedasPermitidas: readonly string[]
-  hoy: FechaIso
+  advancePercent: number
+  minTermDays: number
+  maxInvoices: number
+  allowedCurrencies: readonly string[]
+  today: IsoDate
 }
 
-export type ReglaFactura = (factura: FacturaLeida, ctx: ContextoValidacion) => Problema[]
+export type InvoiceRule = (invoice: ParsedInvoice, ctx: ValidationContext) => Problem[]
 
-const conFactura = (f: FacturaLeida, problema: Problema): Problema => ({ ...problema, factura: f.serieNumero })
+const forInvoice = (inv: ParsedInvoice, problem: Problem): Problem => ({ ...problem, invoice: inv.seriesNumber })
 
-export const reglaTipoComprobante: ReglaFactura = (f) =>
-  f.tipoComprobante === TIPO_COMPROBANTE.FACTURA
+export const documentTypeRule: InvoiceRule = (inv) =>
+  inv.documentType === DOCUMENT_TYPE.INVOICE
     ? []
     : [
-        conFactura(
-          f,
-          crearProblema('TIPO_COMPROBANTE_NO_PERMITIDO', {
-            datos: { tipo: NOMBRE_TIPO_COMPROBANTE[f.tipoComprobante] ?? f.tipoComprobante },
+        forInvoice(
+          inv,
+          createProblem('DOCUMENT_TYPE_NOT_ALLOWED', {
+            data: { kind: DOCUMENT_TYPE_NAMES[inv.documentType] ?? inv.documentType },
           }),
         ),
       ]
 
-export const reglaReceptorEsPagador: ReglaFactura = (f, ctx) =>
-  f.rucReceptor === ctx.rucPagador
+export const recipientIsPayerRule: InvoiceRule = (inv, ctx) =>
+  inv.recipientRuc === ctx.payerRuc
     ? []
-    : [conFactura(f, crearProblema('RECEPTOR_NO_ES_PAGADOR', { datos: { pagador: ctx.nombrePagador } }))]
+    : [forInvoice(inv, createProblem('RECIPIENT_IS_NOT_PAYER', { data: { payer: ctx.payerName } }))]
 
-export const reglaEmisorEsProveedor: ReglaFactura = (f, ctx) =>
-  ctx.rucProveedor === undefined || f.rucEmisor === ctx.rucProveedor
+export const issuerIsSupplierRule: InvoiceRule = (inv, ctx) =>
+  ctx.supplierRuc === undefined || inv.issuerRuc === ctx.supplierRuc
     ? []
-    : [conFactura(f, crearProblema('EMISOR_NO_ES_PROVEEDOR', { datos: { emisor: f.rucEmisor } }))]
+    : [forInvoice(inv, createProblem('ISSUER_IS_NOT_SUPPLIER', { data: { issuer: inv.issuerRuc } }))]
 
-export const reglaAlCreditoConNetoPendiente: ReglaFactura = (f) => {
-  if (f.formaPago === 'CONTADO') return [conFactura(f, crearProblema('FACTURA_AL_CONTADO'))]
-  if (f.formaPago !== 'CREDITO' || f.montoNetoPendiente === null || aCentimos(f.montoNetoPendiente) === 0n) {
-    return [conFactura(f, crearProblema('SIN_MONTO_PENDIENTE'))]
+export const creditWithPendingAmountRule: InvoiceRule = (inv) => {
+  if (inv.paymentTerms === 'CASH') return [forInvoice(inv, createProblem('CASH_INVOICE'))]
+  if (inv.paymentTerms !== 'CREDIT' || inv.netPendingAmount === null || toCents(inv.netPendingAmount) === 0n) {
+    return [forInvoice(inv, createProblem('NO_PENDING_AMOUNT'))]
   }
   return []
 }
 
-export const reglaMonedaPermitida: ReglaFactura = (f, ctx) =>
-  ctx.monedasPermitidas.includes(f.moneda)
+export const currencyAllowedRule: InvoiceRule = (inv, ctx) =>
+  ctx.allowedCurrencies.includes(inv.currency)
     ? []
-    : [conFactura(f, crearProblema('MONEDA_NO_PERMITIDA', { datos: { moneda: f.moneda } }))]
+    : [forInvoice(inv, createProblem('CURRENCY_NOT_ALLOWED', { data: { currency: inv.currency } }))]
 
-export const reglaCuotasVigentes: ReglaFactura = (f, ctx) => {
-  if (f.formaPago !== 'CREDITO') return []
-  if (f.cuotas.length === 0) {
-    return [conFactura(f, crearProblema('XML_SIN_DATO_OBLIGATORIO', { datos: { dato: 'fechas de vencimiento (cuotas)' } }))]
+export const installmentsDueInFutureRule: InvoiceRule = (inv, ctx) => {
+  if (inv.paymentTerms !== 'CREDIT') return []
+  if (inv.installments.length === 0) {
+    return [forInvoice(inv, createProblem('XML_MISSING_REQUIRED_FIELD', { data: { field: 'fechas de vencimiento (cuotas)' } }))]
   }
-  const problemas: Problema[] = []
-  for (const cuota of f.cuotas) {
-    const dias = diasEntre(ctx.hoy, cuota.vence)
-    if (dias < 0) {
-      problemas.push(conFactura(f, crearProblema('CUOTA_VENCIDA', { datos: { cuota: cuota.id, fecha: cuota.vence } })))
-    } else if (dias < ctx.plazoMinimoDias) {
-      problemas.push(
-        conFactura(f, crearProblema('PLAZO_INSUFICIENTE', { datos: { cuota: cuota.id, dias: ctx.plazoMinimoDias } })),
+  const problems: Problem[] = []
+  for (const installment of inv.installments) {
+    const days = daysBetween(ctx.today, installment.dueDate)
+    if (days < 0) {
+      problems.push(
+        forInvoice(inv, createProblem('INSTALLMENT_OVERDUE', { data: { installment: installment.id, date: installment.dueDate } })),
+      )
+    } else if (days < ctx.minTermDays) {
+      problems.push(
+        forInvoice(inv, createProblem('INSUFFICIENT_TERM', { data: { installment: installment.id, days: ctx.minTermDays } })),
       )
     }
   }
-  return problemas
+  return problems
 }
 
 /** Orden de evaluación. Agregar una regla = agregar una función aquí y su test. */
-export const REGLAS_POR_FACTURA: readonly ReglaFactura[] = [
-  reglaTipoComprobante,
-  reglaReceptorEsPagador,
-  reglaEmisorEsProveedor,
-  reglaAlCreditoConNetoPendiente,
-  reglaMonedaPermitida,
-  reglaCuotasVigentes,
+export const INVOICE_RULES: readonly InvoiceRule[] = [
+  documentTypeRule,
+  recipientIsPayerRule,
+  issuerIsSupplierRule,
+  creditWithPendingAmountRule,
+  currencyAllowedRule,
+  installmentsDueInFutureRule,
 ]
 
-export type ResultadoValidacion = {
-  problemas: Problema[]
-  facturasValidas: FacturaLeida[]
+export type ValidationResult = {
+  problems: Problem[]
+  validInvoices: ParsedInvoice[]
   /** Moneda común de las facturas válidas, o null si no hay o difieren. */
-  moneda: string | null
-  netoPendienteTotal: Monto
+  currency: string | null
+  totalNetPending: Amount
   /** Neto pendiente total × porcentaje de adelanto. "0.00" si no se puede calcular. */
-  montoMaximo: Monto
+  maxAmount: Amount
 }
 
-const claveFactura = (f: FacturaLeida) => f.serieNumero.trim().toUpperCase()
+const invoiceKey = (inv: ParsedInvoice) => inv.seriesNumber.trim().toUpperCase()
 
-export function validarFacturas(facturas: readonly FacturaLeida[], ctx: ContextoValidacion): ResultadoValidacion {
-  const problemas: Problema[] = []
-  const vacio: ResultadoValidacion = { problemas, facturasValidas: [], moneda: null, netoPendienteTotal: '0.00', montoMaximo: '0.00' }
+export function validateInvoices(invoices: readonly ParsedInvoice[], ctx: ValidationContext): ValidationResult {
+  const problems: Problem[] = []
+  const empty: ValidationResult = { problems, validInvoices: [], currency: null, totalNetPending: '0.00', maxAmount: '0.00' }
 
-  if (facturas.length === 0) {
-    problemas.push(crearProblema('SIN_FACTURAS'))
-    return vacio
+  if (invoices.length === 0) {
+    problems.push(createProblem('NO_INVOICES'))
+    return empty
   }
-  if (facturas.length > ctx.maxFacturas) {
-    problemas.push(crearProblema('DEMASIADAS_FACTURAS', { datos: { maximo: ctx.maxFacturas } }))
-    return vacio
+  if (invoices.length > ctx.maxInvoices) {
+    problems.push(createProblem('TOO_MANY_INVOICES', { data: { max: ctx.maxInvoices } }))
+    return empty
   }
 
-  const vistas = new Set<string>()
-  const candidatas: FacturaLeida[] = []
-  for (const f of facturas) {
-    const clave = claveFactura(f)
-    if (vistas.has(clave)) {
-      problemas.push(crearProblema('FACTURA_REPETIDA', { factura: f.serieNumero, datos: { factura: f.serieNumero } }))
+  const seen = new Set<string>()
+  const candidates: ParsedInvoice[] = []
+  for (const inv of invoices) {
+    const key = invoiceKey(inv)
+    if (seen.has(key)) {
+      problems.push(createProblem('DUPLICATE_INVOICE', { invoice: inv.seriesNumber, data: { invoice: inv.seriesNumber } }))
       continue
     }
-    vistas.add(clave)
-    candidatas.push(f)
+    seen.add(key)
+    candidates.push(inv)
   }
 
-  const facturasValidas = candidatas.filter((f) => {
-    const propios = REGLAS_POR_FACTURA.flatMap((regla) => regla(f, ctx))
-    problemas.push(...propios)
-    return propios.length === 0
+  const validInvoices = candidates.filter((inv) => {
+    const own = INVOICE_RULES.flatMap((rule) => rule(inv, ctx))
+    problems.push(...own)
+    return own.length === 0
   })
-  if (facturasValidas.length === 0) return { ...vacio, problemas }
+  if (validInvoices.length === 0) return { ...empty, problems }
 
-  const emisores = new Set(facturasValidas.map((f) => f.rucEmisor))
-  if (emisores.size > 1) problemas.push(crearProblema('EMISORES_DISTINTOS'))
+  const issuers = new Set(validInvoices.map((inv) => inv.issuerRuc))
+  if (issuers.size > 1) problems.push(createProblem('MIXED_ISSUERS'))
 
-  const monedas = new Set(facturasValidas.map((f) => f.moneda))
-  if (monedas.size > 1) {
-    problemas.push(crearProblema('MONEDAS_DISTINTAS'))
-    return { ...vacio, problemas, facturasValidas }
+  const currencies = new Set(validInvoices.map((inv) => inv.currency))
+  if (currencies.size > 1) {
+    problems.push(createProblem('MIXED_CURRENCIES'))
+    return { ...empty, problems, validInvoices }
   }
 
-  const netoPendienteTotal = sumarMontos(...facturasValidas.map((f) => f.montoNetoPendiente ?? '0.00'))
+  const totalNetPending = sumAmounts(...validInvoices.map((inv) => inv.netPendingAmount ?? '0.00'))
   return {
-    problemas,
-    facturasValidas,
-    moneda: facturasValidas[0]?.moneda ?? null,
-    netoPendienteTotal,
-    montoMaximo: porcentajeDe(netoPendienteTotal, ctx.porcentajeAdelanto),
+    problems,
+    validInvoices,
+    currency: validInvoices[0]?.currency ?? null,
+    totalNetPending,
+    maxAmount: percentOf(totalNetPending, ctx.advancePercent),
   }
 }
 
-export function validarMontoSolicitado(monto: string, resultado: ResultadoValidacion): Problema | null {
-  const normalizado = normalizarMonto(monto)
-  if (normalizado === null || aCentimos(normalizado) === 0n) return crearProblema('MONTO_INVALIDO', { campo: 'montoSolicitado' })
-  if (compararMontos(normalizado, resultado.montoMaximo) > 0) {
-    return crearProblema('MONTO_SUPERA_MAXIMO', {
-      campo: 'montoSolicitado',
-      datos: { maximo: resultado.montoMaximo, moneda: resultado.moneda ?? '' },
+export function validateRequestedAmount(amount: string, result: ValidationResult): Problem | null {
+  const normalized = normalizeAmount(amount)
+  if (normalized === null || toCents(normalized) === 0n) return createProblem('INVALID_AMOUNT', { field: 'requestedAmount' })
+  if (compareAmounts(normalized, result.maxAmount) > 0) {
+    return createProblem('AMOUNT_EXCEEDS_MAXIMUM', {
+      field: 'requestedAmount',
+      data: { max: result.maxAmount, currency: result.currency ?? '' },
     })
   }
   return null
 }
 ```
 
-Agregar a `packages/shared/src/factura/index.ts`:
+Agregar a `packages/shared/src/invoice/index.ts`:
 ```ts
 export {
-  type ContextoValidacion,
-  REGLAS_POR_FACTURA,
-  type ReglaFactura,
-  type ResultadoValidacion,
-  reglaAlCreditoConNetoPendiente,
-  reglaCuotasVigentes,
-  reglaEmisorEsProveedor,
-  reglaMonedaPermitida,
-  reglaReceptorEsPagador,
-  reglaTipoComprobante,
-  validarFacturas,
-  validarMontoSolicitado,
-} from './reglas.js'
+  INVOICE_RULES,
+  type InvoiceRule,
+  creditWithPendingAmountRule,
+  currencyAllowedRule,
+  documentTypeRule,
+  installmentsDueInFutureRule,
+  issuerIsSupplierRule,
+  recipientIsPayerRule,
+  type ValidationContext,
+  type ValidationResult,
+  validateInvoices,
+  validateRequestedAmount,
+} from './rules.js'
 ```
 
 - [ ] **Step 4: Correr tests y verificación completa**
@@ -2110,399 +2175,401 @@ git commit -m "feat(shared): reglas de factura parametrizadas por contexto del p
 
 ---
 
-### Task 7: Dominios `usuario` y `solicitud` · roles, estados, motivos y transiciones como datos
+### Task 7: Dominios `user` y `advance-request` · roles, estados, motivos y transiciones como datos
 
 **Files:**
-- Create: `packages/shared/src/usuario/roles.ts`, `packages/shared/src/usuario/index.ts`
-- Create: `packages/shared/src/solicitud/estados.ts`, `packages/shared/src/solicitud/motivos.ts`, `packages/shared/src/solicitud/transiciones.ts`, `packages/shared/src/solicitud/index.ts`
-- Test: `packages/shared/src/usuario/roles.test.ts`, `packages/shared/src/solicitud/transiciones.test.ts`
+- Create: `packages/shared/src/user/roles.ts`, `packages/shared/src/user/index.ts`
+- Create: `packages/shared/src/advance-request/statuses.ts`, `packages/shared/src/advance-request/close-reasons.ts`, `packages/shared/src/advance-request/transitions.ts`, `packages/shared/src/advance-request/index.ts`
+- Test: `packages/shared/src/user/roles.test.ts`, `packages/shared/src/advance-request/transitions.test.ts`
 - Modify: `packages/shared/src/index.ts`
 
 **Interfaces:**
-- Produces: `ROLES`, `Rol`, `rolAlcanza(rol, minimo)`, `rolSchema`; `ESTADOS_SOLICITUD`, `EstadoSolicitud`, `ESTADO_INICIAL`, `ESTADOS_TERMINALES`, `esEstadoTerminal`, `NOMBRE_ESTADO`, `estadoSolicitudSchema`; `MOTIVOS_CIERRE`, `MotivoCierre`, `MOTIVOS_POR_ESTADO`, `NOMBRE_MOTIVO`, `motivoSchema`; `GUARDAS`, `Guarda`, `Hechos`, `Transicion`, `TRANSICIONES`, `transicionesDesde(desde, rol)`, `transicionesDisponibles(desde, rol, hechos)`, `evaluarCambioEstado(cambio): ResultadoCambio`, `cambioEstadoSchema`. La API calcula los `Hechos` con Prisma (por ejemplo `documentosVigentes`), devuelve `transicionesDisponibles` como `accionesPermitidas` en cada respuesta de solicitud y vuelve a evaluar en el PATCH; el admin pinta solo esos botones.
+- Produces: `ROLES`, `Role`, `hasRoleAtLeast(role, minimum)`, `roleSchema`, `ROLE_LABELS`; `ADVANCE_REQUEST_STATUSES`, `AdvanceRequestStatus`, `INITIAL_STATUS`, `TERMINAL_STATUSES`, `isTerminalStatus`, `STATUS_LABELS`, `advanceRequestStatusSchema`; `CLOSE_REASONS`, `CloseReason`, `CLOSE_REASONS_BY_STATUS`, `CLOSE_REASON_LABELS`, `closeReasonSchema`; `GUARDS`, `Guard`, `Facts`, `Transition`, `TRANSITIONS`, `transitionsFrom(from, role)`, `availableTransitions(from, role, facts)`, `evaluateStatusChange(change): StatusChangeResult`, `statusChangeSchema`. La API calcula los `Facts` con Prisma (por ejemplo `documentsValid`), devuelve `availableTransitions` como `allowedActions` en cada respuesta de solicitud y vuelve a evaluar en el PATCH; el admin pinta solo esos botones.
 
 - [ ] **Step 1: Escribir los tests que fallan**
 
-`packages/shared/src/usuario/roles.test.ts`:
+`packages/shared/src/user/roles.test.ts`:
 ```ts
 import { describe, expect, it } from 'vitest'
-import { rolAlcanza } from './roles.js'
+import { hasRoleAtLeast } from './roles.js'
 
-describe('rolAlcanza', () => {
-  it('ADMIN alcanza todo; GESTOR solo GESTOR', () => {
-    expect(rolAlcanza('ADMIN', 'ADMIN')).toBe(true)
-    expect(rolAlcanza('ADMIN', 'GESTOR')).toBe(true)
-    expect(rolAlcanza('GESTOR', 'GESTOR')).toBe(true)
-    expect(rolAlcanza('GESTOR', 'ADMIN')).toBe(false)
+describe('hasRoleAtLeast', () => {
+  it('ADMIN alcanza todo; AGENT solo AGENT', () => {
+    expect(hasRoleAtLeast('ADMIN', 'ADMIN')).toBe(true)
+    expect(hasRoleAtLeast('ADMIN', 'AGENT')).toBe(true)
+    expect(hasRoleAtLeast('AGENT', 'AGENT')).toBe(true)
+    expect(hasRoleAtLeast('AGENT', 'ADMIN')).toBe(false)
   })
 })
 ```
 
-`packages/shared/src/solicitud/transiciones.test.ts`:
+`packages/shared/src/advance-request/transitions.test.ts`:
 ```ts
 import { describe, expect, it } from 'vitest'
-import { ESTADO_INICIAL, ESTADOS_SOLICITUD, ESTADOS_TERMINALES, esEstadoTerminal } from './estados.js'
-import { MOTIVOS_POR_ESTADO } from './motivos.js'
+import { CLOSE_REASONS_BY_STATUS } from './close-reasons.js'
+import { ADVANCE_REQUEST_STATUSES, INITIAL_STATUS, TERMINAL_STATUSES, isTerminalStatus } from './statuses.js'
 import {
-  TRANSICIONES,
-  cambioEstadoSchema,
-  evaluarCambioEstado,
-  transicionesDesde,
-  transicionesDisponibles,
-} from './transiciones.js'
+  TRANSITIONS,
+  availableTransitions,
+  evaluateStatusChange,
+  statusChangeSchema,
+  transitionsFrom,
+} from './transitions.js'
 
-const salidas = (estado: string) => TRANSICIONES.filter((t) => t.desde === estado).map((t) => t.hacia)
+const exits = (status: string) => TRANSITIONS.filter((t) => t.from === status).map((t) => t.to)
 
 describe('estructura de la máquina de estados', () => {
   it('no hay transiciones duplicadas', () => {
-    const claves = TRANSICIONES.map((t) => `${t.desde}->${t.hacia}`)
-    expect(new Set(claves).size).toBe(claves.length)
+    const keys = TRANSITIONS.map((t) => `${t.from}->${t.to}`)
+    expect(new Set(keys).size).toBe(keys.length)
   })
 
   it('los estados terminales no tienen salida', () => {
-    for (const e of ESTADOS_TERMINALES) expect(salidas(e), e).toEqual([])
+    for (const s of TERMINAL_STATUSES) expect(exits(s), s).toEqual([])
   })
 
   it('todo estado es alcanzable desde el inicial', () => {
-    const vistos = new Set<string>([ESTADO_INICIAL])
-    const cola = [ESTADO_INICIAL as string]
-    while (cola.length > 0) {
-      const actual = cola.shift() as string
-      for (const h of salidas(actual)) if (!vistos.has(h)) { vistos.add(h); cola.push(h) }
+    const seen = new Set<string>([INITIAL_STATUS])
+    const queue = [INITIAL_STATUS as string]
+    while (queue.length > 0) {
+      const current = queue.shift() as string
+      for (const next of exits(current)) if (!seen.has(next)) { seen.add(next); queue.push(next) }
     }
-    for (const e of ESTADOS_SOLICITUD) expect(vistos.has(e), `${e} no es alcanzable`).toBe(true)
+    for (const s of ADVANCE_REQUEST_STATUSES) expect(seen.has(s), `${s} no es alcanzable`).toBe(true)
   })
 
   it('todo estado no terminal tiene camino a un estado terminal', () => {
-    const llegaATerminal = (desde: string, vistos = new Set<string>()): boolean => {
-      if (esEstadoTerminal(desde as never)) return true
-      if (vistos.has(desde)) return false
-      vistos.add(desde)
-      return salidas(desde).some((h) => llegaATerminal(h, vistos))
+    const reachesTerminal = (from: string, seen = new Set<string>()): boolean => {
+      if (isTerminalStatus(from as never)) return true
+      if (seen.has(from)) return false
+      seen.add(from)
+      return exits(from).some((next) => reachesTerminal(next, seen))
     }
-    for (const e of ESTADOS_SOLICITUD) expect(llegaATerminal(e), `${e} no llega a un estado terminal`).toBe(true)
+    for (const s of ADVANCE_REQUEST_STATUSES) expect(reachesTerminal(s), `${s} no llega a un estado terminal`).toBe(true)
   })
 
-  it('toda transición hacia RECHAZADA o DESISTIDA exige motivo, y ninguna otra', () => {
-    for (const t of TRANSICIONES) {
-      const esCierre = t.hacia === 'RECHAZADA' || t.hacia === 'DESISTIDA'
-      expect(t.requiereMotivo === true, `${t.desde}->${t.hacia}`).toBe(esCierre)
+  it('toda transición hacia REJECTED o WITHDRAWN exige motivo, y ninguna otra', () => {
+    for (const t of TRANSITIONS) {
+      const isClosure = t.to === 'REJECTED' || t.to === 'WITHDRAWN'
+      expect(t.requiresReason === true, `${t.from}->${t.to}`).toBe(isClosure)
     }
   })
 
   it('cada estado de cierre tiene motivos definidos', () => {
-    expect(MOTIVOS_POR_ESTADO.RECHAZADA.length).toBeGreaterThan(0)
-    expect(MOTIVOS_POR_ESTADO.DESISTIDA.length).toBeGreaterThan(0)
+    expect(CLOSE_REASONS_BY_STATUS.REJECTED.length).toBeGreaterThan(0)
+    expect(CLOSE_REASONS_BY_STATUS.WITHDRAWN.length).toBeGreaterThan(0)
   })
 })
 
-describe('transicionesDesde', () => {
+describe('transitionsFrom', () => {
   it('filtra por rol mínimo', () => {
-    expect(transicionesDesde('APROBADA', 'ADMIN').map((t) => t.hacia)).toEqual(['DESEMBOLSADA', 'DESISTIDA'])
-    expect(transicionesDesde('APROBADA', 'GESTOR').map((t) => t.hacia)).toEqual(['DESISTIDA'])
+    expect(transitionsFrom('APPROVED', 'ADMIN').map((t) => t.to)).toEqual(['DISBURSED', 'WITHDRAWN'])
+    expect(transitionsFrom('APPROVED', 'AGENT').map((t) => t.to)).toEqual(['WITHDRAWN'])
   })
 
   it('devuelve vacío para estados terminales', () => {
-    expect(transicionesDesde('DESEMBOLSADA', 'ADMIN')).toEqual([])
+    expect(transitionsFrom('DISBURSED', 'ADMIN')).toEqual([])
   })
 })
 
-describe('transicionesDisponibles', () => {
+describe('availableTransitions', () => {
   it('oculta las transiciones cuya guarda no se cumple', () => {
-    expect(transicionesDisponibles('DOCUMENTOS_PENDIENTES', 'GESTOR', {}).map((t) => t.hacia)).toEqual([
-      'RECHAZADA',
-      'DESISTIDA',
-    ])
+    expect(availableTransitions('DOCUMENTS_PENDING', 'AGENT', {}).map((t) => t.to)).toEqual(['REJECTED', 'WITHDRAWN'])
     expect(
-      transicionesDisponibles('DOCUMENTOS_PENDIENTES', 'GESTOR', { documentosVigentes: true }).map((t) => t.hacia),
-    ).toEqual(['EN_EVALUACION', 'RECHAZADA', 'DESISTIDA'])
+      availableTransitions('DOCUMENTS_PENDING', 'AGENT', { documentsValid: true }).map((t) => t.to),
+    ).toEqual(['UNDER_REVIEW', 'REJECTED', 'WITHDRAWN'])
   })
 })
 
-describe('evaluarCambioEstado', () => {
+describe('evaluateStatusChange', () => {
   it('acepta una transición simple sin guarda', () => {
-    const r = evaluarCambioEstado({ desde: 'NUEVA', hacia: 'CONTACTADO', rol: 'GESTOR' })
-    expect(r).toEqual({ ok: true, guarda: null, requiereMotivo: false })
+    const r = evaluateStatusChange({ from: 'NEW', to: 'CONTACTED', role: 'AGENT' })
+    expect(r).toEqual({ ok: true, guard: null, requiresReason: false })
   })
 
   it('devuelve la guarda que la API debe comprobar', () => {
-    const r = evaluarCambioEstado({ desde: 'DOCUMENTOS_PENDIENTES', hacia: 'EN_EVALUACION', rol: 'GESTOR' })
-    expect(r).toEqual({ ok: true, guarda: 'documentosVigentes', requiereMotivo: false })
+    const r = evaluateStatusChange({ from: 'DOCUMENTS_PENDING', to: 'UNDER_REVIEW', role: 'AGENT' })
+    expect(r).toEqual({ ok: true, guard: 'documentsValid', requiresReason: false })
   })
 
   it('rechaza una transición que no existe', () => {
-    const r = evaluarCambioEstado({ desde: 'NUEVA', hacia: 'DESEMBOLSADA', rol: 'ADMIN' })
-    expect(r).toEqual({ ok: false, razon: 'TRANSICION_NO_PERMITIDA' })
+    const r = evaluateStatusChange({ from: 'NEW', to: 'DISBURSED', role: 'ADMIN' })
+    expect(r).toEqual({ ok: false, reason: 'TRANSITION_NOT_ALLOWED' })
   })
 
   it('rechaza por rol insuficiente', () => {
-    const r = evaluarCambioEstado({ desde: 'APROBADA', hacia: 'DESEMBOLSADA', rol: 'GESTOR' })
-    expect(r).toEqual({ ok: false, razon: 'ROL_INSUFICIENTE' })
+    const r = evaluateStatusChange({ from: 'APPROVED', to: 'DISBURSED', role: 'AGENT' })
+    expect(r).toEqual({ ok: false, reason: 'INSUFFICIENT_ROLE' })
   })
 
   it('exige motivo en los cierres y que sea válido para ese estado', () => {
-    expect(evaluarCambioEstado({ desde: 'NUEVA', hacia: 'DESISTIDA', rol: 'GESTOR' })).toEqual({
+    expect(evaluateStatusChange({ from: 'NEW', to: 'WITHDRAWN', role: 'AGENT' })).toEqual({
       ok: false,
-      razon: 'MOTIVO_REQUERIDO',
+      reason: 'REASON_REQUIRED',
     })
     expect(
-      evaluarCambioEstado({ desde: 'NUEVA', hacia: 'DESISTIDA', rol: 'GESTOR', motivoCodigo: 'DOCUMENTOS_INVALIDOS' }),
-    ).toEqual({ ok: false, razon: 'MOTIVO_NO_VALIDO' })
+      evaluateStatusChange({ from: 'NEW', to: 'WITHDRAWN', role: 'AGENT', closeReason: 'INVALID_DOCUMENTS' }),
+    ).toEqual({ ok: false, reason: 'REASON_NOT_VALID' })
     expect(
-      evaluarCambioEstado({ desde: 'NUEVA', hacia: 'DESISTIDA', rol: 'GESTOR', motivoCodigo: 'SPAM_O_INVALIDA' }),
-    ).toEqual({ ok: true, guarda: null, requiereMotivo: true })
+      evaluateStatusChange({ from: 'NEW', to: 'WITHDRAWN', role: 'AGENT', closeReason: 'SPAM_OR_INVALID' }),
+    ).toEqual({ ok: true, guard: null, requiresReason: true })
   })
 })
 
-describe('cambioEstadoSchema (cuerpo del PATCH de la API)', () => {
-  it('acepta hacia, versión y motivo opcional', () => {
-    expect(cambioEstadoSchema.safeParse({ hacia: 'CONTACTADO', version: 3 }).success).toBe(true)
+describe('statusChangeSchema (cuerpo del PATCH de la API)', () => {
+  it('acepta destino, versión y motivo opcional', () => {
+    expect(statusChangeSchema.safeParse({ to: 'CONTACTED', version: 3 }).success).toBe(true)
     expect(
-      cambioEstadoSchema.safeParse({ hacia: 'DESISTIDA', version: 3, motivoCodigo: 'SIN_RESPUESTA', motivoDetalle: 'Tres llamadas' }).success,
+      statusChangeSchema.safeParse({ to: 'WITHDRAWN', version: 3, closeReason: 'NO_RESPONSE', closeReasonDetail: 'Tres llamadas' }).success,
     ).toBe(true)
   })
 
   it('rechaza estados desconocidos y versiones no enteras', () => {
-    expect(cambioEstadoSchema.safeParse({ hacia: 'CERRADA', version: 1 }).success).toBe(false)
-    expect(cambioEstadoSchema.safeParse({ hacia: 'CONTACTADO', version: 1.5 }).success).toBe(false)
+    expect(statusChangeSchema.safeParse({ to: 'CLOSED', version: 1 }).success).toBe(false)
+    expect(statusChangeSchema.safeParse({ to: 'CONTACTED', version: 1.5 }).success).toBe(false)
   })
 })
 ```
 
 - [ ] **Step 2: Correr y verificar que fallan**
 
-Run: `pnpm --filter @anticipate/shared test -- usuario solicitud`
+Run: `pnpm --filter @anticipate/shared test -- user advance-request`
 Expected: FAIL por módulos inexistentes.
 
-- [ ] **Step 3: Implementar `usuario`**
+- [ ] **Step 3: Implementar `user`**
 
-`packages/shared/src/usuario/roles.ts`:
+`packages/shared/src/user/roles.ts`:
 ```ts
 import { z } from 'zod'
 
 /** Roles del admin, de menor a mayor. Agregar uno = agregarlo aquí en su posición. */
-export const ROLES = ['GESTOR', 'ADMIN'] as const
-export type Rol = (typeof ROLES)[number]
-export const rolSchema = z.enum(ROLES)
+export const ROLES = ['AGENT', 'ADMIN'] as const
+export type Role = (typeof ROLES)[number]
+export const roleSchema = z.enum(ROLES)
 
-export const NOMBRE_ROL: Record<Rol, string> = { GESTOR: 'Gestor', ADMIN: 'Administrador' }
+export const ROLE_LABELS: Record<Role, string> = { AGENT: 'Gestor', ADMIN: 'Administrador' }
 
-export function rolAlcanza(rol: Rol, minimo: Rol): boolean {
-  return ROLES.indexOf(rol) >= ROLES.indexOf(minimo)
+export function hasRoleAtLeast(role: Role, minimum: Role): boolean {
+  return ROLES.indexOf(role) >= ROLES.indexOf(minimum)
 }
 ```
 
-`packages/shared/src/usuario/index.ts`:
+`packages/shared/src/user/index.ts`:
 ```ts
-export { NOMBRE_ROL, ROLES, type Rol, rolAlcanza, rolSchema } from './roles.js'
+export { ROLE_LABELS, ROLES, type Role, hasRoleAtLeast, roleSchema } from './roles.js'
 ```
 
-- [ ] **Step 4: Implementar `solicitud` · estados y motivos**
+- [ ] **Step 4: Implementar `advance-request` · estados y motivos**
 
-`packages/shared/src/solicitud/estados.ts`:
-```ts
-import { z } from 'zod'
-
-export const ESTADOS_SOLICITUD = [
-  'NUEVA',
-  'NO_CONTESTA',
-  'CONTACTADO',
-  'DOCUMENTOS_PENDIENTES',
-  'EN_EVALUACION',
-  'PROFORMA_ENVIADA',
-  'APROBADA',
-  'DESEMBOLSADA',
-  'RECHAZADA',
-  'DESISTIDA',
-] as const
-export type EstadoSolicitud = (typeof ESTADOS_SOLICITUD)[number]
-export const estadoSolicitudSchema = z.enum(ESTADOS_SOLICITUD)
-
-export const ESTADO_INICIAL = 'NUEVA' satisfies EstadoSolicitud
-
-export const ESTADOS_TERMINALES = ['DESEMBOLSADA', 'RECHAZADA', 'DESISTIDA'] as const satisfies readonly EstadoSolicitud[]
-export type EstadoTerminal = (typeof ESTADOS_TERMINALES)[number]
-
-export function esEstadoTerminal(estado: EstadoSolicitud): estado is EstadoTerminal {
-  return (ESTADOS_TERMINALES as readonly string[]).includes(estado)
-}
-
-export const NOMBRE_ESTADO: Record<EstadoSolicitud, string> = {
-  NUEVA: 'Nueva',
-  NO_CONTESTA: 'No contesta',
-  CONTACTADO: 'Contactado',
-  DOCUMENTOS_PENDIENTES: 'Documentos pendientes',
-  EN_EVALUACION: 'En evaluación',
-  PROFORMA_ENVIADA: 'Proforma enviada',
-  APROBADA: 'Aprobada',
-  DESEMBOLSADA: 'Desembolsada',
-  RECHAZADA: 'Rechazada',
-  DESISTIDA: 'Desistida',
-}
-```
-
-`packages/shared/src/solicitud/motivos.ts`:
+`packages/shared/src/advance-request/statuses.ts`:
 ```ts
 import { z } from 'zod'
 
-export const MOTIVOS_CIERRE = [
-  'SIN_RESPUESTA',
-  'SPAM_O_INVALIDA',
-  'PROVEEDOR_SE_RETIRA',
-  'DOCUMENTOS_INVALIDOS',
-  'FACTURA_NO_ELEGIBLE',
-  'RIESGO_NO_ACEPTABLE',
-  'OTRO',
+export const ADVANCE_REQUEST_STATUSES = [
+  'NEW',
+  'NO_ANSWER',
+  'CONTACTED',
+  'DOCUMENTS_PENDING',
+  'UNDER_REVIEW',
+  'QUOTE_SENT',
+  'APPROVED',
+  'DISBURSED',
+  'REJECTED',
+  'WITHDRAWN',
 ] as const
-export type MotivoCierre = (typeof MOTIVOS_CIERRE)[number]
-export const motivoSchema = z.enum(MOTIVOS_CIERRE)
+export type AdvanceRequestStatus = (typeof ADVANCE_REQUEST_STATUSES)[number]
+export const advanceRequestStatusSchema = z.enum(ADVANCE_REQUEST_STATUSES)
 
-export const NOMBRE_MOTIVO: Record<MotivoCierre, string> = {
-  SIN_RESPUESTA: 'El proveedor no respondió',
-  SPAM_O_INVALIDA: 'Solicitud de prueba, spam o inválida',
-  PROVEEDOR_SE_RETIRA: 'El proveedor decidió no continuar',
-  DOCUMENTOS_INVALIDOS: 'Documentos incompletos o inválidos',
-  FACTURA_NO_ELEGIBLE: 'La factura no cumple los requisitos',
-  RIESGO_NO_ACEPTABLE: 'Riesgo no aceptable',
-  OTRO: 'Otro motivo (ver detalle)',
+export const INITIAL_STATUS = 'NEW' satisfies AdvanceRequestStatus
+
+export const TERMINAL_STATUSES = ['DISBURSED', 'REJECTED', 'WITHDRAWN'] as const satisfies readonly AdvanceRequestStatus[]
+export type TerminalStatus = (typeof TERMINAL_STATUSES)[number]
+
+export function isTerminalStatus(status: AdvanceRequestStatus): status is TerminalStatus {
+  return (TERMINAL_STATUSES as readonly string[]).includes(status)
+}
+
+/** Etiquetas en español para la interfaz. */
+export const STATUS_LABELS: Record<AdvanceRequestStatus, string> = {
+  NEW: 'Nueva',
+  NO_ANSWER: 'No contesta',
+  CONTACTED: 'Contactado',
+  DOCUMENTS_PENDING: 'Documentos pendientes',
+  UNDER_REVIEW: 'En evaluación',
+  QUOTE_SENT: 'Proforma enviada',
+  APPROVED: 'Aprobada',
+  DISBURSED: 'Desembolsada',
+  REJECTED: 'Rechazada',
+  WITHDRAWN: 'Desistida',
+}
+```
+
+`packages/shared/src/advance-request/close-reasons.ts`:
+```ts
+import { z } from 'zod'
+
+export const CLOSE_REASONS = [
+  'NO_RESPONSE',
+  'SPAM_OR_INVALID',
+  'SUPPLIER_WITHDREW',
+  'INVALID_DOCUMENTS',
+  'INVOICE_NOT_ELIGIBLE',
+  'UNACCEPTABLE_RISK',
+  'OTHER',
+] as const
+export type CloseReason = (typeof CLOSE_REASONS)[number]
+export const closeReasonSchema = z.enum(CLOSE_REASONS)
+
+export const CLOSE_REASON_LABELS: Record<CloseReason, string> = {
+  NO_RESPONSE: 'El proveedor no respondió',
+  SPAM_OR_INVALID: 'Solicitud de prueba, spam o inválida',
+  SUPPLIER_WITHDREW: 'El proveedor decidió no continuar',
+  INVALID_DOCUMENTS: 'Documentos incompletos o inválidos',
+  INVOICE_NOT_ELIGIBLE: 'La factura no cumple los requisitos',
+  UNACCEPTABLE_RISK: 'Riesgo no aceptable',
+  OTHER: 'Otro motivo (ver detalle)',
 }
 
 /** Qué motivos tienen sentido para cada estado de cierre. */
-export const MOTIVOS_POR_ESTADO = {
-  RECHAZADA: ['DOCUMENTOS_INVALIDOS', 'FACTURA_NO_ELEGIBLE', 'RIESGO_NO_ACEPTABLE', 'SPAM_O_INVALIDA', 'OTRO'],
-  DESISTIDA: ['SIN_RESPUESTA', 'PROVEEDOR_SE_RETIRA', 'SPAM_O_INVALIDA', 'OTRO'],
-} as const satisfies Record<'RECHAZADA' | 'DESISTIDA', readonly MotivoCierre[]>
+export const CLOSE_REASONS_BY_STATUS = {
+  REJECTED: ['INVALID_DOCUMENTS', 'INVOICE_NOT_ELIGIBLE', 'UNACCEPTABLE_RISK', 'SPAM_OR_INVALID', 'OTHER'],
+  WITHDRAWN: ['NO_RESPONSE', 'SUPPLIER_WITHDREW', 'SPAM_OR_INVALID', 'OTHER'],
+} as const satisfies Record<'REJECTED' | 'WITHDRAWN', readonly CloseReason[]>
 ```
 
-- [ ] **Step 5: Implementar `solicitud` · transiciones**
+- [ ] **Step 5: Implementar `advance-request` · transiciones**
 
-`packages/shared/src/solicitud/transiciones.ts`:
+`packages/shared/src/advance-request/transitions.ts`:
 ```ts
 import { z } from 'zod'
-import { type Rol, rolAlcanza, rolSchema } from '../usuario/index.js'
-import { type EstadoSolicitud, estadoSolicitudSchema } from './estados.js'
-import { MOTIVOS_POR_ESTADO, type MotivoCierre, motivoSchema } from './motivos.js'
+import { type Role, hasRoleAtLeast } from '../user/index.js'
+import { CLOSE_REASONS_BY_STATUS, type CloseReason, closeReasonSchema } from './close-reasons.js'
+import { type AdvanceRequestStatus, advanceRequestStatusSchema } from './statuses.js'
 
 /** Nombres de guardas. La API las implementa (necesitan base de datos); shared solo las nombra. */
-export const GUARDAS = ['documentosVigentes'] as const
-export type Guarda = (typeof GUARDAS)[number]
+export const GUARDS = ['documentsValid'] as const
+export type Guard = (typeof GUARDS)[number]
 
-export type Transicion = {
-  desde: EstadoSolicitud
-  hacia: EstadoSolicitud
-  guarda?: Guarda
-  rolMinimo?: Rol
-  requiereMotivo?: true
+export type Transition = {
+  from: AdvanceRequestStatus
+  to: AdvanceRequestStatus
+  guard?: Guard
+  minRole?: Role
+  requiresReason?: true
 }
 
 /** Única fuente de verdad de la máquina de estados (STACK §9). El admin pinta botones con esto; la API lo hace cumplir. */
-export const TRANSICIONES = [
-  { desde: 'NUEVA', hacia: 'CONTACTADO' },
-  { desde: 'NUEVA', hacia: 'NO_CONTESTA' },
-  { desde: 'NUEVA', hacia: 'DESISTIDA', requiereMotivo: true },
-  { desde: 'NO_CONTESTA', hacia: 'CONTACTADO' },
-  { desde: 'NO_CONTESTA', hacia: 'DESISTIDA', requiereMotivo: true },
-  { desde: 'CONTACTADO', hacia: 'DOCUMENTOS_PENDIENTES' },
-  { desde: 'CONTACTADO', hacia: 'DESISTIDA', requiereMotivo: true },
-  { desde: 'DOCUMENTOS_PENDIENTES', hacia: 'EN_EVALUACION', guarda: 'documentosVigentes' },
-  { desde: 'DOCUMENTOS_PENDIENTES', hacia: 'RECHAZADA', requiereMotivo: true },
-  { desde: 'DOCUMENTOS_PENDIENTES', hacia: 'DESISTIDA', requiereMotivo: true },
-  { desde: 'EN_EVALUACION', hacia: 'PROFORMA_ENVIADA' },
-  { desde: 'EN_EVALUACION', hacia: 'RECHAZADA', requiereMotivo: true },
-  { desde: 'PROFORMA_ENVIADA', hacia: 'APROBADA' },
-  { desde: 'PROFORMA_ENVIADA', hacia: 'DESISTIDA', requiereMotivo: true },
-  { desde: 'APROBADA', hacia: 'DESEMBOLSADA', rolMinimo: 'ADMIN' },
-  { desde: 'APROBADA', hacia: 'DESISTIDA', requiereMotivo: true },
-] as const satisfies readonly Transicion[]
+export const TRANSITIONS: readonly Transition[] = [
+  { from: 'NEW', to: 'CONTACTED' },
+  { from: 'NEW', to: 'NO_ANSWER' },
+  { from: 'NEW', to: 'WITHDRAWN', requiresReason: true },
+  { from: 'NO_ANSWER', to: 'CONTACTED' },
+  { from: 'NO_ANSWER', to: 'WITHDRAWN', requiresReason: true },
+  { from: 'CONTACTED', to: 'DOCUMENTS_PENDING' },
+  { from: 'CONTACTED', to: 'WITHDRAWN', requiresReason: true },
+  { from: 'DOCUMENTS_PENDING', to: 'UNDER_REVIEW', guard: 'documentsValid' },
+  { from: 'DOCUMENTS_PENDING', to: 'REJECTED', requiresReason: true },
+  { from: 'DOCUMENTS_PENDING', to: 'WITHDRAWN', requiresReason: true },
+  { from: 'UNDER_REVIEW', to: 'QUOTE_SENT' },
+  { from: 'UNDER_REVIEW', to: 'REJECTED', requiresReason: true },
+  { from: 'QUOTE_SENT', to: 'APPROVED' },
+  { from: 'QUOTE_SENT', to: 'WITHDRAWN', requiresReason: true },
+  { from: 'APPROVED', to: 'DISBURSED', minRole: 'ADMIN' },
+  { from: 'APPROVED', to: 'WITHDRAWN', requiresReason: true },
+]
 
-export function transicionesDesde(desde: EstadoSolicitud, rol: Rol): Transicion[] {
-  return TRANSICIONES.filter((t) => t.desde === desde && rolAlcanza(rol, t.rolMinimo ?? 'GESTOR'))
+export function transitionsFrom(from: AdvanceRequestStatus, role: Role): Transition[] {
+  return TRANSITIONS.filter((t) => t.from === from && hasRoleAtLeast(role, t.minRole ?? 'AGENT'))
 }
 
 /** Hechos que la API calcula con la base de datos para resolver las guardas. */
-export type Hechos = Partial<Record<Guarda, boolean>>
+export type Facts = Partial<Record<Guard, boolean>>
 
-/** Lo que el usuario puede hacer ahora mismo: filtra por rol y por guardas ya resueltas. La API lo devuelve como `accionesPermitidas`. */
-export function transicionesDisponibles(desde: EstadoSolicitud, rol: Rol, hechos: Hechos): Transicion[] {
-  return transicionesDesde(desde, rol).filter((t) => t.guarda === undefined || hechos[t.guarda] === true)
+/** Lo que el usuario puede hacer ahora mismo: filtra por rol y por guardas ya resueltas. La API lo devuelve como `allowedActions`. */
+export function availableTransitions(from: AdvanceRequestStatus, role: Role, facts: Facts): Transition[] {
+  return transitionsFrom(from, role).filter((t) => t.guard === undefined || facts[t.guard] === true)
 }
 
-export type CambioEstado = {
-  desde: EstadoSolicitud
-  hacia: EstadoSolicitud
-  rol: Rol
-  motivoCodigo?: MotivoCierre
+export type StatusChange = {
+  from: AdvanceRequestStatus
+  to: AdvanceRequestStatus
+  role: Role
+  closeReason?: CloseReason
 }
 
-export type ResultadoCambio =
-  | { ok: true; guarda: Guarda | null; requiereMotivo: boolean }
-  | { ok: false; razon: 'TRANSICION_NO_PERMITIDA' | 'ROL_INSUFICIENTE' | 'MOTIVO_REQUERIDO' | 'MOTIVO_NO_VALIDO' }
+export type StatusChangeResult =
+  | { ok: true; guard: Guard | null; requiresReason: boolean }
+  | { ok: false; reason: 'TRANSITION_NOT_ALLOWED' | 'INSUFFICIENT_ROLE' | 'REASON_REQUIRED' | 'REASON_NOT_VALID' }
 
-/** Evaluación pura. Si devuelve `guarda`, la API debe comprobarla contra la base de datos antes de aplicar el cambio. */
-export function evaluarCambioEstado(cambio: CambioEstado): ResultadoCambio {
-  const t = TRANSICIONES.find((x) => x.desde === cambio.desde && x.hacia === cambio.hacia)
-  if (!t) return { ok: false, razon: 'TRANSICION_NO_PERMITIDA' }
-  if (!rolAlcanza(cambio.rol, t.rolMinimo ?? 'GESTOR')) return { ok: false, razon: 'ROL_INSUFICIENTE' }
-  const requiereMotivo = t.requiereMotivo === true
-  if (requiereMotivo) {
-    if (!cambio.motivoCodigo) return { ok: false, razon: 'MOTIVO_REQUERIDO' }
-    const permitidos = MOTIVOS_POR_ESTADO[t.hacia as keyof typeof MOTIVOS_POR_ESTADO] as readonly MotivoCierre[]
-    if (!permitidos.includes(cambio.motivoCodigo)) return { ok: false, razon: 'MOTIVO_NO_VALIDO' }
+/** Evaluación pura. Si devuelve `guard`, la API debe comprobarla contra la base de datos antes de aplicar el cambio. */
+export function evaluateStatusChange(change: StatusChange): StatusChangeResult {
+  const t = TRANSITIONS.find((x) => x.from === change.from && x.to === change.to)
+  if (!t) return { ok: false, reason: 'TRANSITION_NOT_ALLOWED' }
+  if (!hasRoleAtLeast(change.role, t.minRole ?? 'AGENT')) return { ok: false, reason: 'INSUFFICIENT_ROLE' }
+  const requiresReason = t.requiresReason === true
+  if (requiresReason) {
+    if (!change.closeReason) return { ok: false, reason: 'REASON_REQUIRED' }
+    const allowed = CLOSE_REASONS_BY_STATUS[t.to as keyof typeof CLOSE_REASONS_BY_STATUS] as readonly CloseReason[]
+    if (!allowed.includes(change.closeReason)) return { ok: false, reason: 'REASON_NOT_VALID' }
   }
-  return { ok: true, guarda: t.guarda ?? null, requiereMotivo }
+  return { ok: true, guard: t.guard ?? null, requiresReason }
 }
 
-/** Cuerpo de `PATCH /admin/solicitudes/:id/estado`. `version` sostiene el bloqueo optimista (D28). */
-export const cambioEstadoSchema = z.object({
-  hacia: estadoSolicitudSchema,
+/** Cuerpo de `PATCH /admin/advance-requests/:id/status`. `version` sostiene el bloqueo optimista (D28). */
+export const statusChangeSchema = z.object({
+  to: advanceRequestStatusSchema,
   version: z.number().int().nonnegative(),
-  motivoCodigo: motivoSchema.optional(),
-  motivoDetalle: z.string().trim().max(500).optional(),
+  closeReason: closeReasonSchema.optional(),
+  closeReasonDetail: z.string().trim().max(500).optional(),
 })
-export type CambioEstadoDto = z.infer<typeof cambioEstadoSchema>
-
-export { rolSchema }
+export type StatusChangeDto = z.infer<typeof statusChangeSchema>
 ```
 
-`packages/shared/src/solicitud/index.ts` (formulario y código se agregan en la Tarea 8):
+`packages/shared/src/advance-request/index.ts` (formulario y código público se agregan en la Tarea 8):
 ```ts
 export {
-  ESTADO_INICIAL,
-  ESTADOS_SOLICITUD,
-  ESTADOS_TERMINALES,
-  type EstadoSolicitud,
-  type EstadoTerminal,
-  esEstadoTerminal,
-  estadoSolicitudSchema,
-  NOMBRE_ESTADO,
-} from './estados.js'
-export { MOTIVOS_CIERRE, MOTIVOS_POR_ESTADO, type MotivoCierre, motivoSchema, NOMBRE_MOTIVO } from './motivos.js'
+  CLOSE_REASON_LABELS,
+  CLOSE_REASONS,
+  CLOSE_REASONS_BY_STATUS,
+  type CloseReason,
+  closeReasonSchema,
+} from './close-reasons.js'
 export {
-  type CambioEstado,
-  type CambioEstadoDto,
-  cambioEstadoSchema,
-  evaluarCambioEstado,
-  GUARDAS,
-  type Guarda,
-  type Hechos,
-  type ResultadoCambio,
-  TRANSICIONES,
-  type Transicion,
-  transicionesDesde,
-  transicionesDisponibles,
-} from './transiciones.js'
+  ADVANCE_REQUEST_STATUSES,
+  type AdvanceRequestStatus,
+  advanceRequestStatusSchema,
+  INITIAL_STATUS,
+  isTerminalStatus,
+  STATUS_LABELS,
+  TERMINAL_STATUSES,
+  type TerminalStatus,
+} from './statuses.js'
+export {
+  availableTransitions,
+  evaluateStatusChange,
+  type Facts,
+  GUARDS,
+  type Guard,
+  type StatusChange,
+  type StatusChangeDto,
+  type StatusChangeResult,
+  statusChangeSchema,
+  TRANSITIONS,
+  type Transition,
+  transitionsFrom,
+} from './transitions.js'
 ```
 
 Agregar a `packages/shared/src/index.ts`:
 ```ts
-export * from './usuario/index.js'
-export * from './solicitud/index.js'
+export * from './user/index.js'
+export * from './advance-request/index.js'
 ```
 
 - [ ] **Step 6: Correr tests y verificación completa**
 
 Run: `pnpm --filter @anticipate/shared test && pnpm typecheck && pnpm lint`
-Expected: todos PASS. En particular los cinco tests estructurales: si alguien quita una flecha de cierre, "todo estado no terminal tiene camino a un estado terminal" falla en CI.
+Expected: todos PASS. En particular los tests estructurales: si alguien quita una flecha de cierre, "todo estado no terminal tiene camino a un estado terminal" falla en CI.
 
 - [ ] **Step 7: Commit**
 
@@ -2513,212 +2580,212 @@ git commit -m "feat(shared): máquina de estados como datos con guardas, roles, 
 
 ---
 
-### Task 8: Dominio `solicitud` · esquema del formulario y código público
+### Task 8: Dominio `advance-request` · esquema del formulario y código público
 
 **Files:**
-- Create: `packages/shared/src/solicitud/formulario.ts`, `packages/shared/src/solicitud/codigo.ts`
-- Test: `packages/shared/src/solicitud/formulario.test.ts`, `packages/shared/src/solicitud/codigo.test.ts`
-- Modify: `packages/shared/src/solicitud/index.ts`
+- Create: `packages/shared/src/advance-request/form.ts`, `packages/shared/src/advance-request/public-code.ts`
+- Test: `packages/shared/src/advance-request/form.test.ts`, `packages/shared/src/advance-request/public-code.test.ts`
+- Modify: `packages/shared/src/advance-request/index.ts`
 
 **Interfaces:**
-- Consumes: `rucSchema`, `dniSchema` (Tarea 3); `montoSchema` (Tarea 4).
-- Produces: `HORARIOS_CONTACTO`, `REGISTRO_CAVALI`, `solicitudFormularioSchema`, `SolicitudFormulario`; `formatearCodigoSolicitud({ prefijo, anio, secuencia })`, `parsearCodigoSolicitud(texto)`. La landing lo usa con `zodResolver`; la API como DTO del campo JSON del multipart (los archivos se validan aparte, STACK §8).
+- Consumes: `rucSchema`, `dniSchema` (Tarea 3); `amountSchema` (Tarea 4).
+- Produces: `CONTACT_TIME_SLOTS`, `CONTACT_TIME_SLOT_LABELS`, `CAVALI_REGISTRATION`, `advanceRequestFormSchema`, `AdvanceRequestForm`; `formatPublicCode({ prefix, year, sequence })`, `parsePublicCode(text)`. La landing lo usa con `zodResolver`; la API como DTO del campo JSON del multipart (los archivos se validan aparte, STACK §8).
 
 - [ ] **Step 1: Escribir los tests que fallan**
 
-`packages/shared/src/solicitud/formulario.test.ts`:
+`packages/shared/src/advance-request/form.test.ts`:
 ```ts
 import { describe, expect, it } from 'vitest'
-import { solicitudFormularioSchema } from './formulario.js'
+import { advanceRequestFormSchema } from './form.js'
 
-const valido = {
-  contacto: {
-    nombre: 'Ana Pérez',
+const valid = {
+  contact: {
+    fullName: 'Ana Pérez',
     dni: '46728673',
-    celular: '987654321',
-    correo: 'ana@proveedor.pe',
-    esRepresentanteLegal: true,
-    horarioContacto: 'MANANA',
+    mobile: '987654321',
+    email: 'ana@proveedor.pe',
+    isLegalRepresentative: true,
+    contactTimeSlot: 'MORNING',
   },
-  empresa: { ruc: '20100070970', razonSocial: 'PROVEEDOR EJEMPLO S.A.C.' },
-  financiamiento: { montoSolicitado: '8000.00', motivo: 'Capital de trabajo' },
-  registroCavali: 'NO_SE',
-  consentimientos: { terminos: true, datosPersonales: true, versionTerminos: '2026-09', versionPrivacidad: '2026-09' },
-  origen: { utm: { utm_source: 'linkedin' }, referrer: 'https://www.linkedin.com/' },
+  company: { ruc: '20100070970', legalName: 'PROVEEDOR EJEMPLO S.A.C.' },
+  financing: { requestedAmount: '8000.00', purpose: 'Capital de trabajo' },
+  cavaliRegistration: 'UNKNOWN',
+  consents: { terms: true, personalData: true, termsVersion: '2026-09', privacyVersion: '2026-09' },
+  source: { utm: { utm_source: 'linkedin' }, referrer: 'https://www.linkedin.com/' },
 }
 
-describe('solicitudFormularioSchema', () => {
+describe('advanceRequestFormSchema', () => {
   it('acepta un formulario completo', () => {
-    expect(solicitudFormularioSchema.safeParse(valido).success).toBe(true)
+    expect(advanceRequestFormSchema.safeParse(valid).success).toBe(true)
   })
 
   it('exige cargo cuando el contacto no es representante legal', () => {
-    const r = solicitudFormularioSchema.safeParse({
-      ...valido,
-      contacto: { ...valido.contacto, esRepresentanteLegal: false },
+    const r = advanceRequestFormSchema.safeParse({
+      ...valid,
+      contact: { ...valid.contact, isLegalRepresentative: false },
     })
     expect(r.success).toBe(false)
-    if (!r.success) expect(r.error.issues[0]?.path).toEqual(['contacto', 'cargo'])
+    if (!r.success) expect(r.error.issues[0]?.path).toEqual(['contact', 'jobTitle'])
   })
 
   it('acepta cargo cuando no es representante', () => {
-    const r = solicitudFormularioSchema.safeParse({
-      ...valido,
-      contacto: { ...valido.contacto, esRepresentanteLegal: false, cargo: 'Contadora' },
+    const r = advanceRequestFormSchema.safeParse({
+      ...valid,
+      contact: { ...valid.contact, isLegalRepresentative: false, jobTitle: 'Contadora' },
     })
     expect(r.success).toBe(true)
   })
 
   it('exige ambos consentimientos en true', () => {
-    const r = solicitudFormularioSchema.safeParse({
-      ...valido,
-      consentimientos: { ...valido.consentimientos, datosPersonales: false },
+    const r = advanceRequestFormSchema.safeParse({
+      ...valid,
+      consents: { ...valid.consents, personalData: false },
     })
     expect(r.success).toBe(false)
   })
 
   it('valida celular peruano de 9 dígitos que empieza en 9', () => {
-    for (const celular of ['98765432', '187654321', '9876 54321']) {
-      const r = solicitudFormularioSchema.safeParse({ ...valido, contacto: { ...valido.contacto, celular } })
-      expect(r.success, celular).toBe(false)
+    for (const mobile of ['98765432', '187654321', '9876 54321']) {
+      const r = advanceRequestFormSchema.safeParse({ ...valid, contact: { ...valid.contact, mobile } })
+      expect(r.success, mobile).toBe(false)
     }
   })
 
   it('normaliza correo a minúsculas y recorta espacios', () => {
-    const r = solicitudFormularioSchema.parse({ ...valido, contacto: { ...valido.contacto, correo: '  Ana@Proveedor.PE ' } })
-    expect(r.contacto.correo).toBe('ana@proveedor.pe')
+    const r = advanceRequestFormSchema.parse({ ...valid, contact: { ...valid.contact, email: '  Ana@Proveedor.PE ' } })
+    expect(r.contact.email).toBe('ana@proveedor.pe')
   })
 
-  it('origen es opcional y sus utm se limitan a claves utm_*', () => {
-    const { origen: _sin, ...sinOrigen } = valido
-    expect(solicitudFormularioSchema.safeParse(sinOrigen).success).toBe(true)
-    const r = solicitudFormularioSchema.safeParse({ ...valido, origen: { utm: { password: 'x' } } })
+  it('source es opcional y sus utm se limitan a claves utm_*', () => {
+    const { source: _omitted, ...withoutSource } = valid
+    expect(advanceRequestFormSchema.safeParse(withoutSource).success).toBe(true)
+    const r = advanceRequestFormSchema.safeParse({ ...valid, source: { utm: { password: 'x' } } })
     expect(r.success).toBe(false)
   })
 })
 ```
 
-`packages/shared/src/solicitud/codigo.test.ts`:
+`packages/shared/src/advance-request/public-code.test.ts`:
 ```ts
 import { describe, expect, it } from 'vitest'
-import { formatearCodigoSolicitud, parsearCodigoSolicitud } from './codigo.js'
+import { formatPublicCode, parsePublicCode } from './public-code.js'
 
 describe('código público de solicitud', () => {
   it('formatea con prefijo, año y secuencia de seis dígitos', () => {
-    expect(formatearCodigoSolicitud({ prefijo: 'ANT', anio: 2026, secuencia: 123 })).toBe('ANT-2026-000123')
-    expect(formatearCodigoSolicitud({ prefijo: 'ANT', anio: 2026, secuencia: 1_234_567 })).toBe('ANT-2026-1234567')
+    expect(formatPublicCode({ prefix: 'ANT', year: 2026, sequence: 123 })).toBe('ANT-2026-000123')
+    expect(formatPublicCode({ prefix: 'ANT', year: 2026, sequence: 1_234_567 })).toBe('ANT-2026-1234567')
   })
 
   it('parsea y rechaza formatos ajenos', () => {
-    expect(parsearCodigoSolicitud('ANT-2026-000123')).toEqual({ prefijo: 'ANT', anio: 2026, secuencia: 123 })
-    expect(parsearCodigoSolicitud('ant-2026-000123')).toEqual({ prefijo: 'ANT', anio: 2026, secuencia: 123 })
-    expect(parsearCodigoSolicitud('2026-000123')).toBeNull()
-    expect(parsearCodigoSolicitud('ANT-26-1')).toBeNull()
+    expect(parsePublicCode('ANT-2026-000123')).toEqual({ prefix: 'ANT', year: 2026, sequence: 123 })
+    expect(parsePublicCode('ant-2026-000123')).toEqual({ prefix: 'ANT', year: 2026, sequence: 123 })
+    expect(parsePublicCode('2026-000123')).toBeNull()
+    expect(parsePublicCode('ANT-26-1')).toBeNull()
   })
 })
 ```
 
 - [ ] **Step 2: Correr y verificar que fallan**
 
-Run: `pnpm --filter @anticipate/shared test -- formulario codigo`
+Run: `pnpm --filter @anticipate/shared test -- form public-code`
 Expected: FAIL por módulos inexistentes.
 
 - [ ] **Step 3: Implementar**
 
-`packages/shared/src/solicitud/formulario.ts`:
+`packages/shared/src/advance-request/form.ts`:
 ```ts
 import { z } from 'zod'
-import { montoSchema } from '../dinero/index.js'
-import { dniSchema, rucSchema } from '../identidad/index.js'
+import { dniSchema, rucSchema } from '../identity/index.js'
+import { amountSchema } from '../money/index.js'
 
-export const HORARIOS_CONTACTO = ['MANANA', 'TARDE', 'CUALQUIERA'] as const
-export const NOMBRE_HORARIO: Record<(typeof HORARIOS_CONTACTO)[number], string> = {
-  MANANA: 'Por la mañana (9 a 13 h)',
-  TARDE: 'Por la tarde (14 a 18 h)',
-  CUALQUIERA: 'Cualquier horario',
+export const CONTACT_TIME_SLOTS = ['MORNING', 'AFTERNOON', 'ANY'] as const
+export const CONTACT_TIME_SLOT_LABELS: Record<(typeof CONTACT_TIME_SLOTS)[number], string> = {
+  MORNING: 'Por la mañana (9 a 13 h)',
+  AFTERNOON: 'Por la tarde (14 a 18 h)',
+  ANY: 'Cualquier horario',
 }
 
-export const REGISTRO_CAVALI = ['SI', 'NO', 'NO_SE'] as const
+export const CAVALI_REGISTRATION = ['YES', 'NO', 'UNKNOWN'] as const
 
-const celularSchema = z
+const mobileSchema = z
   .string()
   .trim()
   .regex(/^9\d{8}$/, { error: 'El celular debe tener 9 dígitos y empezar con 9.' })
 
-const correoSchema = z.string().trim().toLowerCase().pipe(z.email({ error: 'El correo no es válido.' }))
+const emailSchema = z.string().trim().toLowerCase().pipe(z.email({ error: 'El correo no es válido.' }))
 
-const contactoSchema = z
+const contactSchema = z
   .object({
-    nombre: z.string().trim().min(3, 'Escribe tu nombre completo.').max(120),
+    fullName: z.string().trim().min(3, 'Escribe tu nombre completo.').max(120),
     dni: dniSchema,
-    celular: celularSchema,
-    correo: correoSchema,
-    esRepresentanteLegal: z.boolean(),
-    cargo: z.string().trim().min(2).max(80).optional(),
-    horarioContacto: z.enum(HORARIOS_CONTACTO),
+    mobile: mobileSchema,
+    email: emailSchema,
+    isLegalRepresentative: z.boolean(),
+    jobTitle: z.string().trim().min(2).max(80).optional(),
+    contactTimeSlot: z.enum(CONTACT_TIME_SLOTS),
   })
   .superRefine((c, ctx) => {
-    if (!c.esRepresentanteLegal && !c.cargo) {
-      ctx.addIssue({ code: 'custom', path: ['cargo'], message: 'Indica tu cargo en la empresa.' })
+    if (!c.isLegalRepresentative && !c.jobTitle) {
+      ctx.addIssue({ code: 'custom', path: ['jobTitle'], message: 'Indica tu cargo en la empresa.' })
     }
   })
 
 const utmSchema = z.record(z.string().regex(/^utm_[a-z_]+$/), z.string().trim().max(200))
 
-/** Campo JSON del `multipart/form-data` de `POST /solicitudes`. Los archivos van aparte. */
-export const solicitudFormularioSchema = z.object({
-  contacto: contactoSchema,
-  empresa: z.object({
+/** Campo JSON del `multipart/form-data` de `POST /advance-requests`. Los archivos van aparte. */
+export const advanceRequestFormSchema = z.object({
+  contact: contactSchema,
+  company: z.object({
     ruc: rucSchema,
-    razonSocial: z.string().trim().min(3).max(200),
+    legalName: z.string().trim().min(3).max(200),
   }),
-  financiamiento: z.object({
-    montoSolicitado: montoSchema,
-    motivo: z.string().trim().max(500).optional(),
+  financing: z.object({
+    requestedAmount: amountSchema,
+    purpose: z.string().trim().max(500).optional(),
   }),
-  registroCavali: z.enum(REGISTRO_CAVALI),
-  consentimientos: z.object({
-    terminos: z.literal(true, { error: 'Debes aceptar los términos y condiciones.' }),
-    datosPersonales: z.literal(true, { error: 'Debes autorizar el tratamiento de tus datos personales.' }),
-    versionTerminos: z.string().min(1),
-    versionPrivacidad: z.string().min(1),
+  cavaliRegistration: z.enum(CAVALI_REGISTRATION),
+  consents: z.object({
+    terms: z.literal(true, { error: 'Debes aceptar los términos y condiciones.' }),
+    personalData: z.literal(true, { error: 'Debes autorizar el tratamiento de tus datos personales.' }),
+    termsVersion: z.string().min(1),
+    privacyVersion: z.string().min(1),
   }),
-  origen: z
+  source: z
     .object({
       utm: utmSchema.optional(),
       referrer: z.url().max(2000).optional(),
     })
     .optional(),
 })
-export type SolicitudFormulario = z.infer<typeof solicitudFormularioSchema>
+export type AdvanceRequestForm = z.infer<typeof advanceRequestFormSchema>
 ```
 
-`packages/shared/src/solicitud/codigo.ts`:
+`packages/shared/src/advance-request/public-code.ts`:
 ```ts
-export type CodigoSolicitud = { prefijo: string; anio: number; secuencia: number }
+export type PublicCode = { prefix: string; year: number; sequence: number }
 
 /** `ANT-2026-000123`. El prefijo y la secuencia los da la API (config y secuencia de PostgreSQL). */
-export function formatearCodigoSolicitud({ prefijo, anio, secuencia }: CodigoSolicitud): string {
-  return `${prefijo.toUpperCase()}-${anio}-${String(secuencia).padStart(6, '0')}`
+export function formatPublicCode({ prefix, year, sequence }: PublicCode): string {
+  return `${prefix.toUpperCase()}-${year}-${String(sequence).padStart(6, '0')}`
 }
 
-export function parsearCodigoSolicitud(texto: string): CodigoSolicitud | null {
-  const m = /^([A-Za-z]{2,6})-(\d{4})-(\d{6,})$/.exec(texto.trim())
+export function parsePublicCode(text: string): PublicCode | null {
+  const m = /^([A-Za-z]{2,6})-(\d{4})-(\d{6,})$/.exec(text.trim())
   if (!m) return null
-  return { prefijo: (m[1] ?? '').toUpperCase(), anio: Number(m[2]), secuencia: Number(m[3]) }
+  return { prefix: (m[1] ?? '').toUpperCase(), year: Number(m[2]), sequence: Number(m[3]) }
 }
 ```
 
-Agregar a `packages/shared/src/solicitud/index.ts`:
+Agregar a `packages/shared/src/advance-request/index.ts`:
 ```ts
-export { type CodigoSolicitud, formatearCodigoSolicitud, parsearCodigoSolicitud } from './codigo.js'
 export {
-  HORARIOS_CONTACTO,
-  NOMBRE_HORARIO,
-  REGISTRO_CAVALI,
-  type SolicitudFormulario,
-  solicitudFormularioSchema,
-} from './formulario.js'
+  type AdvanceRequestForm,
+  advanceRequestFormSchema,
+  CAVALI_REGISTRATION,
+  CONTACT_TIME_SLOT_LABELS,
+  CONTACT_TIME_SLOTS,
+} from './form.js'
+export { formatPublicCode, parsePublicCode, type PublicCode } from './public-code.js'
 ```
 
 - [ ] **Step 4: Correr tests y verificación completa**
@@ -2735,207 +2802,202 @@ git commit -m "feat(shared): esquema del formulario de solicitud y código públ
 
 ---
 
-### Task 9: Dominios `documento` y `pagador`
+### Task 9: Dominios `supplier-document` y `payer`
 
 **Files:**
-- Create: `packages/shared/src/documento/vigencia.ts`, `packages/shared/src/documento/index.ts`
-- Create: `packages/shared/src/pagador/esquema.ts`, `packages/shared/src/pagador/index.ts`
-- Test: `packages/shared/src/documento/vigencia.test.ts`, `packages/shared/src/pagador/esquema.test.ts`
+- Create: `packages/shared/src/supplier-document/validity.ts`, `packages/shared/src/supplier-document/index.ts`
+- Create: `packages/shared/src/payer/schema.ts`, `packages/shared/src/payer/index.ts`
+- Test: `packages/shared/src/supplier-document/validity.test.ts`, `packages/shared/src/payer/schema.test.ts`
 - Modify: `packages/shared/src/index.ts`
 
 **Interfaces:**
-- Consumes: `FechaIso`, `diasEntre`, `fechaIsoSchema` (Tarea 4); `rucSchema` (Tarea 3).
-- Produces: `TIPOS_DOCUMENTO`, `ESTADOS_DOCUMENTO`, `ReglasVigencia`, `calcularValidoHasta(tipo, datos, reglas)`, `estaVigente(doc, hoy)`, `documentoTieneVigenciaRequerida(tipo)`; `pagadorPublicoSchema`, `PagadorPublico`, `esColorHexValido`. La API usa `calcularValidoHasta` al aprobar un documento y `estaVigente` en la guarda `documentosVigentes`; la landing recibe `PagadorPublico` de `GET /pagadores`.
+- Consumes: `IsoDate`, `daysBetween`, `addDaysIso`, `isIsoDate` (Tarea 4); `rucSchema` (Tarea 3); `CURRENCIES` (Tarea 4).
+- Produces: `SUPPLIER_DOCUMENT_TYPES`, `SUPPLIER_DOCUMENT_STATUSES`, `ValidityRules`, `computeValidUntil(type, input, rules)`, `isCurrentlyValid(doc, today)`, `requiresValidity(type)`; `publicPayerSchema`, `PublicPayer`, `isHexColor`, `slugSchema`. La API usa `computeValidUntil` al aprobar un documento y `isCurrentlyValid` en la guarda `documentsValid`; la landing recibe `PublicPayer` de `GET /payers`.
 
 - [ ] **Step 1: Escribir los tests que fallan**
 
-`packages/shared/src/documento/vigencia.test.ts`:
+`packages/shared/src/supplier-document/validity.test.ts`:
 ```ts
 import { describe, expect, it } from 'vitest'
-import { calcularValidoHasta, estaVigente, type ReglasVigencia } from './vigencia.js'
+import { computeValidUntil, isCurrentlyValid, type ValidityRules } from './validity.js'
 
-const reglas: ReglasVigencia = { diasVigenciaPoder: 90 }
+const rules: ValidityRules = { powerOfAttorneyValidityDays: 90 }
 
-describe('calcularValidoHasta', () => {
+describe('computeValidUntil', () => {
   it('vigencia de poder: fecha de emisión más los días del contexto', () => {
-    expect(calcularValidoHasta('VIGENCIA_PODER', { fechaEmision: '2026-09-01' }, reglas)).toBe('2026-11-30')
-    expect(calcularValidoHasta('VIGENCIA_PODER', { fechaEmision: '2026-09-01' }, { diasVigenciaPoder: 30 })).toBe('2026-10-01')
+    expect(computeValidUntil('POWER_OF_ATTORNEY_CERTIFICATE', { issuedOn: '2026-09-01' }, rules)).toBe('2026-11-30')
+    expect(computeValidUntil('POWER_OF_ATTORNEY_CERTIFICATE', { issuedOn: '2026-09-01' }, { powerOfAttorneyValidityDays: 30 })).toBe('2026-10-01')
   })
 
   it('DNI: hasta su fecha de caducidad', () => {
-    expect(calcularValidoHasta('DNI_REPRESENTANTE', { fechaCaducidad: '2030-05-20' }, reglas)).toBe('2030-05-20')
+    expect(computeValidUntil('REPRESENTATIVE_ID', { expiresOn: '2030-05-20' }, rules)).toBe('2030-05-20')
   })
 
   it('contrato marco y otros: sin vencimiento', () => {
-    expect(calcularValidoHasta('CONTRATO_MARCO', {}, reglas)).toBeNull()
-    expect(calcularValidoHasta('OTRO', {}, reglas)).toBeNull()
+    expect(computeValidUntil('MASTER_AGREEMENT', {}, rules)).toBeNull()
+    expect(computeValidUntil('OTHER', {}, rules)).toBeNull()
   })
 
   it('lanza si falta el dato que el tipo necesita', () => {
-    expect(() => calcularValidoHasta('VIGENCIA_PODER', {}, reglas)).toThrow()
-    expect(() => calcularValidoHasta('DNI_REPRESENTANTE', {}, reglas)).toThrow()
+    expect(() => computeValidUntil('POWER_OF_ATTORNEY_CERTIFICATE', {}, rules)).toThrow()
+    expect(() => computeValidUntil('REPRESENTATIVE_ID', {}, rules)).toThrow()
   })
 })
 
-describe('estaVigente', () => {
+describe('isCurrentlyValid', () => {
   it('solo un documento aprobado y no vencido está vigente', () => {
-    expect(estaVigente({ estado: 'APROBADO', validoHasta: '2026-12-31' }, '2026-09-23')).toBe(true)
-    expect(estaVigente({ estado: 'APROBADO', validoHasta: '2026-09-23' }, '2026-09-23')).toBe(true)
-    expect(estaVigente({ estado: 'APROBADO', validoHasta: '2026-09-22' }, '2026-09-23')).toBe(false)
-    expect(estaVigente({ estado: 'APROBADO', validoHasta: null }, '2026-09-23')).toBe(true)
-    expect(estaVigente({ estado: 'PENDIENTE_REVISION', validoHasta: null }, '2026-09-23')).toBe(false)
-    expect(estaVigente({ estado: 'RECHAZADO', validoHasta: '2099-01-01' }, '2026-09-23')).toBe(false)
+    expect(isCurrentlyValid({ status: 'APPROVED', validUntil: '2026-12-31' }, '2026-09-23')).toBe(true)
+    expect(isCurrentlyValid({ status: 'APPROVED', validUntil: '2026-09-23' }, '2026-09-23')).toBe(true)
+    expect(isCurrentlyValid({ status: 'APPROVED', validUntil: '2026-09-22' }, '2026-09-23')).toBe(false)
+    expect(isCurrentlyValid({ status: 'APPROVED', validUntil: null }, '2026-09-23')).toBe(true)
+    expect(isCurrentlyValid({ status: 'PENDING_REVIEW', validUntil: null }, '2026-09-23')).toBe(false)
+    expect(isCurrentlyValid({ status: 'REJECTED', validUntil: '2099-01-01' }, '2026-09-23')).toBe(false)
   })
 })
 ```
 
-`packages/shared/src/pagador/esquema.test.ts`:
+`packages/shared/src/payer/schema.test.ts`:
 ```ts
 import { describe, expect, it } from 'vitest'
-import { esColorHexValido, pagadorPublicoSchema } from './esquema.js'
+import { isHexColor, publicPayerSchema } from './schema.js'
 
 const sea = {
   slug: 'sea',
   ruc: '20131312955',
-  razonSocial: 'Servicios Energéticos Ambientales S.A.',
-  nombreCorto: 'SEA',
-  porcentajeAdelanto: 80,
-  plazoMinimoDias: 15,
-  maxFacturas: 10,
-  monedasPermitidas: ['PEN', 'USD'],
-  colorAcento: '#0E7C86',
+  legalName: 'Servicios Energéticos Ambientales S.A.',
+  shortName: 'SEA',
+  advancePercent: 80,
+  minTermDays: 15,
+  maxInvoices: 10,
+  allowedCurrencies: ['PEN', 'USD'],
+  accentColor: '#0E7C86',
   logoUrl: 'https://cdn.ejemplo.pe/sea.svg',
-  textos: { titulo: 'Adelanta tus facturas a SEA', subtitulo: 'Cobra hoy lo que SEA te pagará en 60 días' },
+  texts: { title: 'Adelanta tus facturas a SEA', subtitle: 'Cobra hoy lo que SEA te pagará en 60 días' },
 }
 
-describe('pagadorPublicoSchema', () => {
+describe('publicPayerSchema', () => {
   it('acepta un pagador completo', () => {
-    expect(pagadorPublicoSchema.safeParse(sea).success).toBe(true)
+    expect(publicPayerSchema.safeParse(sea).success).toBe(true)
   })
 
   it('el slug es kebab-case en minúsculas', () => {
     for (const slug of ['SEA', 'sea 2', 'sea_2', '-sea']) {
-      expect(pagadorPublicoSchema.safeParse({ ...sea, slug }).success, slug).toBe(false)
+      expect(publicPayerSchema.safeParse({ ...sea, slug }).success, slug).toBe(false)
     }
-    expect(pagadorPublicoSchema.safeParse({ ...sea, slug: 'sea-2' }).success).toBe(true)
+    expect(publicPayerSchema.safeParse({ ...sea, slug: 'sea-2' }).success).toBe(true)
   })
 
   it('el porcentaje está entre 1 y 100 con hasta dos decimales', () => {
-    expect(pagadorPublicoSchema.safeParse({ ...sea, porcentajeAdelanto: 0 }).success).toBe(false)
-    expect(pagadorPublicoSchema.safeParse({ ...sea, porcentajeAdelanto: 100.5 }).success).toBe(false)
-    expect(pagadorPublicoSchema.safeParse({ ...sea, porcentajeAdelanto: 33.333 }).success).toBe(false)
-    expect(pagadorPublicoSchema.safeParse({ ...sea, porcentajeAdelanto: 33.33 }).success).toBe(true)
+    expect(publicPayerSchema.safeParse({ ...sea, advancePercent: 0 }).success).toBe(false)
+    expect(publicPayerSchema.safeParse({ ...sea, advancePercent: 100.5 }).success).toBe(false)
+    expect(publicPayerSchema.safeParse({ ...sea, advancePercent: 33.333 }).success).toBe(false)
+    expect(publicPayerSchema.safeParse({ ...sea, advancePercent: 33.33 }).success).toBe(true)
   })
 
   it('logo opcional y color hexadecimal', () => {
-    expect(pagadorPublicoSchema.safeParse({ ...sea, logoUrl: null }).success).toBe(true)
-    expect(pagadorPublicoSchema.safeParse({ ...sea, colorAcento: 'azul' }).success).toBe(false)
-    expect(esColorHexValido('#abc')).toBe(true)
-    expect(esColorHexValido('#0E7C86')).toBe(true)
-    expect(esColorHexValido('0E7C86')).toBe(false)
+    expect(publicPayerSchema.safeParse({ ...sea, logoUrl: null }).success).toBe(true)
+    expect(publicPayerSchema.safeParse({ ...sea, accentColor: 'azul' }).success).toBe(false)
+    expect(isHexColor('#abc')).toBe(true)
+    expect(isHexColor('#0E7C86')).toBe(true)
+    expect(isHexColor('0E7C86')).toBe(false)
   })
 })
 ```
 
 - [ ] **Step 2: Correr y verificar que fallan**
 
-Run: `pnpm --filter @anticipate/shared test -- documento pagador`
+Run: `pnpm --filter @anticipate/shared test -- supplier-document payer`
 Expected: FAIL por módulos inexistentes.
 
-- [ ] **Step 3: Implementar `documento`**
+- [ ] **Step 3: Implementar `supplier-document`**
 
-`packages/shared/src/documento/vigencia.ts`:
+`packages/shared/src/supplier-document/validity.ts`:
 ```ts
 import { z } from 'zod'
-import { type FechaIso, diasEntre, esFechaIso } from '../fechas/index.js'
+import { type IsoDate, addDaysIso, daysBetween, isIsoDate } from '../dates/index.js'
 
-export const TIPOS_DOCUMENTO = ['DNI_REPRESENTANTE', 'VIGENCIA_PODER', 'CONTRATO_MARCO', 'OTRO'] as const
-export type TipoDocumento = (typeof TIPOS_DOCUMENTO)[number]
-export const tipoDocumentoSchema = z.enum(TIPOS_DOCUMENTO)
+export const SUPPLIER_DOCUMENT_TYPES = ['REPRESENTATIVE_ID', 'POWER_OF_ATTORNEY_CERTIFICATE', 'MASTER_AGREEMENT', 'OTHER'] as const
+export type SupplierDocumentType = (typeof SUPPLIER_DOCUMENT_TYPES)[number]
+export const supplierDocumentTypeSchema = z.enum(SUPPLIER_DOCUMENT_TYPES)
 
-export const ESTADOS_DOCUMENTO = ['PENDIENTE_REVISION', 'APROBADO', 'RECHAZADO'] as const
-export type EstadoDocumento = (typeof ESTADOS_DOCUMENTO)[number]
-export const estadoDocumentoSchema = z.enum(ESTADOS_DOCUMENTO)
+export const SUPPLIER_DOCUMENT_STATUSES = ['PENDING_REVIEW', 'APPROVED', 'REJECTED'] as const
+export type SupplierDocumentStatus = (typeof SUPPLIER_DOCUMENT_STATUSES)[number]
+export const supplierDocumentStatusSchema = z.enum(SUPPLIER_DOCUMENT_STATUSES)
 
-export const NOMBRE_TIPO_DOCUMENTO: Record<TipoDocumento, string> = {
-  DNI_REPRESENTANTE: 'DNI del representante legal',
-  VIGENCIA_PODER: 'Vigencia de poder (SUNARP)',
-  CONTRATO_MARCO: 'Contrato marco',
-  OTRO: 'Otro documento',
+export const SUPPLIER_DOCUMENT_TYPE_LABELS: Record<SupplierDocumentType, string> = {
+  REPRESENTATIVE_ID: 'DNI del representante legal',
+  POWER_OF_ATTORNEY_CERTIFICATE: 'Vigencia de poder (SUNARP)',
+  MASTER_AGREEMENT: 'Contrato marco',
+  OTHER: 'Otro documento',
 }
 
 /** Parámetros de negocio; la API los toma de su configuración. */
-export type ReglasVigencia = { diasVigenciaPoder: number }
+export type ValidityRules = { powerOfAttorneyValidityDays: number }
 
-export type DatosVigencia = { fechaEmision?: FechaIso; fechaCaducidad?: FechaIso }
-
-function sumarDias(fecha: FechaIso, dias: number): FechaIso {
-  const [a, m, d] = fecha.split('-').map(Number) as [number, number, number]
-  return new Date(Date.UTC(a, m - 1, d + dias)).toISOString().slice(0, 10)
-}
+export type ValidityInput = { issuedOn?: IsoDate; expiresOn?: IsoDate }
 
 /** Fecha hasta la que el documento vale, o null si no vence. Lanza si falta el dato que el tipo exige. */
-export function calcularValidoHasta(tipo: TipoDocumento, datos: DatosVigencia, reglas: ReglasVigencia): FechaIso | null {
-  switch (tipo) {
-    case 'VIGENCIA_PODER': {
-      if (!datos.fechaEmision || !esFechaIso(datos.fechaEmision)) throw new Error('VIGENCIA_PODER requiere fechaEmision')
-      return sumarDias(datos.fechaEmision, reglas.diasVigenciaPoder)
+export function computeValidUntil(type: SupplierDocumentType, input: ValidityInput, rules: ValidityRules): IsoDate | null {
+  switch (type) {
+    case 'POWER_OF_ATTORNEY_CERTIFICATE': {
+      if (!input.issuedOn || !isIsoDate(input.issuedOn)) throw new Error('POWER_OF_ATTORNEY_CERTIFICATE requiere issuedOn')
+      return addDaysIso(input.issuedOn, rules.powerOfAttorneyValidityDays)
     }
-    case 'DNI_REPRESENTANTE': {
-      if (!datos.fechaCaducidad || !esFechaIso(datos.fechaCaducidad)) throw new Error('DNI_REPRESENTANTE requiere fechaCaducidad')
-      return datos.fechaCaducidad
+    case 'REPRESENTATIVE_ID': {
+      if (!input.expiresOn || !isIsoDate(input.expiresOn)) throw new Error('REPRESENTATIVE_ID requiere expiresOn')
+      return input.expiresOn
     }
-    case 'CONTRATO_MARCO':
-    case 'OTRO':
+    case 'MASTER_AGREEMENT':
+    case 'OTHER':
       return null
   }
 }
 
-export function documentoTieneVigenciaRequerida(tipo: TipoDocumento): boolean {
-  return tipo === 'VIGENCIA_PODER' || tipo === 'DNI_REPRESENTANTE'
+export function requiresValidity(type: SupplierDocumentType): boolean {
+  return type === 'POWER_OF_ATTORNEY_CERTIFICATE' || type === 'REPRESENTATIVE_ID'
 }
 
-export type DocumentoVigencia = { estado: EstadoDocumento; validoHasta: FechaIso | null }
+export type DocumentValidity = { status: SupplierDocumentStatus; validUntil: IsoDate | null }
 
-/** Aprobado y con `validoHasta` de hoy en adelante (o sin vencimiento). */
-export function estaVigente(doc: DocumentoVigencia, hoy: FechaIso): boolean {
-  if (doc.estado !== 'APROBADO') return false
-  if (doc.validoHasta === null) return true
-  return diasEntre(hoy, doc.validoHasta) >= 0
+/** Aprobado y con `validUntil` de hoy en adelante (o sin vencimiento). */
+export function isCurrentlyValid(doc: DocumentValidity, today: IsoDate): boolean {
+  if (doc.status !== 'APPROVED') return false
+  if (doc.validUntil === null) return true
+  return daysBetween(today, doc.validUntil) >= 0
 }
 ```
 
-`packages/shared/src/documento/index.ts`:
+`packages/shared/src/supplier-document/index.ts`:
 ```ts
 export {
-  calcularValidoHasta,
-  type DatosVigencia,
-  documentoTieneVigenciaRequerida,
-  type DocumentoVigencia,
-  ESTADOS_DOCUMENTO,
-  type EstadoDocumento,
-  estaVigente,
-  estadoDocumentoSchema,
-  NOMBRE_TIPO_DOCUMENTO,
-  type ReglasVigencia,
-  TIPOS_DOCUMENTO,
-  type TipoDocumento,
-  tipoDocumentoSchema,
-} from './vigencia.js'
+  computeValidUntil,
+  type DocumentValidity,
+  isCurrentlyValid,
+  requiresValidity,
+  SUPPLIER_DOCUMENT_STATUSES,
+  SUPPLIER_DOCUMENT_TYPE_LABELS,
+  SUPPLIER_DOCUMENT_TYPES,
+  type SupplierDocumentStatus,
+  supplierDocumentStatusSchema,
+  type SupplierDocumentType,
+  supplierDocumentTypeSchema,
+  type ValidityInput,
+  type ValidityRules,
+} from './validity.js'
 ```
 
-- [ ] **Step 4: Implementar `pagador`**
+- [ ] **Step 4: Implementar `payer`**
 
-`packages/shared/src/pagador/esquema.ts`:
+`packages/shared/src/payer/schema.ts`:
 ```ts
 import { z } from 'zod'
-import { MONEDAS } from '../dinero/index.js'
-import { rucSchema } from '../identidad/index.js'
+import { rucSchema } from '../identity/index.js'
+import { CURRENCIES } from '../money/index.js'
 
-const COLOR_HEX = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/
+const HEX_COLOR = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/
 
-export function esColorHexValido(valor: string): boolean {
-  return COLOR_HEX.test(valor)
+export function isHexColor(value: string): boolean {
+  return HEX_COLOR.test(value)
 }
 
 export const slugSchema = z
@@ -2943,32 +3005,32 @@ export const slugSchema = z
   .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/, { error: 'El slug solo admite minúsculas, números y guiones.' })
   .max(60)
 
-/** Lo que la landing recibe de `GET /pagadores`: solo campos públicos (STACK §8). */
-export const pagadorPublicoSchema = z.object({
+/** Lo que la landing recibe de `GET /payers`: solo campos públicos (STACK §8). */
+export const publicPayerSchema = z.object({
   slug: slugSchema,
   ruc: rucSchema,
-  razonSocial: z.string().trim().min(3).max(200),
-  nombreCorto: z.string().trim().min(2).max(40),
-  porcentajeAdelanto: z.number().min(1).max(100).multipleOf(0.01),
-  plazoMinimoDias: z.number().int().min(0),
-  maxFacturas: z.number().int().min(1),
-  monedasPermitidas: z.array(z.enum(MONEDAS)).min(1),
-  colorAcento: z.string().refine(esColorHexValido, { error: 'El color debe ser hexadecimal, por ejemplo #0E7C86.' }),
+  legalName: z.string().trim().min(3).max(200),
+  shortName: z.string().trim().min(2).max(40),
+  advancePercent: z.number().min(1).max(100).multipleOf(0.01),
+  minTermDays: z.number().int().min(0),
+  maxInvoices: z.number().int().min(1),
+  allowedCurrencies: z.array(z.enum(CURRENCIES)).min(1),
+  accentColor: z.string().refine(isHexColor, { error: 'El color debe ser hexadecimal, por ejemplo #0E7C86.' }),
   logoUrl: z.url().nullable(),
-  textos: z.record(z.string(), z.string()),
+  texts: z.record(z.string(), z.string()),
 })
-export type PagadorPublico = z.infer<typeof pagadorPublicoSchema>
+export type PublicPayer = z.infer<typeof publicPayerSchema>
 ```
 
-`packages/shared/src/pagador/index.ts`:
+`packages/shared/src/payer/index.ts`:
 ```ts
-export { esColorHexValido, type PagadorPublico, pagadorPublicoSchema, slugSchema } from './esquema.js'
+export { isHexColor, type PublicPayer, publicPayerSchema, slugSchema } from './schema.js'
 ```
 
 Agregar a `packages/shared/src/index.ts`:
 ```ts
-export * from './documento/index.js'
-export * from './pagador/index.js'
+export * from './supplier-document/index.js'
+export * from './payer/index.js'
 ```
 
 - [ ] **Step 5: Correr tests y verificación completa**
@@ -2990,7 +3052,7 @@ git commit -m "feat(shared): vigencia de documentos del proveedor y esquema púb
 **Files:**
 - Create: `.github/workflows/ci.yml`, `README.md`
 - Move: `STACK.md` → `docs/STACK.md`
-- Modify: `docs/STACK.md` (secciones 4, 9 y 13: versiones fijadas, validación nativa de NestJS 12, `shared` en ESM, índices parciales de Prisma)
+- Modify: `docs/STACK.md` (secciones 4, 5, 9 y 13: convención de nombres y glosario, versiones fijadas, validación nativa de NestJS 12, `shared` en ESM, índices parciales de Prisma)
 
 - [ ] **Step 1: Crear el workflow de CI**
 
@@ -3008,7 +3070,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  verificar:
+  verify:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -3049,7 +3111,7 @@ Adelanto de facturas para proveedores de empresas pagadoras. Documento de arquit
 | `pnpm typecheck` | TypeScript en todos los paquetes |
 | `pnpm test` | Vitest en todos los paquetes |
 | `pnpm build` | Compila los paquetes |
-| `pnpm verificar` | Todo lo anterior, en orden. Es lo que corre CI |
+| `pnpm verify` | Todo lo anterior, en orden. Es lo que corre CI |
 | `pnpm test:watch` | Vitest en modo interactivo sobre todos los paquetes |
 
 ## Estructura
@@ -3058,10 +3120,48 @@ Adelanto de facturas para proveedores de empresas pagadoras. Documento de arquit
 - `packages/config`: presets de TypeScript.
 - `apps/`: landing, admin y api (fases siguientes).
 
-Las versiones se fijan en el `catalog` de `pnpm-workspace.yaml`; los `package.json` usan `catalog:`.
+## Convenciones
+
+- Código en inglés (identificadores, archivos, modelos); español en mensajes, textos, documentación, comentarios y commits. Glosario en `docs/STACK.md`.
+- Las versiones se fijan en el `catalog` de `pnpm-workspace.yaml`; los `package.json` usan `catalog:`.
 ```
 
-- [ ] **Step 3: Registrar en `docs/STACK.md` lo que la verificación de versiones cambió**
+- [ ] **Step 3: Registrar en `docs/STACK.md` la convención de nombres y el glosario**
+
+Agregar después del "Glosario" de la sección 1 un bloque nuevo:
+
+```markdown
+**Convención de nombres en el código**
+
+Identificadores en inglés (archivos, funciones, tipos, propiedades, valores de enums, modelos y columnas), igual que en el resto de proyectos de Anticipate. Español en todo lo que lee una persona: mensajes, textos, documentación, comentarios y commits. Los términos legales peruanos sin traducción real se quedan como préstamos (`ruc`, `dni`, `sunat`, `sunarp`, `cavali`). Los literales que SUNAT define en el XML (`FormaPago`, `Credito`, `Cuota001`, `Detraccion`) no se traducen.
+
+| Término del documento | Nombre en el código |
+|---|---|
+| Pagador | `Payer` |
+| Proveedor | `Supplier` |
+| Solicitud | `AdvanceRequest` |
+| Factura, cuota | `Invoice`, `Installment` |
+| Serie y número | `seriesNumber` |
+| Emisor, receptor | `issuer`, `recipient` |
+| Forma de pago (contado, crédito) | `paymentTerms` (`CASH`, `CREDIT`) |
+| Monto neto pendiente | `netPendingAmount` |
+| Detracción, retención, percepción | `detraction`, `withholding`, `perception` |
+| Representante legal | `LegalRepresentative` |
+| Documento del proveedor | `SupplierDocument` (`REPRESENTATIVE_ID`, `POWER_OF_ATTORNEY_CERTIFICATE`, `MASTER_AGREEMENT`, `OTHER`) |
+| Seguimiento | `FollowUp` |
+| Historial de estado | `StatusHistory` |
+| Consentimiento | `Consent` |
+| Archivo | `StoredFile` |
+| Auditoría | `AuditLog` |
+| Proforma, cesión, desembolso | `Quote`, `Assignment`, `Disbursement` |
+| Estados de la solicitud | `NEW`, `NO_ANSWER`, `CONTACTED`, `DOCUMENTS_PENDING`, `UNDER_REVIEW`, `QUOTE_SENT`, `APPROVED`, `DISBURSED`, `REJECTED`, `WITHDRAWN` |
+| Motivos de cierre | `NO_RESPONSE`, `SPAM_OR_INVALID`, `SUPPLIER_WITHDREW`, `INVALID_DOCUMENTS`, `INVOICE_NOT_ELIGIBLE`, `UNACCEPTABLE_RISK`, `OTHER` |
+| Roles | `AGENT` (gestor), `ADMIN` |
+
+Los diagramas de la sección 9 conservan los nombres en español del glosario; el `schema.prisma` (siguiente plan) usa los nombres de esta tabla.
+```
+
+- [ ] **Step 4: Registrar en `docs/STACK.md` lo que la verificación de versiones cambió**
 
 En la sección 4, tabla "Stack por capa":
 - Fila "Lenguaje": cambiar `TypeScript (modo `strict`)` por `TypeScript 6 (modo `strict`; 7.0 no lo soportan el CLI de NestJS ni @nestjs/swagger)`.
@@ -3069,6 +3169,9 @@ En la sección 4, tabla "Stack por capa":
 - Fila "Validación y contratos": cambiar `Zod + `nestjs-zod`` por `Zod 4 + validación nativa de NestJS 12 (Standard Schema; `nestjs-zod` no soporta NestJS 12)`.
 - Fila "Documentación API": cambiar `OpenAPI (Swagger) generado desde Zod` por `OpenAPI generado por @nestjs/swagger 12 directamente desde los esquemas Zod (≥ 4.2, sin conversor)`.
 - Fila "Correos": cambiar `Brevo (API transaccional) + React Email` por `Brevo (API transaccional) + React Email 6 (paquete único `react-email`)`.
+- Fila "Fechas": cambiar `Guardar en UTC, mostrar en `America/Lima`` por `date-fns 4 con `@date-fns/tz`; fechas de negocio como calendario ISO, instantes en UTC, "hoy" calculado una vez en `America/Lima``.
+
+En la sección 5, en el árbol del monorepo, renombrar la descripción de `packages/shared` a `Esquemas Zod, tipos, reglas de factura, lector UBL, máquina de estados, validadores RUC/DNI`.
 
 En la sección 9, fila "Duplicados" de las reglas de la factura: cambiar `escrito a mano en el SQL de la migración porque Prisma no expresa índices parciales` por `declarado en `schema.prisma` con la vista previa `partialIndexes` (Prisma ≥ 7.4); un índice parcial escrito a mano en SQL lo detecta como drift`. En D26, columna "Elegido", el mismo cambio.
 
@@ -3078,23 +3181,25 @@ En la sección 13 agregar al final:
 | D30 | Compilación de `packages/shared` | `tsdown` a ESM con tipos, `exports` por dominio, imports internos con `.js` | NestJS 12 es ESM y Node ≥ 22.12 tiene `require(esm)`; un solo formato evita el "dual package hazard" y el `dist` obsoleto | Dual ESM + CJS con `tsup` (sin mantenimiento); consumir el TypeScript fuente sin build (Turbopack no resuelve `./x.js` → `x.ts`) |
 | D31 | Versiones fijadas de las fundaciones | Node 24, pnpm 12, TypeScript 6 vía alias `@typescript/typescript6`, Zod 4, Vitest 5, Biome 2.5, Prisma 7.10 sin caret | Verificadas contra npm y documentación oficial el 2026-09-23; TypeScript 7 y Prisma 8 (RC) rompen dependencias del stack | Última versión de cada paquete sin mirar compatibilidad |
 | D32 | Validación en la API | Standard Schema nativo de NestJS 12 (`@Body({ schema })`) | `nestjs-zod` 5.5 no soporta NestJS 12; @nestjs/swagger 12 convierte esquemas Zod ≥ 4.2 sin configuración | `nestjs-zod` (D8 queda reemplazada por esta decisión) |
+| D33 | Idioma del código | Identificadores en inglés; español para personas; glosario en la sección 1 | Igual que `anticipate-health-backend` y los portales; el glosario evita traducciones inconsistentes de los términos del negocio | Todo en español (único repo distinto del resto de la empresa) |
+| D34 | Fechas | date-fns 4 con `@date-fns/tz`; fechas de negocio como texto ISO de calendario; `shared` recibe "hoy" por parámetro | Misma librería que el resto de repos; las fechas de vencimiento son de calendario, no instantes; la zona horaria se aplica en un solo lugar | Aritmética de fechas propia; guardar vencimientos como timestamps |
 ```
 
-Y en el historial, fila 0.4, agregar al final: `; versiones fijadas y validación nativa de NestJS 12 (D30 a D32); documento movido a docs/`.
+Y en el historial, fila 0.4, agregar al final: `; convención de nombres en inglés con glosario (D33); date-fns (D34); versiones fijadas y validación nativa de NestJS 12 (D30 a D32); documento movido a docs/`.
 
-- [ ] **Step 4: Verificación completa y commit**
+- [ ] **Step 5: Verificación completa y commit**
 
-Run: `pnpm verificar`
-Expected: lint, typecheck, test y build sin errores. Contar los tests: `pnpm test 2>&1 | grep -E "Tests|Test Files"` debe mostrar más de 80 tests en verde.
+Run: `pnpm verify`
+Expected: lint, typecheck, test y build sin errores. Contar los tests: `pnpm --filter @anticipate/shared test 2>&1 | grep -E "Tests|Test Files"` debe mostrar más de 90 tests en verde.
 
 ```bash
 git add .github README.md docs
 git commit -m "chore: CI con GitHub Actions, README y documento vivo en docs/"
 ```
 
-- [ ] **Step 5: Abrir el pull request de la fase**
+- [ ] **Step 6: Abrir el pull request de la fase**
 
-Si el repositorio ya tiene remoto en GitHub: crear rama `feat/fundaciones-y-shared` desde el primer commit y abrir el PR contra `main`. Si aún no hay remoto, los commits quedan en `main` local y el PR se hace cuando exista.
+Si el repositorio ya tiene remoto en GitHub: crear rama `feat/foundations-and-shared` desde el primer commit y abrir el PR contra `main`. Si aún no hay remoto, los commits quedan en `main` local y el PR se hace cuando exista.
 
 ---
 
@@ -3102,19 +3207,22 @@ Si el repositorio ya tiene remoto en GitHub: crear rama `feat/fundaciones-y-shar
 
 | Tema | Decisión | Por qué |
 |---|---|---|
+| Idioma del código | Inglés para identificadores, español para personas, glosario en STACK.md | Consistencia con los otros repos de Anticipate; sin traducciones inconsistentes del dominio |
+| Fechas | date-fns 4 + `@date-fns/tz`; fechas ISO de calendario; "hoy" inyectado | Misma librería que el resto de repos; sin errores de medianoche; zona horaria en un solo lugar |
 | Compilación de `shared` | `tsdown` a ESM con tipos, `exports` por dominio, imports con `.js` | NestJS 12 es ESM; Node ≥ 22.12 tiene `require(esm)`; un solo formato evita el dual package hazard. Turbopack no resuelve `./x.js` → `x.ts`, así que consumir fuente sin build no es opción |
-| Guardas de la máquina de estados | Nombres en `shared`, implementación en la API | `shared` no puede tocar Prisma; el admin solo necesita saber que la transición tiene condición |
+| Guardas de la máquina de estados | Nombres en `shared`, hechos calculados por la API | `shared` no puede tocar Prisma; el admin recibe `allowedActions` ya resueltas |
 | Motivos de cierre | Enum en `shared`, validado por estado destino | Métricas por motivo sin inventar estados (D27) |
-| `rucProveedor` opcional en el contexto | La landing lee facturas antes de conocer el RUC | D22: el XML completa la empresa |
-| Retención | No se lee todavía | Sin XML reales que la incluyan; el neto pendiente ya viene descontado |
+| `supplierRuc` opcional en el contexto | La landing lee facturas antes de conocer el RUC | D22: el XML completa la empresa |
+| Retención | No se lee todavía | Va en `AllowanceCharge` código 62; el neto pendiente ya viene descontado; se agrega con XML reales |
 | Turborepo | Desde el día 1, sin caché remota | Ordena `build` de packages antes que apps y cachea en local; cuesta un archivo de diez líneas |
 | TypeScript 6 vía alias | `typescript@npm:@typescript/typescript6` | 7.0 es `latest` pero no tiene API programática y lo rechazan el CLI de NestJS 12 y @nestjs/swagger |
 | `nestjs-zod` | Descartado | No soporta NestJS 12; la validación nativa con Standard Schema lo reemplaza (paso 2) |
 
 ## Self-review (hecho al escribir el plan)
 
-- **Cobertura de STACK.md**: §4 stack raíz (Tarea 1), §5 estructura y reglas de dependencia (Tareas 1 y 2), §9 reglas de factura (Tarea 6), estados y transiciones con motivo codificado (Tarea 7), tipos y vigencia de documentos (Tarea 9), convenciones de dinero y fechas (Tarea 4), campos del formulario §6 (Tarea 8), campos públicos del pagador §8 (Tarea 9), tests obligatorios y test estructural §12 (Tareas 3, 6, 7), CI §12 (Tarea 10), actualización del documento con las versiones verificadas (Tarea 10). Fuera de este plan, a propósito: esquema Prisma, API, landing, admin, Docker Compose (pasos 2 a 4).
-- **Verificación de versiones**: hecha el 2026-09-23 con seis agentes contra el registro npm y documentación oficial (Node, pnpm, TypeScript, NestJS, Prisma, Vitest, Biome, Astro, Next.js, fast-xml-parser, SUNAT). Pins y consecuencias incorporados en Global Constraints, Tarea 1, Tarea 2 y Tarea 10.
+- **Cobertura de STACK.md**: §4 stack raíz (Tarea 1), §5 estructura y reglas de dependencia (Tareas 1 y 2), §9 reglas de factura (Tarea 6), estados y transiciones con motivo codificado (Tarea 7), tipos y vigencia de documentos (Tarea 9), convenciones de dinero y fechas (Tarea 4), campos del formulario §6 (Tarea 8), campos públicos del pagador §8 (Tarea 9), tests obligatorios y test estructural §12 (Tareas 3, 6, 7), CI §12 (Tarea 10), convención de nombres, glosario y versiones verificadas (Tarea 10). Fuera de este plan, a propósito: esquema Prisma, API, landing, admin, Docker Compose (pasos 2 a 4).
 - **Placeholders**: los únicos valores por completar son las versiones del catálogo (Tarea 1, paso 2), que por diseño se toman de `pnpm view` en el momento de ejecutar.
-- **Consistencia de nombres**: `crearProblema`, `Problema`, `Monto`, `normalizarMonto`, `FacturaLeida`, `ContextoValidacion`, `validarFacturas`, `evaluarCambioEstado`, `estaVigente`, `pagadorPublicoSchema` se usan con la misma firma en todas las tareas que los mencionan.
-- **Review Focus**: los cinco puntos tienen test: BOM y CRLF (Tarea 5, "robustez de formato"), prefijos de espacio de nombres (Tarea 5), montos sin dos decimales (Tareas 4 y 5), cuota vencida entre cuotas futuras (Tarea 6), factura repetida y emisores distintos (Tarea 6).
+- **Consistencia de nombres**: `createProblem`, `Problem`, `Amount`, `normalizeAmount`, `ParsedInvoice`, `ValidationContext`, `validateInvoices`, `evaluateStatusChange`, `availableTransitions`, `isCurrentlyValid`, `publicPayerSchema` se usan con la misma firma en todas las tareas que los mencionan.
+- **Review Focus**: los cinco puntos tienen test: BOM y CRLF (Tarea 5, "robustez de formato"), prefijos de espacio de nombres y ruta legada del RUC (Tarea 5), montos sin dos decimales (Tareas 4 y 5), cuota vencida entre cuotas futuras (Tarea 6), factura repetida y emisores distintos (Tarea 6).
+- **Revisión adversarial del plan** (2026-09-24, parcial por límite de sesión): corrieron los lentes de nombres e idioma; confirmaron y se corrigieron dos errores de compilación (`TRANSITIONS` tipada como `readonly Transition[]` en vez de `as const`, e `include` de `packages/shared/tsconfig.json` limitado a `src` por `rootDir`) y el script raíz pasó de `verificar` a `verify`. Pendientes de correr: APIs de librerías, tests contra código y ejecutabilidad.
+- **Verificación de versiones**: hecha el 2026-09-23 con seis agentes contra el registro npm y documentación oficial (Node, pnpm, TypeScript, NestJS, Prisma, Vitest, Biome, Astro, Next.js, fast-xml-parser, SUNAT). Pins y consecuencias incorporados en Global Constraints, Tarea 1, Tarea 2 y Tarea 10.
