@@ -46,24 +46,27 @@ const emailSchema = z
   .pipe(z.email({ error: FORM_MESSAGES.email }))
 
 const contactSchema = z
-  .object({
-    fullName: z
-      .string({ error: FORM_MESSAGES.fullNameMin })
-      .trim()
-      .min(3, { error: FORM_MESSAGES.fullNameMin })
-      .max(120, { error: FORM_MESSAGES.fullNameMax }),
-    dni: dniSchema,
-    mobile: mobileSchema,
-    email: emailSchema,
-    isLegalRepresentative: z.boolean({ error: FORM_MESSAGES.isLegalRepresentative }),
-    jobTitle: z
-      .string({ error: FORM_MESSAGES.jobTitleMin })
-      .trim()
-      .min(2, { error: FORM_MESSAGES.jobTitleMin })
-      .max(80, { error: FORM_MESSAGES.jobTitleMax })
-      .optional(),
-    contactTimeSlot: z.enum(CONTACT_TIME_SLOTS, { error: FORM_MESSAGES.contactTimeSlot }),
-  })
+  .object(
+    {
+      fullName: z
+        .string({ error: FORM_MESSAGES.fullNameMin })
+        .trim()
+        .min(3, { error: FORM_MESSAGES.fullNameMin })
+        .max(120, { error: FORM_MESSAGES.fullNameMax }),
+      dni: dniSchema,
+      mobile: mobileSchema,
+      email: emailSchema,
+      isLegalRepresentative: z.boolean({ error: FORM_MESSAGES.isLegalRepresentative }),
+      jobTitle: z
+        .string({ error: FORM_MESSAGES.jobTitleMin })
+        .trim()
+        .min(2, { error: FORM_MESSAGES.jobTitleMin })
+        .max(80, { error: FORM_MESSAGES.jobTitleMax })
+        .optional(),
+      contactTimeSlot: z.enum(CONTACT_TIME_SLOTS, { error: FORM_MESSAGES.contactTimeSlot }),
+    },
+    { error: FORM_MESSAGES.contact },
+  )
   .superRefine((c, ctx) => {
     if (!c.isLegalRepresentative && !c.jobTitle) {
       ctx.addIssue({ code: 'custom', path: ['jobTitle'], message: FORM_MESSAGES.jobTitleRequired })
@@ -71,15 +74,20 @@ const contactSchema = z
   })
 
 // Clave acotada a `utm_` + hasta 36 caracteres (40 en total) para no dejar una clave sin tope de
-// tamaño; el `error` del propio `z.record` cubre tanto una clave que no matchea como una clave
-// válida con un valor inválido, así ningún mensaje de Zod en inglés se cuela en los issues.
-const utmKeySchema = z.string().regex(/^utm_[a-z_]{1,36}$/, { error: FORM_MESSAGES.utmKey })
+// tamaño. Cada pieza trae su mensaje: el `error` del `z.record` cubre que `utm` no sea un objeto
+// (`invalid_type`) y la clave inválida (`invalid_key`, con el issue de la clave anidado), y los de
+// la clave y del valor cubren sus propios issues; así ningún mensaje en inglés de Zod se cuela.
+const utmKeySchema = z
+  .string({ error: FORM_MESSAGES.utmKey })
+  .regex(/^utm_[a-z_]{1,36}$/, { error: FORM_MESSAGES.utmKey })
 const utmValueSchema = z
   .string({ error: FORM_MESSAGES.utmValueMax })
   .trim()
   .max(200, { error: FORM_MESSAGES.utmValueMax })
 const utmSchema = z
-  .record(utmKeySchema, utmValueSchema, { error: FORM_MESSAGES.utmKey })
+  .record(utmKeySchema, utmValueSchema, {
+    error: (issue) => (issue.code === 'invalid_type' ? FORM_MESSAGES.utm : FORM_MESSAGES.utmKey),
+  })
   .refine((utm) => Object.keys(utm).length <= MAX_UTM_KEYS, { error: FORM_MESSAGES.utmTooMany })
 
 // Solo http o https: `z.url()` acepta `javascript:` y `data:`, que el admin podría terminar
@@ -98,50 +106,69 @@ const referrerSchema = z
   .optional()
   .catch(undefined)
 
-/** Campo JSON del `multipart/form-data` de `POST /advance-requests`. Los archivos van aparte. */
-export const advanceRequestFormSchema = z.object({
-  /**
-   * Pagador de la landing desde la que se envía (`/sea` → `sea`). La API busca con este slug al
-   * pagador activo y arma con su configuración el `ValidationContext` de las facturas (RUC, porcentaje
-   * de adelanto, plazo mínimo, máximo de facturas y monedas); un slug desconocido o inactivo se
-   * rechaza antes de leer los archivos.
-   */
-  payerSlug: slugSchema,
-  contact: contactSchema,
-  company: z.object({
-    ruc: rucSchema,
-    legalName: z
-      .string({ error: FORM_MESSAGES.legalNameMin })
-      .trim()
-      .min(3, { error: FORM_MESSAGES.legalNameMin })
-      .max(200, { error: FORM_MESSAGES.legalNameMax }),
-  }),
-  financing: z.object({
-    requestedAmount: amountSchema,
-    purpose: z
-      .string({ error: FORM_MESSAGES.purposeMax })
-      .trim()
-      .max(500, { error: FORM_MESSAGES.purposeMax })
+/**
+ * Campo JSON del `multipart/form-data` de `POST /advance-requests`. Los archivos van aparte. Cada
+ * `z.object` trae su `error`: un bloque que falta o no es un objeto (lo que la landing nunca envía,
+ * pero sí una llamada directa a la API) se informa en español, no con el inglés por defecto de Zod.
+ */
+export const advanceRequestFormSchema = z.object(
+  {
+    /**
+     * Pagador de la landing desde la que se envía (`/sea` → `sea`). La API busca con este slug al
+     * pagador activo y arma con su configuración el `ValidationContext` de las facturas (RUC,
+     * porcentaje de adelanto, plazo mínimo, máximo de facturas y monedas); un slug desconocido o
+     * inactivo se rechaza antes de leer los archivos.
+     */
+    payerSlug: slugSchema,
+    contact: contactSchema,
+    company: z.object(
+      {
+        ruc: rucSchema,
+        legalName: z
+          .string({ error: FORM_MESSAGES.legalNameMin })
+          .trim()
+          .min(3, { error: FORM_MESSAGES.legalNameMin })
+          .max(200, { error: FORM_MESSAGES.legalNameMax }),
+      },
+      { error: FORM_MESSAGES.company },
+    ),
+    financing: z.object(
+      {
+        requestedAmount: amountSchema,
+        purpose: z
+          .string({ error: FORM_MESSAGES.purposeMax })
+          .trim()
+          .max(500, { error: FORM_MESSAGES.purposeMax })
+          .optional(),
+      },
+      { error: FORM_MESSAGES.financing },
+    ),
+    cavaliRegistration: z.enum(CAVALI_REGISTRATION, { error: FORM_MESSAGES.cavaliRegistration }),
+    consents: z.object(
+      {
+        terms: z.literal(true, { error: FORM_MESSAGES.terms }),
+        personalData: z.literal(true, { error: FORM_MESSAGES.personalData }),
+        termsVersion: z
+          .string({ error: FORM_MESSAGES.termsVersionMin })
+          .min(1, { error: FORM_MESSAGES.termsVersionMin })
+          .max(20, { error: FORM_MESSAGES.termsVersionMax }),
+        privacyVersion: z
+          .string({ error: FORM_MESSAGES.privacyVersionMin })
+          .min(1, { error: FORM_MESSAGES.privacyVersionMin })
+          .max(20, { error: FORM_MESSAGES.privacyVersionMax }),
+      },
+      { error: FORM_MESSAGES.consents },
+    ),
+    source: z
+      .object(
+        {
+          utm: utmSchema.optional(),
+          referrer: referrerSchema,
+        },
+        { error: FORM_MESSAGES.source },
+      )
       .optional(),
-  }),
-  cavaliRegistration: z.enum(CAVALI_REGISTRATION, { error: FORM_MESSAGES.cavaliRegistration }),
-  consents: z.object({
-    terms: z.literal(true, { error: FORM_MESSAGES.terms }),
-    personalData: z.literal(true, { error: FORM_MESSAGES.personalData }),
-    termsVersion: z
-      .string({ error: FORM_MESSAGES.termsVersionMin })
-      .min(1, { error: FORM_MESSAGES.termsVersionMin })
-      .max(20, { error: FORM_MESSAGES.termsVersionMax }),
-    privacyVersion: z
-      .string({ error: FORM_MESSAGES.privacyVersionMin })
-      .min(1, { error: FORM_MESSAGES.privacyVersionMin })
-      .max(20, { error: FORM_MESSAGES.privacyVersionMax }),
-  }),
-  source: z
-    .object({
-      utm: utmSchema.optional(),
-      referrer: referrerSchema,
-    })
-    .optional(),
-})
+  },
+  { error: FORM_MESSAGES.form },
+)
 export type AdvanceRequestForm = z.infer<typeof advanceRequestFormSchema>

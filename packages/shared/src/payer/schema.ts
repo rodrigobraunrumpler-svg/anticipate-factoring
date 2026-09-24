@@ -19,9 +19,12 @@ export const slugSchema = z
 const MAX_TEXT_KEYS = 30
 
 // Clave acotada a camelCase de hasta 40 caracteres y valor acotado a 2000 caracteres para no dejar
-// un campo sin tope de tamaño; el `error` del propio `z.record` (forma de 3 argumentos) cubre la
-// clave inválida, así ningún mensaje de Zod en inglés se cuela en los issues.
-const textKeySchema = z.string().regex(/^[a-z][a-zA-Z0-9]{0,39}$/, { error: M.textKey })
+// un campo sin tope de tamaño. El `error` del propio `z.record` (forma de 3 argumentos) cubre que
+// `texts` no sea un objeto y la clave inválida, y el de la clave y el del valor cubren sus propios
+// issues, así ningún mensaje de Zod en inglés se cuela en los issues.
+const textKeySchema = z
+  .string({ error: M.textKey })
+  .regex(/^[a-z][a-zA-Z0-9]{0,39}$/, { error: M.textKey })
 const textValueSchema = z.string({ error: M.texts }).trim().max(2000, { error: M.textValueMax })
 const textsSchema = z
   .record(textKeySchema, textValueSchema, {
@@ -37,34 +40,37 @@ const advancePercentSchema = z
   .multipleOf(0.01, { error: M.advancePercent })
 
 /** Lo que la landing recibe de `GET /payers`: solo campos públicos (STACK §8). */
-export const publicPayerSchema = z.object({
-  slug: slugSchema,
-  ruc: rucSchema,
-  legalName: z
-    .string({ error: M.legalNameMin })
-    .trim()
-    .min(3, { error: M.legalNameMin })
-    .max(200, { error: M.legalNameMax }),
-  shortName: z
-    .string({ error: M.shortNameMin })
-    .trim()
-    .min(2, { error: M.shortNameMin })
-    .max(40, { error: M.shortNameMax }),
-  advancePercent: advancePercentSchema,
-  minTermDays: z
-    .number({ error: M.minTermDays })
-    .int({ error: M.minTermDays })
-    .min(0, { error: M.minTermDays }),
-  maxInvoices: z
-    .number({ error: M.maxInvoices })
-    .int({ error: M.maxInvoices })
-    .min(1, { error: M.maxInvoices }),
-  allowedCurrencies: z
-    .array(z.enum(CURRENCIES, { error: M.allowedCurrencies }), { error: M.allowedCurrencies })
-    .min(1, { error: M.allowedCurrencies }),
-  accentColor: z.string({ error: M.accentColor }).refine(isHexColor, { error: M.accentColor }),
-  // Solo http o https: `z.url()` acepta `javascript:` y `data:`, y la landing pinta este valor.
-  logoUrl: z.httpUrl({ error: M.logoUrl }).nullable(),
-  texts: textsSchema,
-})
+export const publicPayerSchema = z.object(
+  {
+    slug: slugSchema,
+    ruc: rucSchema,
+    legalName: z
+      .string({ error: M.legalNameMin })
+      .trim()
+      .min(3, { error: M.legalNameMin })
+      .max(200, { error: M.legalNameMax }),
+    shortName: z
+      .string({ error: M.shortNameMin })
+      .trim()
+      .min(2, { error: M.shortNameMin })
+      .max(40, { error: M.shortNameMax }),
+    advancePercent: advancePercentSchema,
+    minTermDays: z
+      .number({ error: M.minTermDays })
+      .int({ error: M.minTermDays })
+      .min(0, { error: M.minTermDays }),
+    maxInvoices: z
+      .number({ error: M.maxInvoices })
+      .int({ error: M.maxInvoices })
+      .min(1, { error: M.maxInvoices }),
+    allowedCurrencies: z
+      .array(z.enum(CURRENCIES, { error: M.allowedCurrencies }), { error: M.allowedCurrencies })
+      .min(1, { error: M.allowedCurrencies }),
+    accentColor: z.string({ error: M.accentColor }).refine(isHexColor, { error: M.accentColor }),
+    // Solo http o https: `z.url()` acepta `javascript:` y `data:`, y la landing pinta este valor.
+    logoUrl: z.httpUrl({ error: M.logoUrl }).nullable(),
+    texts: textsSchema,
+  },
+  { error: M.publicPayer },
+)
 export type PublicPayer = z.infer<typeof publicPayerSchema>

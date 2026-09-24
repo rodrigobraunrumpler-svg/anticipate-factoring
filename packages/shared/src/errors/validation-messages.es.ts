@@ -14,6 +14,7 @@ export const VALIDATION_MESSAGES_ES = {
     isoDate: 'La fecha debe tener el formato AAAA-MM-DD.',
   },
   payer: {
+    publicPayer: 'Los datos del pagador no tienen el formato esperado.',
     slug: 'El slug solo admite minúsculas, números y guiones.',
     slugMax: 'El slug no puede tener más de 60 caracteres.',
     legalNameMin: 'La razón social debe tener al menos 3 caracteres.',
@@ -33,6 +34,12 @@ export const VALIDATION_MESSAGES_ES = {
     textsTooMany: 'Hay demasiados textos (máximo 30).',
   },
   advanceRequestForm: {
+    form: 'La solicitud no tiene el formato esperado.',
+    contact: 'Faltan los datos de contacto o no tienen el formato esperado.',
+    company: 'Faltan los datos de la empresa o no tienen el formato esperado.',
+    financing: 'Faltan los datos del financiamiento o no tienen el formato esperado.',
+    consents: 'Faltan los consentimientos o no tienen el formato esperado.',
+    source: 'Los datos de origen de la visita no tienen el formato esperado.',
     fullNameMin: 'Escribe tu nombre completo.',
     fullNameMax: 'El nombre no puede tener más de 120 caracteres.',
     mobile: 'El celular debe tener 9 dígitos y empezar con 9.',
@@ -53,6 +60,7 @@ export const VALIDATION_MESSAGES_ES = {
     termsVersionMax: 'La versión de los términos y condiciones no es válida.',
     privacyVersionMin: 'Falta la versión de la política de privacidad.',
     privacyVersionMax: 'La versión de la política de privacidad no es válida.',
+    utm: 'Los parámetros de origen deben ser pares de clave y texto.',
     utmKey: 'Los parámetros de origen solo pueden usar claves utm_* de hasta 40 caracteres.',
     utmValueMax: 'El valor del parámetro de origen es demasiado largo.',
     utmTooMany: 'Hay demasiados parámetros de origen (máximo 10).',
@@ -70,6 +78,7 @@ export const VALIDATION_MESSAGES_ES = {
     status: 'Selecciona un estado de documento válido.',
   },
   advanceRequest: {
+    statusChange: 'El cambio de estado no tiene el formato esperado.',
     publicCode: 'El código de solicitud no es válido.',
     status: 'Selecciona un estado de solicitud válido.',
     closeReason: 'Selecciona un motivo de cierre válido.',

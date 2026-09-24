@@ -175,6 +175,15 @@ describe('arquitectura de shared', () => {
     expect(bad, JSON.stringify(bad, null, 2)).toEqual([])
   })
 
+  it('ningún archivo de código cambia la configuración global de Zod (`z.config`)', () => {
+    // Cada app activa `z.config(z.locales.es())` al arrancar; `shared` trae sus propios mensajes y
+    // no toca la configuración del proceso que lo importa.
+    const bad = sourceFiles()
+      .filter((file) => /\bconfig\s*\(/.test(readFileSync(file, 'utf8')))
+      .map((file) => relative(SRC, file))
+    expect(bad).toEqual([])
+  })
+
   it('todo paquete importado está en `dependencies` de package.json', () => {
     const bad = packages.filter((p) => !DEPENDENCIES.has(p.packageName))
     expect(bad, JSON.stringify(bad, null, 2)).toEqual([])

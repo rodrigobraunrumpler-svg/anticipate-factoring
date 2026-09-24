@@ -118,19 +118,22 @@ export function evaluateStatusChange(change: StatusChange): StatusChangeResult {
  * Aplica la misma regla de detalle que `evaluateStatusChange`: `OTHER` exige `closeReasonDetail`.
  */
 export const statusChangeSchema = z
-  .object({
-    to: advanceRequestStatusSchema,
-    version: z
-      .number({ error: VALIDATION_MESSAGES_ES.advanceRequest.version })
-      .int({ error: VALIDATION_MESSAGES_ES.advanceRequest.version })
-      .nonnegative({ error: VALIDATION_MESSAGES_ES.advanceRequest.version }),
-    closeReason: closeReasonSchema.optional(),
-    closeReasonDetail: z
-      .string({ error: VALIDATION_MESSAGES_ES.advanceRequest.closeReasonDetailMax })
-      .trim()
-      .max(500, { error: VALIDATION_MESSAGES_ES.advanceRequest.closeReasonDetailMax })
-      .optional(),
-  })
+  .object(
+    {
+      to: advanceRequestStatusSchema,
+      version: z
+        .number({ error: VALIDATION_MESSAGES_ES.advanceRequest.version })
+        .int({ error: VALIDATION_MESSAGES_ES.advanceRequest.version })
+        .nonnegative({ error: VALIDATION_MESSAGES_ES.advanceRequest.version }),
+      closeReason: closeReasonSchema.optional(),
+      closeReasonDetail: z
+        .string({ error: VALIDATION_MESSAGES_ES.advanceRequest.closeReasonDetailMax })
+        .trim()
+        .max(500, { error: VALIDATION_MESSAGES_ES.advanceRequest.closeReasonDetailMax })
+        .optional(),
+    },
+    { error: VALIDATION_MESSAGES_ES.advanceRequest.statusChange },
+  )
   .superRefine((body, ctx) => {
     if (body.closeReason === 'OTHER' && !hasText(body.closeReasonDetail)) {
       ctx.addIssue({

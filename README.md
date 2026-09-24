@@ -38,5 +38,6 @@ GitHub Actions (`.github/workflows/ci.yml`, permisos de solo lectura) corre `pnp
 - Las versiones se fijan en el `catalog` de `pnpm-workspace.yaml`; los `package.json` usan `catalog:`. Renovate propone actualizaciones agrupadas los lunes.
 - Cada commit pasa por lefthook: Biome sobre lo cambiado y commitlint. Los commits son de una sola línea (Conventional Commits, sin cuerpo ni trailers) y commitlint lo exige con `body-empty` y `footer-empty`.
 - Montos con decimal.js y límite `Decimal(14, 2)`.
+- Cada app que valide con Zod activa `z.config(z.locales.es())` al arrancar, como respaldo: los esquemas de `shared` ya traen todos sus mensajes en español (lo comprueba `packages/shared/src/spanish-messages.test.ts`) y el locale cubre un esquema propio de la app que olvide el suyo. `shared` nunca llama a `z.config`, que cambia la configuración global del proceso.
 - El editor usa Biome como formateador (`.vscode/settings.json`).
 - `packages/shared` tiene un test de arquitectura (dirección de dependencias entre dominios y paquetes permitidos por dominio) y una suite dorada. Hoy la suite dorada solo tiene casos semilla generados con la fábrica de prueba (uno de ellos con la forma de un XML real de SUNAT); los XML reales anonimizados se agregan siguiendo `packages/shared/test/golden/README.md`.
