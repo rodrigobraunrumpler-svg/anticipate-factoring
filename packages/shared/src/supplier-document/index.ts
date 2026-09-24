@@ -1,4 +1,14 @@
 export {
+  type DocumentRequirements,
+  type DocumentsValidity,
+  type DocumentsValidityInput,
+  documentsValid,
+  evaluateDocumentsValidity,
+  type LegalRepresentativeRef,
+  type MissingDocument,
+  type SupplierDocumentRecord,
+} from './documents-validity.js'
+export {
   computeValidUntil,
   type DocumentValidity,
   displayStatus,
