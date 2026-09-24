@@ -90,6 +90,17 @@ function packageNameOf(specifier: string): string {
   return specifier.startsWith('@') ? parts.slice(0, 2).join('/') : (parts[0] as string)
 }
 
+/**
+ * Directivas triple barra `/// <reference …>` de un archivo (`types`, `lib`, `path` o cualquier otra).
+ * Traen tipos sin pasar por un import: `/// <reference types="node" />` devuelve los globales de Node
+ * (`process`, `Buffer`) a todo el programa, así que `tsc` y los tests de imports no las ven. Una línea
+ * que solo empieza con `///` sin `<reference` es un comentario común y no cuenta.
+ */
+function referenceDirectives(source: string): string[] {
+  const pattern = /^﻿?[ \t]*(\/\/\/[ \t]*<reference\b[^>]*>)/gm
+  return [...source.matchAll(pattern)].map((m) => m[1] as string)
+}
+
 function crossDomainImports(): Edge[] {
   const edges: Edge[] = []
   for (const file of sourceFiles()) {
@@ -151,6 +162,16 @@ describe('arquitectura de shared', () => {
 
   it('ningún archivo de código importa módulos de Node (`node:…`)', () => {
     const bad = packages.filter((p) => p.specifier.startsWith('node:'))
+    expect(bad, JSON.stringify(bad, null, 2)).toEqual([])
+  })
+
+  it('ningún archivo de código trae tipos con una directiva triple barra (`/// <reference …>`)', () => {
+    const bad = sourceFiles().flatMap((file) =>
+      referenceDirectives(readFileSync(file, 'utf8')).map((directive) => ({
+        file: relative(SRC, file),
+        directive,
+      })),
+    )
     expect(bad, JSON.stringify(bad, null, 2)).toEqual([])
   })
 
@@ -222,5 +243,44 @@ describe('packageSpecifiers y packageNameOf', () => {
     expect(packageNameOf('@date-fns/tz')).toBe('@date-fns/tz')
     expect(packageNameOf('date-fns/locale')).toBe('date-fns')
     expect(packageNameOf('node:fs')).toBe('node:fs')
+  })
+})
+
+describe('referenceDirectives', () => {
+  it('detecta las directivas de tipos, de lib y de ruta, en ambas comillas y sin espacios', () => {
+    const source = [
+      '/// <reference types="node" />',
+      "/// <reference lib='dom' />",
+      '///<reference path="../globals.d.ts"/>',
+      '  /// <reference types="bun-types" />',
+      "import { z } from 'zod'",
+    ].join('\n')
+    expect(referenceDirectives(source)).toEqual([
+      '/// <reference types="node" />',
+      "/// <reference lib='dom' />",
+      '///<reference path="../globals.d.ts"/>',
+      '/// <reference types="bun-types" />',
+    ])
+  })
+
+  it('detecta cualquier otra directiva `reference`, como `no-default-lib`', () => {
+    expect(referenceDirectives('/// <reference no-default-lib="true"/>')).toEqual([
+      '/// <reference no-default-lib="true"/>',
+    ])
+  })
+
+  it('detecta la directiva al inicio de un archivo con BOM', () => {
+    expect(referenceDirectives('\uFEFF/// <reference types="node" />\n')).toEqual([
+      '/// <reference types="node" />',
+    ])
+  })
+
+  it('ignora comentarios que solo la mencionan', () => {
+    const source = [
+      '// Nunca uses /// <reference types="node" /> en shared.',
+      ' * `/// <reference lib="dom" />` devolvería los globales del DOM.',
+      '/// Comentario de tres barras sin directiva.',
+    ].join('\n')
+    expect(referenceDirectives(source)).toEqual([])
   })
 })
