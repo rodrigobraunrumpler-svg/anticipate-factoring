@@ -77,6 +77,27 @@ describe('parseUblInvoice · referencias de carácter en texto', () => {
     const inv = parseOk(buildInvoiceXml({ issuerName: 'A &foo; B' }))
     expect(inv.issuerName).toBe('A &foo; B')
   })
+
+  it('deja intacta una referencia decimal fuera del rango Unicode (&#1114112;)', () => {
+    const inv = parseOk(buildInvoiceXml({ issuerName: 'X &#1114112; Y' }))
+    expect(inv.issuerName).toBe('X &#1114112; Y')
+  })
+
+  it('deja intacta una referencia decimal desbordada', () => {
+    const overlong = 'X &#99999999999999999999999999999999999999999999; Y'
+    expect(parseOk(buildInvoiceXml({ issuerName: overlong })).issuerName).toBe(overlong)
+  })
+
+  it('deja intacta una referencia hexadecimal fuera del rango Unicode (&#x110000;)', () => {
+    const inv = parseOk(buildInvoiceXml({ issuerName: 'X &#x110000; Y' }))
+    expect(inv.issuerName).toBe('X &#x110000; Y')
+  })
+
+  it('nunca lanza: una referencia fuera de rango en el ID no revienta el parseo', () => {
+    expect(() =>
+      parseUblInvoice(buildInvoiceXml({ seriesNumber: 'F001-&#1114112;' })),
+    ).not.toThrow()
+  })
 })
 
 describe('parseUblInvoice · variantes', () => {

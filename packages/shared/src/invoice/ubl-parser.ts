@@ -33,16 +33,26 @@ const NAMED_ENTITIES: Record<string, string> = {
 
 const ENTITY_PATTERN = /&(?:amp|lt|gt|quot|apos|#\d+|#x[0-9a-fA-F]+);/g
 
+/** Un punto de código válido de Unicode va de 1 a 0x10FFFF; 0 y lo que excede el plano 16 no lo son. */
+const MAX_CODE_POINT = 0x10ffff
+
 /**
  * Decodifica en una sola pasada (no recursiva) las cinco entidades predefinidas de XML y las
  * referencias numéricas de carácter (`&#209;`, `&#xD1;`). Deja intacto cualquier otro `&nombre;`:
  * con `processEntities: false` el parser nunca las tocó, así que no son entidades declaradas.
+ * Una referencia numérica fuera de 1..0x10FFFF (o desbordada) también se deja intacta en vez de
+ * lanzar: `String.fromCodePoint` lanza `RangeError` para esos valores.
  */
 function decodeEntities(value: string): string {
   return value.replace(ENTITY_PATTERN, (match) => {
-    if (match.startsWith('&#x'))
-      return String.fromCodePoint(Number.parseInt(match.slice(3, -1), 16))
-    if (match.startsWith('&#')) return String.fromCodePoint(Number.parseInt(match.slice(2, -1), 10))
+    if (match.startsWith('&#')) {
+      const codePoint = match.startsWith('&#x')
+        ? Number.parseInt(match.slice(3, -1), 16)
+        : Number.parseInt(match.slice(2, -1), 10)
+      return Number.isInteger(codePoint) && codePoint >= 1 && codePoint <= MAX_CODE_POINT
+        ? String.fromCodePoint(codePoint)
+        : match
+    }
     return NAMED_ENTITIES[match.slice(1, -1)] ?? match
   })
 }
@@ -138,6 +148,17 @@ export function parseUblInvoice(rawXml: string, options: ParseOptions = {}): Par
     return fail(createProblem('UNREADABLE_XML'))
   }
 
+  try {
+    return extractInvoice(document)
+  } catch {
+    // Red de seguridad: parseUblInvoice nunca debe lanzar, sea cual sea el XML de entrada. Los
+    // códigos de problema específicos (arriba y dentro de extractInvoice) se conservan tal cual;
+    // esto solo atrapa una excepción inesperada que se escape de la extracción.
+    return fail(createProblem('UNREADABLE_XML'))
+  }
+}
+
+function extractInvoice(document: Record<string, unknown>): ParseResult {
   const rootName = Object.keys(document).find((k) => k !== '?xml')
   if (rootName !== 'Invoice') {
     // Object.hasOwn, no `ROOT_KINDS[rootName]` directo: rootName viene de un XML no confiable y
