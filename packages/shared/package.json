@@ -1,0 +1,76 @@
+{
+  "name": "@anticipate/shared",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "sideEffects": false,
+  "files": [
+    "dist"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./errors": {
+      "types": "./dist/errors/index.d.ts",
+      "default": "./dist/errors/index.js"
+    },
+    "./identity": {
+      "types": "./dist/identity/index.d.ts",
+      "default": "./dist/identity/index.js"
+    },
+    "./money": {
+      "types": "./dist/money/index.d.ts",
+      "default": "./dist/money/index.js"
+    },
+    "./dates": {
+      "types": "./dist/dates/index.d.ts",
+      "default": "./dist/dates/index.js"
+    },
+    "./invoice": {
+      "types": "./dist/invoice/index.d.ts",
+      "default": "./dist/invoice/index.js"
+    },
+    "./advance-request": {
+      "types": "./dist/advance-request/index.d.ts",
+      "default": "./dist/advance-request/index.js"
+    },
+    "./supplier-document": {
+      "types": "./dist/supplier-document/index.d.ts",
+      "default": "./dist/supplier-document/index.js"
+    },
+    "./payer": {
+      "types": "./dist/payer/index.d.ts",
+      "default": "./dist/payer/index.js"
+    },
+    "./user": {
+      "types": "./dist/user/index.d.ts",
+      "default": "./dist/user/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsdown",
+    "dev": "tsdown --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --coverage",
+    "check:package": "publint && attw --pack ."
+  },
+  "dependencies": {
+    "@date-fns/tz": "catalog:",
+    "date-fns": "catalog:",
+    "fast-xml-parser": "catalog:",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@anticipate/config": "workspace:*",
+    "@arethetypeswrong/cli": "catalog:",
+    "@types/node": "catalog:",
+    "@vitest/coverage-v8": "catalog:",
+    "fast-check": "catalog:",
+    "publint": "catalog:",
+    "tsdown": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

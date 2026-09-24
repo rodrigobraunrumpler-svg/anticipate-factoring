@@ -1,0 +1,5 @@
+{
+  "extends": "@anticipate/config/tsconfig.library.json",
+  "compilerOptions": { "types": ["node"], "noEmit": true },
+  "include": ["src"]
+}
