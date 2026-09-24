@@ -42,6 +42,11 @@ describe('aritmética en céntimos', () => {
     expect(fromCents(0n)).toBe('0.00')
   })
 
+  it('rechaza céntimos negativos', () => {
+    expect(() => fromCents(-1n)).toThrow(RangeError)
+    expect(() => fromCents(-100n)).toThrow(RangeError)
+  })
+
   it('suma sin errores de coma flotante', () => {
     expect(sumAmounts('0.10', '0.20')).toBe('0.30')
     expect(sumAmounts('10620.00', '5310.50', '0.01')).toBe('15930.51')

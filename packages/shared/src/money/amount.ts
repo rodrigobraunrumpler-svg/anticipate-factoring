@@ -29,7 +29,9 @@ export function toCents(amount: Amount): bigint {
   return BigInt(whole) * 100n + BigInt(decimals.padEnd(2, '0').slice(0, 2))
 }
 
+/** Los montos del dominio nunca son negativos; lanza si `cents` lo es. */
 export function fromCents(cents: bigint): Amount {
+  if (cents < 0n) throw new RangeError(`Monto negativo: ${cents} céntimos`)
   const text = cents.toString().padStart(3, '0')
   return `${text.slice(0, -2)}.${text.slice(-2)}` as Amount
 }
