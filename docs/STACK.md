@@ -5,7 +5,7 @@
 
 | | |
 |---|---|
-| **Estado** | Borrador v0.5 |
+| **Estado** | Borrador v0.6 |
 | **Última actualización** | 2026-09-24 |
 | **Alcance** | Landing multiempresa + API + admin para gestión de solicitudes |
 
@@ -168,7 +168,7 @@ Todo el tráfico entra por Cloudflare (DNS, SSL, WAF). La landing y el admin cor
 | Landing | Astro + islas de React | Páginas estáticas por pagador; solo el formulario es interactivo |
 | Admin | Next.js (App Router) | Interfaz interna; sin lógica de negocio propia |
 | API | NestJS | Toda la lógica de negocio |
-| Validación y contratos | Zod 4 + validación nativa de NestJS 12 (Standard Schema; `nestjs-zod` no soporta NestJS 12) | Mismos esquemas en formulario, admin y API |
+| Validación y contratos | Zod 4 + validación nativa de NestJS 12 (Standard Schema, D32) | Mismos esquemas en formulario, admin y API |
 | Documentación API | OpenAPI generado por @nestjs/swagger 12 directamente desde los esquemas Zod (≥ 4.2, sin conversor) | Contrato entre API y frontends |
 | Cliente API | Orval | Genera cliente tipado y hooks de TanStack Query |
 | Estado del servidor | TanStack Query | Datos que vienen de la API |
@@ -212,7 +212,7 @@ anticipate/
 │   ├── ui/             Componentes shadcn + tokens.css
 │   ├── api-client/     Cliente y hooks generados por Orval (no se edita a mano)
 │   ├── emails/         Plantillas React Email
-│   └── config/         tsconfig base y configuración de Biome
+│   └── config/         Presets de tsconfig (Biome se configura en biome.json, en la raíz)
 ├── docs/               Este documento y decisiones
 ├── docker/             Scripts de inicialización de los servicios locales
 ├── .github/workflows/  CI/CD
@@ -229,7 +229,7 @@ Las apps pueden importar de `packages/*`; los paquetes nunca importan de las app
 
 ```
 Esquema Zod (packages/shared)
-   → DTO en NestJS (nestjs-zod)
+   → Validación en NestJS con el mismo esquema (Standard Schema nativo, D32)
    → OpenAPI generado por la API
    → Orval genera packages/api-client
    → Admin usa los hooks tipados
@@ -277,7 +277,7 @@ El color principal es siempre el de Anticipate. Cada pagador aporta solo un colo
 
 **Estado de la implementación (v0.3)**
 
-La landing está construida en `apps/landing` con la página `/{pagador}` generada desde los datos de ejemplo (`src/data/pagadores.ejemplo.ts`) mientras no exista la API. Decisiones tomadas al construirla:
+La landing de la v0.3 se construyó en un proyecto aparte, fuera de este monorepo, con la página `/{pagador}` generada desde datos de ejemplo mientras no exista la API; entra a este repositorio como `apps/landing` en una fase siguiente. Decisiones tomadas al construirla, que se conservan al moverla:
 
 | Tema | Cómo quedó |
 |---|---|
@@ -285,7 +285,7 @@ La landing está construida en `apps/landing` con la página `/{pagador}` genera
 | Lectura del XML | En el navegador, con el mismo lector y las mismas reglas de `packages/shared` que usará la API. El proveedor ve cada factura leída y los problemas antes de enviar |
 | Monto | Se prellena con el máximo (porcentaje del pagador sobre el neto pendiente de las facturas válidas); el proveedor puede pedir menos |
 | Sin API configurada | Modo demostración: no envía datos y lo indica en la confirmación |
-| Datos de prueba | XML ficticios en `packages/shared/test/fixtures` (válidas, al contado, vencida, en dólares, emitida a otro, boleta y CDR) |
+| Datos de prueba | XML ficticios (válidas, al contado, vencida, en dólares, emitida a otro, boleta y CDR). En este monorepo salen de la fábrica de `@anticipate/shared/testing`; `packages/shared/test/fixtures` guarda solo la factura al crédito en soles y la suite dorada, los casos semilla |
 | Componentes | Escritos a mano siguiendo las convenciones de shadcn/ui; los siguientes se agregan con su CLI |
 
 **SEO y medición**
@@ -346,6 +346,8 @@ En Cloudflare Workers con el adaptador oficial de OpenNext (`@opennextjs/cloudfl
 | `health` | Estado de la API, base de datos y almacenamiento |
 
 **Endpoints iniciales**
+
+> Las rutas de esta tabla conservan los nombres en español de la primera versión del documento. El código usa rutas en inglés según la convención de nombres de la sección 1: `/payers`, `/advance-requests`, `/admin/advance-requests/:id/status`, `/admin/advance-requests/:id/follow-ups`, `/admin/suppliers/:id/documents`, `/admin/suppliers/:id/representatives`, `/admin/files/:id/url`, `/admin/users`.
 
 | Método | Ruta | Acceso | Uso |
 |---|---|---|---|
@@ -604,7 +606,7 @@ Las transiciones permitidas viven en `packages/shared` para que el admin solo of
 | Regla | Cómo se implementa |
 |---|---|
 | Transiciones como datos | Una tabla `{ desde, hacia, guarda?, rolMinimo? }` en `packages/shared`. El admin la lee para mostrar solo los botones válidos; la API la lee para rechazar cualquier otro cambio. Nunca `if` sueltos en servicios |
-| Guardas con nombre | Funciones puras y testeadas: `documentosVigentes` (`documentsValid`) para entrar a `EN_EVALUACION`, `proformaAceptada` (`quoteAccepted`) para `APROBADA`. La guarda vive junto a la transición, no repartida por el código |
+| Guardas con nombre | Funciones puras y testeadas: `documentosVigentes` (`documentsValid`) para entrar a `EN_EVALUACION`, `proformaAceptada` (`quoteAccepted`) para `APROBADA`. La guarda vive junto a la transición, no repartida por el código. `documentsValid` está en `packages/shared` (dominio `supplier-document`): recibe documentos, representantes, "hoy" y los requisitos de la configuración, y `evaluateDocumentsValidity` devuelve además lo que falta para el checklist del admin |
 | Cierre siempre posible | Toda solicitud puede cerrarse desde cualquier estado no terminal: `DESISTIDA` cuando el proveedor se retira, no responde tras los intentos definidos o la solicitud es spam o inválida; `RECHAZADA` cuando Anticipate la descarta por evaluación o por documentos |
 | Motivo codificado | Los cierres exigen `motivo_codigo` (`SIN_RESPUESTA`, `SPAM_O_INVALIDA`, `PROVEEDOR_SE_RETIRA`, `DOCUMENTOS_INVALIDOS`, `FACTURA_NO_ELEGIBLE`, `RIESGO_NO_ACEPTABLE`, `OTRO`) y `motivo_detalle` libre. Así se mide por qué se pierden solicitudes sin inventar estados |
 | Estados terminales inmutables | `DESEMBOLSADA`, `RECHAZADA` y `DESISTIDA` no tienen salida. Si algún día hace falta reabrir, se agrega como transición explícita con rol admin y queda en el historial; nunca editando el estado a mano |
@@ -737,7 +739,7 @@ La landing se publica como sitio estático en Cloudflare Workers. El admin se pu
 
 **CI/CD (GitHub Actions)**
 
-En cada pull request: lint, verificación de tipos, tests y build con caché de Turborepo; rama de Neon propia para los tests de la API; despliegue de vista previa de la landing y el admin. Al fusionar en `main`: despliegue a staging. Al publicar una versión (tag): despliegue a producción. Las migraciones se aplican con `prisma migrate deploy` antes de liberar la nueva versión de la API.
+En cada pull request: lint, verificación de tipos, tests y build con caché de Turborepo, solo sobre lo afectado (`turbo run --affected`), más la verificación del empaquetado de `packages/shared` (`check:package`); rama de Neon propia para los tests de la API; despliegue de vista previa de la landing y el admin. Al fusionar en `main`: despliegue a staging. Al publicar una versión (tag): despliegue a producción. Las migraciones se aplican con `prisma migrate deploy` antes de liberar la nueva versión de la API.
 
 **Monitoreo**
 
@@ -760,7 +762,7 @@ Rama `main` protegida; ramas cortas por funcionalidad; pull request con revisió
 | D5 | Base de datos | Neon (PostgreSQL) | Serverless, ramas por PR, PostgreSQL estándar | Base de datos de Supabase |
 | D6 | Archivos | Cloudflare R2 | Queda dentro de Cloudflare, API de S3, sin costo de salida | Supabase Storage (otra plataforma para una sola función); AWS S3 (costo de salida y permisos más complejos; queda como plan B sin cambiar código) |
 | D7 | Correos | Brevo | Elección del equipo; API transaccional | Resend |
-| D8 | Validación | Zod como fuente única + `nestjs-zod` | Mismas reglas en formulario, admin y API | `class-validator` (duplicaría reglas) |
+| D8 | Validación | **Reemplazada por D32.** Zod como fuente única (la integración con NestJS ya no es `nestjs-zod`) | Mismas reglas en formulario, admin y API | `class-validator` (duplicaría reglas) |
 | D9 | Cliente de la API | Orval desde OpenAPI | Tipos y hooks generados; los cambios rompen en CI, no en producción | Cliente escrito a mano |
 | D10 | Estado global en el admin | Ninguno por ahora | TanStack Query, URL y formularios cubren todo | Zustand desde el inicio (duplicaría datos de la API) |
 | D11 | Multiempresa | Rutas por pagador (`/sea`) | Un despliegue, un certificado, SEO concentrado | Subdominio por pagador |
@@ -833,3 +835,4 @@ Rama `main` protegida; ramas cortas por funcionalidad; pull request con revisió
 | 0.3 | 2026-09-23 | Landing construida: orden del formulario, lectura de XML en el navegador, color del pagador como acento, modo demostración, datos de prueba |
 | 0.4 | 2026-09-23 | Alta de representantes legales, automática y manual (D25); columna `activa` en FACTURA e índice único parcial para la regla de duplicados (D26); máquina de estados robusta: transiciones como datos, guardas, cierre siempre posible con motivo codificado (D27), bloqueo optimista (D28) y outbox de notificaciones (D29); historial reordenado |
 | 0.5 | 2026-09-24 | Convención de nombres en inglés con glosario (D33); fechas con date-fns (D34); montos con decimal.js (D35); versiones fijadas, shared en ESM y validación nativa de NestJS 12 (D30 a D32); documento movido a docs/ |
+| 0.6 | 2026-09-24 | Coherencia con el código: D8 marcada como reemplazada por D32 y sin `nestjs-zod` en la validación; Biome configurado en la raíz; la landing v0.3 es un proyecto aparte que entra después como `apps/landing`; nota de rutas en inglés en la API; CI con `--affected` y `check:package` |
