@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- **Convención de idioma** (decidida el 2026-09-24, igual que en `anticipate-health-backend` y los portales): identificadores de código en inglés (archivos, funciones, tipos, propiedades, valores de enums, modelos y columnas); español en todo lo que lee una persona (mensajes al usuario, textos, documentación, comentarios y commits). Los términos legales peruanos sin traducción real se quedan como préstamos: `ruc`, `dni`, `sunat`, `sunarp`, `cavali`. El glosario español ↔ inglés vive en STACK.md (Tarea 10) y es la única fuente de nombres de dominio.
+- **Convención de idioma** (decidida el 2026-09-24, igual que en `anticipate-health-backend` y los portales): identificadores de código en inglés (archivos, funciones, tipos, propiedades, valores de enums, modelos y columnas); español en todo lo que lee una persona (mensajes al usuario, textos, documentación, comentarios y commits). Los términos legales peruanos sin traducción real se quedan como préstamos: `ruc`, `dni`, `sunat`, `sunarp`, `cavali`. El glosario español ↔ inglés vive en STACK.md (Tarea 11) y es la única fuente de nombres de dominio.
 - TypeScript en modo `strict` con `noUncheckedIndexedAccess` y `exactOptionalPropertyTypes` en todo el monorepo (STACK §4).
 - `packages/shared` no depende de nada del monorepo y no tiene código de servidor ni de navegador (STACK §5). Dependencias de runtime permitidas: `zod`, `fast-xml-parser`, `date-fns`, `@date-fns/tz`. Nada más.
 - Montos siempre como texto con dos decimales (`"25000.00"`); nunca `float` (STACK §9, D14). Moneda en su propia propiedad (`PEN`, `USD`).
@@ -25,6 +25,13 @@
 - El XML se procesa sin resolver entidades (STACK §11): `processEntities: false`.
 - Commits con Conventional Commits, cuerpo en español (STACK §12). Cada tarea termina en un commit.
 - Todo archivo nuevo pasa `biome check`, `tsc --noEmit` y `vitest run` antes del commit.
+- **Tipos marcados**: `Amount` e `IsoDate` son tipos de plantilla (`${bigint}.DD` y `${bigint}-DD-DD`), no `string`. Un texto arbitrario no compila donde se espera un monto o una fecha; solo los literales bien formados y lo que producen `normalizeAmount`, `fromCents`, `addDaysIso` y `todayIn`.
+- **Dirección de dependencias** entre dominios de `shared`: `errors` → `identity`, `money`, `dates` → `invoice` → `advance-request`; `supplier-document`, `payer` y `user` solo dependen de las capas base. Todo import entre dominios pasa por `../<dominio>/index.js`. Lo verifica `src/architecture.test.ts` (Tarea 10).
+- **Reglas con identificador**: toda regla de factura tiene un `id` estable y cada `Problem` que produce lo lleva en `rule`, para medir qué regla rechaza más facturas.
+- **Eventos de dominio** (`AdvanceRequestCreated`, `StatusChanged`) definidos en `shared` con Zod: son el contrato del outbox de la API y de cualquier consumidor futuro (WhatsApp, webhooks, métricas).
+- **Lector de XML endurecido**: rechaza cualquier `<!DOCTYPE`, acepta un tope de tamaño por parámetro y nunca expande entidades.
+- **Calidad medida**: tests de propiedades con fast-check en dinero e identidad; suite dorada con XML reales anonimizados; cobertura mínima de `shared` del 90 % de líneas; `publint` y `@arethetypeswrong/cli` validan el empaquetado. Todo corre en CI.
+- **Higiene del repo**: lefthook (Biome sobre lo cambiado y commitlint en cada commit), Renovate con actualizaciones agrupadas y espera mínima de tres días, y `turbo run --affected` en los PR.
 
 ## Review Focus
 
@@ -79,6 +86,9 @@ anticipate-factoring/
 ├── package.json                        Scripts raíz: lint, typecheck, test, build, verify
 ├── pnpm-workspace.yaml                 Workspaces + catálogo de versiones (único lugar con versiones)
 ├── turbo.json                          Grafo de tareas: build de packages antes que apps, caché local
+├── lefthook.yml                        Hooks de git: Biome sobre lo cambiado y commitlint
+├── commitlint.config.mjs               Conventional Commits
+├── renovate.json                       Actualizaciones agrupadas con espera mínima de tres días
 ├── tsconfig.json                       Para que el editor entienda los archivos de configuración de la raíz
 ├── vitest.config.ts                    Corre los tests de todos los paquetes desde la raíz
 ├── README.md                           Cómo instalar, correr y verificar
@@ -99,8 +109,14 @@ anticipate-factoring/
         ├── vitest.config.ts
         ├── test/fixtures/
         │   └── invoice-credit-pen.xml  XML de referencia con forma legible
+        ├── test/golden/                Suite dorada: XML reales anonimizados y sus resultados esperados
+        │   ├── README.md               Cómo anonimizar y agregar un caso
+        │   ├── generate-seed-cases.ts  Genera los casos iniciales con la fábrica
+        │   ├── cases/*.xml
+        │   └── expected/*.json         Snapshots revisables en el PR
         └── src/
             ├── index.ts                Reexporta todos los dominios
+            ├── architecture.test.ts    Dirección de dependencias entre dominios
             ├── errors/                 Códigos de problema y mensajes en español
             │   ├── index.ts
             │   ├── codes.ts
@@ -129,6 +145,7 @@ anticipate-factoring/
             │   ├── statuses.ts
             │   ├── close-reasons.ts
             │   ├── transitions.ts (+ transitions.test.ts)
+            │   ├── events.ts (+ events.test.ts)   Eventos de dominio: contrato del outbox
             │   ├── form.ts (+ form.test.ts)
             │   └── public-code.ts (+ public-code.test.ts)
             ├── supplier-document/      Tipos, estados y vigencia de documentos del proveedor
@@ -154,7 +171,7 @@ anticipate-factoring/
 ### Task 1: Raíz del monorepo
 
 **Files:**
-- Create: `pnpm-workspace.yaml`, `package.json`, `turbo.json`, `.node-version`, `.editorconfig`, `tsconfig.json`, `biome.json`, `vitest.config.ts`, `.vscode/extensions.json`
+- Create: `pnpm-workspace.yaml`, `package.json`, `turbo.json`, `lefthook.yml`, `commitlint.config.mjs`, `renovate.json`, `.node-version`, `.editorconfig`, `tsconfig.json`, `biome.json`, `vitest.config.ts`, `.vscode/extensions.json`
 
 **Interfaces:**
 - Produces: el catálogo de versiones `catalog:` que todos los `package.json` usan; los scripts raíz `pnpm lint`, `pnpm typecheck`, `pnpm test`, `pnpm build`, `pnpm verify`.
@@ -169,7 +186,7 @@ Expected: Node 24.15 o superior (24 es el LTS activo; 22 ya está en mantenimien
 Run:
 ```bash
 printf 'typescript (alias 6.x): %s\n' "$(pnpm view @typescript/typescript6 version)"
-for p in zod fast-xml-parser date-fns @date-fns/tz vitest @biomejs/biome @types/node tsdown turbo; do
+for p in zod fast-xml-parser date-fns @date-fns/tz vitest @vitest/coverage-v8 fast-check @biomejs/biome @types/node tsdown turbo lefthook @commitlint/cli @commitlint/config-conventional publint @arethetypeswrong/cli; do
   printf '%s: ^%s\n' "$p" "$(pnpm view "$p" version)"
 done
 ```
@@ -196,10 +213,17 @@ catalog:
   date-fns: ^<versión del paso 2>
   "@date-fns/tz": ^<versión del paso 2>
   vitest: ^<versión del paso 2>
+  "@vitest/coverage-v8": ^<versión del paso 2>
+  fast-check: ^<versión del paso 2>
   "@biomejs/biome": ^<versión del paso 2>
   "@types/node": ^<versión del paso 2>
   tsdown: ^<versión del paso 2>
   turbo: ^<versión del paso 2>
+  lefthook: ^<versión del paso 2>
+  "@commitlint/cli": ^<versión del paso 2>
+  "@commitlint/config-conventional": ^<versión del paso 2>
+  publint: ^<versión del paso 2>
+  "@arethetypeswrong/cli": ^<versión del paso 2>
 ```
 
 - [ ] **Step 4: Crear `package.json` raíz**
@@ -215,6 +239,7 @@ catalog:
     "packageManager": { "name": "pnpm", "version": "^<salida de pnpm --version>", "onFail": "download" }
   },
   "scripts": {
+    "prepare": "lefthook install",
     "build": "turbo run build",
     "dev": "turbo run dev",
     "lint": "biome check .",
@@ -226,6 +251,9 @@ catalog:
   },
   "devDependencies": {
     "@biomejs/biome": "catalog:",
+    "@commitlint/cli": "catalog:",
+    "@commitlint/config-conventional": "catalog:",
+    "lefthook": "catalog:",
     "turbo": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"
@@ -273,7 +301,7 @@ trim_trailing_whitespace = false
 }
 ```
 
-- [ ] **Step 7: Crear `turbo.json`, `tsconfig.json`, `vitest.config.ts` y `.vscode/extensions.json`**
+- [ ] **Step 7: Crear `turbo.json`, `tsconfig.json`, `vitest.config.ts`, `.vscode/extensions.json`, `lefthook.yml`, `commitlint.config.mjs` y `renovate.json`**
 
 `turbo.json`:
 ```json
@@ -313,10 +341,46 @@ export default defineConfig({
 { "recommendations": ["biomejs.biome"] }
 ```
 
+`lefthook.yml` (Biome solo sobre los archivos en staging; commitlint sobre el mensaje):
+```yaml
+pre-commit:
+  commands:
+    biome:
+      glob: '*.{ts,tsx,js,mjs,cjs,json,jsonc,css,astro}'
+      run: pnpm biome check --write --no-errors-on-unmatched --files-ignore-unknown=true {staged_files}
+      stage_fixed: true
+
+commit-msg:
+  commands:
+    commitlint:
+      run: pnpm commitlint --edit {1}
+```
+
+`commitlint.config.mjs`:
+```js
+export default { extends: ['@commitlint/config-conventional'] }
+```
+
+`renovate.json` (Renovate entiende el `catalog` de pnpm; TypeScript 7 y Prisma 8 quedan bloqueados hasta que el stack los soporte):
+```json
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended", ":semanticCommits", "group:allNonMajor"],
+  "timezone": "America/Lima",
+  "schedule": ["before 6am on monday"],
+  "minimumReleaseAge": "3 days",
+  "packageRules": [
+    { "matchPackageNames": ["typescript", "@typescript/typescript6"], "allowedVersions": "<7" },
+    { "matchPackageNames": ["prisma", "@prisma/client", "@prisma/adapter-pg", "@prisma/adapter-neon"], "allowedVersions": "<8" },
+    { "matchUpdateTypes": ["major"], "dependencyDashboardApproval": true }
+  ]
+}
+```
+
 - [ ] **Step 8: Instalar y verificar que la raíz funciona vacía**
 
 Run: `pnpm install`
-Expected: crea `pnpm-lock.yaml`. Si pnpm avisa de scripts de instalación ignorados, correr `pnpm approve-builds`, aceptar los que liste (típicamente `@biomejs/biome`, `esbuild`, `unrs-resolver`) y volver a instalar; ese comando escribe la lista en `pnpm-workspace.yaml` con la sintaxis correcta.
+Expected: crea `pnpm-lock.yaml` y, por el script `prepare`, instala los hooks de lefthook en `.git/hooks`. A partir de aquí cada `git commit` pasa Biome sobre lo cambiado y valida el mensaje con Conventional Commits. Si pnpm avisa de scripts de instalación ignorados, correr `pnpm approve-builds`, aceptar los que liste (típicamente `@biomejs/biome`, `esbuild`, `unrs-resolver`) y volver a instalar; ese comando escribe la lista en `pnpm-workspace.yaml` con la sintaxis correcta.
 
 Run: `pnpm lint && pnpm test`
 Expected: `biome check` sin errores; `turbo run test` termina sin tareas (todavía no hay paquetes) y código 0.
@@ -324,8 +388,8 @@ Expected: `biome check` sin errores; `turbo run test` termina sin tareas (todav�
 - [ ] **Step 9: Commit**
 
 ```bash
-git add pnpm-workspace.yaml package.json pnpm-lock.yaml turbo.json .node-version .editorconfig tsconfig.json biome.json vitest.config.ts .vscode/extensions.json
-git commit -m "chore: raíz del monorepo con pnpm 12, Turborepo, Biome y Vitest"
+git add pnpm-workspace.yaml package.json pnpm-lock.yaml turbo.json lefthook.yml commitlint.config.mjs renovate.json .node-version .editorconfig tsconfig.json biome.json vitest.config.ts .vscode/extensions.json
+git commit -m "chore: raíz del monorepo con pnpm 12, Turborepo, Biome, Vitest, lefthook y Renovate"
 ```
 
 ### Task 2: `packages/config`, esqueleto de `packages/shared` y dominio `errors`
@@ -337,7 +401,7 @@ git commit -m "chore: raíz del monorepo con pnpm 12, Turborepo, Biome y Vitest"
 - Test: `packages/shared/src/errors/problem.test.ts`
 
 **Interfaces:**
-- Produces: `ProblemCode` (unión de códigos), `Problem = { code, message, invoice?, field? }`, `createProblem(code, extra?)`, `MESSAGES_ES`. Todas las tareas siguientes devuelven `Problem` para señalar errores de negocio.
+- Produces: `ProblemCode` (unión de códigos), `Problem = { code, message, invoice?, field?, rule? }`, `createProblem(code, extra?)`, `MESSAGES_ES`. Todas las tareas siguientes devuelven `Problem` para señalar errores de negocio; `rule` lo rellenan las reglas de la Tarea 6.
 
 - [ ] **Step 1: Crear `packages/config`**
 
@@ -431,7 +495,8 @@ git commit -m "chore: raíz del monorepo con pnpm 12, Turborepo, Biome y Vitest"
     "build": "tsdown",
     "dev": "tsdown --watch",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run --coverage",
+    "check:package": "publint && attw --pack ."
   },
   "dependencies": {
     "@date-fns/tz": "catalog:",
@@ -441,13 +506,19 @@ git commit -m "chore: raíz del monorepo con pnpm 12, Turborepo, Biome y Vitest"
   },
   "devDependencies": {
     "@anticipate/config": "workspace:*",
+    "@arethetypeswrong/cli": "catalog:",
     "@types/node": "catalog:",
+    "@vitest/coverage-v8": "catalog:",
+    "fast-check": "catalog:",
+    "publint": "catalog:",
     "tsdown": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"
   }
 }
 ```
+
+`check:package` corre después de `build`: `publint` revisa `exports`, `files` y `type`; `attw` comprueba que los tipos resuelven para consumidores ESM. Si `attw --pack .` fallara por el protocolo `workspace:` de las devDependencies, usar `pnpm pack` y `attw <tarball>`.
 
 `packages/shared/tsconfig.json` (TypeScript 6 trae `types: []` por defecto, por eso se declara `node`):
 ```json
@@ -488,7 +559,7 @@ export default defineConfig({
 })
 ```
 
-`packages/shared/vitest.config.ts`:
+`packages/shared/vitest.config.ts` (la cobertura mínima aplica a todo `src` salvo tests, barriles y la fábrica de XML de prueba):
 ```ts
 import { defineConfig } from 'vitest/config'
 
@@ -496,7 +567,13 @@ export default defineConfig({
   test: {
     name: 'shared',
     environment: 'node',
-    include: ['src/**/*.test.ts'],
+    include: ['src/**/*.test.ts', 'test/**/*.test.ts'],
+    coverage: {
+      provider: 'v8',
+      include: ['src/**/*.ts'],
+      exclude: ['src/**/*.test.ts', 'src/**/index.ts', 'src/invoice/build-test-xml.ts'],
+      thresholds: { lines: 90, functions: 90, branches: 85, statements: 90 },
+    },
   },
 })
 ```
@@ -531,6 +608,12 @@ describe('createProblem', () => {
     expect(Object.keys(p)).toEqual(['code', 'message'])
   })
 
+  it('conserva la regla que lo produjo', () => {
+    expect(createProblem('CASH_INVOICE', { invoice: 'F001-1', rule: 'credit-with-pending-amount' }).rule).toBe(
+      'credit-with-pending-amount',
+    )
+  })
+
   it('todo código tiene mensaje', () => {
     for (const code of PROBLEM_CODES) {
       expect(MESSAGES_ES[code], code).toBeTypeOf('string')
@@ -555,6 +638,8 @@ export const PROBLEM_CODES = [
   'INVALID_DNI',
   // lectura del XML
   'UNREADABLE_XML',
+  'XML_TOO_LARGE',
+  'XML_DOCTYPE_NOT_ALLOWED',
   'XML_NOT_AN_INVOICE',
   'XML_MISSING_REQUIRED_FIELD',
   // reglas por factura
@@ -589,6 +674,8 @@ export const MESSAGES_ES: Record<ProblemCode, string> = {
   INVALID_RUC: 'El RUC no es válido.',
   INVALID_DNI: 'El DNI debe tener 8 dígitos.',
   UNREADABLE_XML: 'No pudimos leer el archivo XML. Verifica que sea el XML original de la factura.',
+  XML_TOO_LARGE: 'El archivo XML supera el tamaño máximo permitido.',
+  XML_DOCTYPE_NOT_ALLOWED: 'El archivo XML contiene una declaración DOCTYPE, que no está permitida.',
   XML_NOT_AN_INVOICE: 'El archivo no es una factura electrónica ({kind}).',
   XML_MISSING_REQUIRED_FIELD: 'El XML no contiene el dato "{field}".',
   DOCUMENT_TYPE_NOT_ALLOWED: 'Solo aceptamos facturas electrónicas (tipo 01). Este comprobante es de tipo {kind}.',
@@ -621,11 +708,14 @@ export type Problem = {
   invoice?: string
   /** Campo del formulario al que se refiere, si aplica. */
   field?: string
+  /** Identificador de la regla que lo produjo, si aplica (para métricas). */
+  rule?: string
 }
 
 export type ProblemExtra = {
   invoice?: string
   field?: string
+  rule?: string
   data?: Record<string, string | number>
 }
 
@@ -640,6 +730,7 @@ export function createProblem(code: ProblemCode, extra: ProblemExtra = {}): Prob
   const problem: Problem = { code, message: interpolate(MESSAGES_ES[code], extra.data) }
   if (extra.invoice !== undefined) problem.invoice = extra.invoice
   if (extra.field !== undefined) problem.field = extra.field
+  if (extra.rule !== undefined) problem.rule = extra.rule
   return problem
 }
 ```
@@ -654,7 +745,7 @@ export { createProblem, type Problem, type ProblemExtra } from './problem.js'
 - [ ] **Step 6: Correr tests, tipos, lint y build**
 
 Run: `pnpm --filter @anticipate/shared test && pnpm typecheck && pnpm lint && pnpm build`
-Expected: 4 tests PASS; `tsc` sin errores; Biome sin errores; `dist/` con `index.js`, `index.d.ts` y la carpeta `errors/`. Sin `.cjs`.
+Expected: 5 tests PASS y el reporte de cobertura al 100 % de `errors/`; `tsc` sin errores; Biome sin errores; `dist/` con `index.js`, `index.d.ts` y la carpeta `errors/`. Sin `.cjs`.
 
 - [ ] **Step 7: Commit**
 
@@ -680,6 +771,7 @@ git commit -m "feat(shared): esqueleto del paquete y dominio de errores con mens
 
 `packages/shared/src/identity/ruc.test.ts`:
 ```ts
+import fc from 'fast-check'
 import { describe, expect, it } from 'vitest'
 import { isValidRuc, rucSchema } from './ruc.js'
 
@@ -701,6 +793,23 @@ describe('isValidRuc', () => {
     ['', 'vacío'],
   ])('rechaza %s (%s)', (ruc) => {
     expect(isValidRuc(ruc)).toBe(false)
+  })
+})
+
+describe('isValidRuc · propiedades', () => {
+  it('para cualquier cuerpo de diez dígitos con prefijo válido existe exactamente un dígito verificador', () => {
+    fc.assert(
+      fc.property(fc.constantFrom('10', '15', '16', '17', '20'), fc.stringMatching(/^\d{8}$/), (prefix, body) => {
+        const valid = [...'0123456789'].filter((d) => isValidRuc(`${prefix}${body}${d}`))
+        return valid.length === 1
+      }),
+    )
+  })
+
+  it('nunca acepta algo que no sean once dígitos', () => {
+    fc.assert(
+      fc.property(fc.string(), (value) => /^\d{11}$/.test(value) || isValidRuc(value) === false),
+    )
   })
 })
 
@@ -828,7 +937,9 @@ git commit -m "feat(shared): validadores de RUC (módulo 11) y DNI con esquemas 
 - Modify: `packages/shared/src/index.ts`
 
 **Interfaces:**
-- Produces: `CURRENCIES`, `Currency`, `currencySchema`; `Amount` (texto `"25000.00"`), `amountSchema`, `normalizeAmount(value): Amount | null`, `toCents(a): bigint`, `fromCents(c): Amount`, `sumAmounts(...a): Amount`, `percentOf(a, pct): Amount`, `compareAmounts(a, b): -1 | 0 | 1`; `IsoDate`, `isoDateSchema`, `isIsoDate(v)`, `daysBetween(from, to): number`, `addDaysIso(date, days): IsoDate`, `todayIn(timeZone, now): IsoDate`, `LIMA_TIME_ZONE`.
+- Produces: `CURRENCIES`, `Currency`, `currencySchema`; `Amount` (tipo de plantilla `${bigint}.DD`, por ejemplo `"25000.00"`), `amountSchema`, `normalizeAmount(value): Amount | null`, `toCents(a): bigint`, `fromCents(c): Amount`, `sumAmounts(...a): Amount`, `percentOf(a, pct): Amount`, `compareAmounts(a, b): -1 | 0 | 1`; `IsoDate` (tipo de plantilla `${bigint}-DD-DD`), `isoDateSchema`, `isIsoDate(v): v is IsoDate`, `daysBetween(from, to): number`, `addDaysIso(date, days): IsoDate`, `todayIn(timeZone, now): IsoDate`, `LIMA_TIME_ZONE`.
+
+**Tipos marcados.** `Amount` e `IsoDate` son tipos de plantilla de TypeScript: un literal bien formado (`'25000.00'`, `'2026-09-23'`) se acepta sin cast, y un `string` cualquiera no compila. Así los tests siguen siendo legibles y la API no puede pasar un texto sin normalizar a una regla. El único hueco del tipo es un literal negativo (`'-5.00'` compila); `normalizeAmount` lo rechaza en tiempo de ejecución y nadie escribe montos negativos en el código.
 
 **Diseño de fechas.** Las fechas del dominio son fechas de calendario (`2026-11-30`), no instantes. date-fns hace la aritmética (`differenceInCalendarDays`, `addDays`, `parseISO`, `isValid`, `formatISO`). `todayIn` convierte un instante en la fecha de calendario de una zona con `TZDate` de `@date-fns/tz`; recibe el instante por parámetro para que `shared` siga siendo puro y testeable. La API y la landing llaman `todayIn(LIMA_TIME_ZONE, new Date())` una sola vez y pasan el resultado como `today`.
 
@@ -836,6 +947,7 @@ git commit -m "feat(shared): validadores de RUC (módulo 11) y DNI con esquemas 
 
 `packages/shared/src/money/amount.test.ts`:
 ```ts
+import fc from 'fast-check'
 import { describe, expect, it } from 'vitest'
 import {
   amountSchema,
@@ -886,6 +998,31 @@ describe('aritmética en céntimos', () => {
     expect(compareAmounts('100.00', '100.00')).toBe(0)
     expect(compareAmounts('99.99', '100.00')).toBe(-1)
     expect(compareAmounts('100.01', '100.00')).toBe(1)
+  })
+})
+
+describe('propiedades del dinero', () => {
+  const cents = fc.bigInt({ min: 0n, max: 10n ** 15n })
+
+  it('fromCents y toCents son inversas', () => {
+    fc.assert(fc.property(cents, (c) => toCents(fromCents(c)) === c))
+  })
+
+  it('normalizeAmount deja igual lo que ya está normalizado', () => {
+    fc.assert(fc.property(cents, (c) => normalizeAmount(fromCents(c)) === fromCents(c)))
+  })
+
+  it('sumar montos equivale a sumar céntimos', () => {
+    fc.assert(fc.property(cents, cents, (a, b) => sumAmounts(fromCents(a), fromCents(b)) === fromCents(a + b)))
+  })
+
+  it('el porcentaje nunca supera el monto ni es negativo', () => {
+    fc.assert(
+      fc.property(cents, fc.integer({ min: 0, max: 100 }), (c, pct) => {
+        const r = percentOf(fromCents(c), pct)
+        return compareAmounts(r, fromCents(c)) <= 0 && compareAmounts(r, '0.00') >= 0
+      }),
+    )
   })
 })
 
@@ -977,8 +1114,13 @@ export const currencySchema = z.enum(CURRENCIES)
 import { z } from 'zod'
 import { MESSAGES_ES } from '../errors/index.js'
 
-/** Monto como texto con exactamente dos decimales, por ejemplo "25000.00". Nunca `number`. */
-export type Amount = string
+type Digit = '0' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9'
+
+/**
+ * Monto como texto con exactamente dos decimales, por ejemplo "25000.00". Nunca `number`.
+ * Es un tipo de plantilla: los literales bien formados compilan, un `string` cualquiera no.
+ */
+export type Amount = `${bigint}.${Digit}${Digit}`
 
 const AMOUNT_FORMAT = /^\d{1,13}\.\d{2}$/
 
@@ -989,7 +1131,7 @@ export function normalizeAmount(value: string | number): Amount | null {
   if (!parts) return null
   const whole = parts[1] ?? '0'
   const decimals = (parts[2] ?? '').padEnd(2, '0')
-  return `${whole}.${decimals}`
+  return `${whole}.${decimals}` as Amount
 }
 
 export function toCents(amount: Amount): bigint {
@@ -999,7 +1141,7 @@ export function toCents(amount: Amount): bigint {
 
 export function fromCents(cents: bigint): Amount {
   const text = cents.toString().padStart(3, '0')
-  return `${text.slice(0, -2)}.${text.slice(-2)}`
+  return `${text.slice(0, -2)}.${text.slice(-2)}` as Amount
 }
 
 export function sumAmounts(...amounts: Amount[]): Amount {
@@ -1018,11 +1160,12 @@ export function compareAmounts(a: Amount, b: Amount): -1 | 0 | 1 {
   return ca < cb ? -1 : ca > cb ? 1 : 0
 }
 
-/** Monto ingresado por una persona: dos decimales obligatorios y mayor que cero. */
+/** Monto ingresado por una persona: dos decimales obligatorios y mayor que cero. Su salida ya es `Amount`. */
 export const amountSchema = z
   .string()
   .trim()
-  .refine((v) => AMOUNT_FORMAT.test(v) && toCents(v) > 0n, { error: MESSAGES_ES.INVALID_AMOUNT })
+  .refine((v) => AMOUNT_FORMAT.test(v) && toCents(v as Amount) > 0n, { error: MESSAGES_ES.INVALID_AMOUNT })
+  .transform((v) => v as Amount)
 ```
 
 `packages/shared/src/money/index.ts`:
@@ -1048,15 +1191,17 @@ import { TZDate } from '@date-fns/tz'
 import { addDays, differenceInCalendarDays, format, formatISO, isValid, parseISO } from 'date-fns'
 import { z } from 'zod'
 
-/** Fecha de calendario sin hora ni zona: "2026-09-23". */
-export type IsoDate = string
+type Digit = '0' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9'
+
+/** Fecha de calendario sin hora ni zona: "2026-09-23". Tipo de plantilla: los literales bien formados compilan, un `string` cualquiera no. */
+export type IsoDate = `${bigint}-${Digit}${Digit}-${Digit}${Digit}`
 
 /** Zona horaria de operación. Perú no tiene horario de verano. */
 export const LIMA_TIME_ZONE = 'America/Lima'
 
 const ISO_DATE_FORMAT = /^\d{4}-\d{2}-\d{2}$/
 
-function parse(date: IsoDate): Date {
+function parse(date: string): Date {
   if (!ISO_DATE_FORMAT.test(date)) throw new Error(`Fecha inválida: ${date}`)
   const parsed = parseISO(date)
   if (!isValid(parsed) || formatISO(parsed, { representation: 'date' }) !== date) {
@@ -1065,7 +1210,7 @@ function parse(date: IsoDate): Date {
   return parsed
 }
 
-export function isIsoDate(value: string): boolean {
+export function isIsoDate(value: string): value is IsoDate {
   try {
     parse(value)
     return true
@@ -1080,18 +1225,20 @@ export function daysBetween(from: IsoDate, to: IsoDate): number {
 }
 
 export function addDaysIso(date: IsoDate, days: number): IsoDate {
-  return formatISO(addDays(parse(date), days), { representation: 'date' })
+  return formatISO(addDays(parse(date), days), { representation: 'date' }) as IsoDate
 }
 
 /** Fecha de calendario de `now` vista desde `timeZone`. `now` se recibe por parámetro: shared no consulta el reloj. */
 export function todayIn(timeZone: string, now: Date): IsoDate {
-  return format(new TZDate(now, timeZone), 'yyyy-MM-dd')
+  return format(new TZDate(now, timeZone), 'yyyy-MM-dd') as IsoDate
 }
 
+/** Su salida ya es `IsoDate`. */
 export const isoDateSchema = z
   .string()
   .trim()
   .refine(isIsoDate, { error: 'La fecha debe tener el formato AAAA-MM-DD.' })
+  .transform((v) => v as IsoDate)
 ```
 
 `packages/shared/src/dates/index.ts`:
@@ -1129,7 +1276,7 @@ git commit -m "feat(shared): montos como texto con aritmética en céntimos y fe
 
 **Interfaces:**
 - Consumes: `Amount`, `normalizeAmount` (Tarea 4); `IsoDate`, `isIsoDate` (Tarea 4); `createProblem`, `Problem` (Tarea 2).
-- Produces: `DOCUMENT_TYPE`, `DOCUMENT_TYPE_NAMES`, `PAYMENT_TERMS`, `PaymentTerms`; `ParsedInvoice`, `Installment`, `parsedInvoiceSchema`; `buildInvoiceXml(options)`, `buildCdrXml()`, `DEFAULT_TEST_XML`; `decodeXml(bytes: Uint8Array): string`; `parseUblInvoice(xml: string): ParseResult` con `ParseResult = { ok: true; invoice: ParsedInvoice } | { ok: false; problem: Problem }`. La Tarea 6 (reglas) consume `ParsedInvoice`.
+- Produces: `DOCUMENT_TYPE`, `DOCUMENT_TYPE_NAMES`, `PAYMENT_TERMS`, `PaymentTerms`; `ParsedInvoice`, `Installment`, `parsedInvoiceSchema`; `buildInvoiceXml(options)`, `buildCdrXml()`, `DEFAULT_TEST_XML`; `decodeXml(bytes: Uint8Array): string`; `parseUblInvoice(xml: string, options?: ParseOptions): ParseResult` con `ParseResult = { ok: true; invoice: ParsedInvoice } | { ok: false; problem: Problem }`. La Tarea 6 (reglas) consume `ParsedInvoice`.
 
 **Contexto para quien implementa.** La factura electrónica peruana es un XML UBL 2.1 firmado. Los datos que necesitamos y dónde viven (rutas sin prefijos de espacio de nombres, porque el lector los elimina):
 
@@ -1178,9 +1325,13 @@ export type PaymentTerms = (typeof PAYMENT_TERMS)[number]
 ```ts
 import { z } from 'zod'
 import { isoDateSchema } from '../dates/index.js'
+import type { Amount } from '../money/index.js'
 import { PAYMENT_TERMS } from './codes.js'
 
-const parsedAmountSchema = z.string().regex(/^\d{1,13}\.\d{2}$/)
+const parsedAmountSchema = z
+  .string()
+  .regex(/^\d{1,13}\.\d{2}$/)
+  .transform((v) => v as Amount)
 
 export const installmentSchema = z.object({
   id: z.string().min(1),
@@ -1405,8 +1556,8 @@ function parseOk(xml: string) {
   return r.invoice
 }
 
-function parseError(xml: string) {
-  const r = parseUblInvoice(xml)
+function parseError(xml: string, options?: Parameters<typeof parseUblInvoice>[1]) {
+  const r = parseUblInvoice(xml, options)
   if (r.ok) throw new Error('Se esperaba un problema')
   return r.problem
 }
@@ -1542,12 +1693,17 @@ describe('parseUblInvoice · errores', () => {
     expect(p.message).toContain(name)
   })
 
-  it('no resuelve entidades externas', () => {
+  it('rechaza cualquier DOCTYPE, que es la puerta de las entidades externas', () => {
     const xml = buildInvoiceXml()
       .replace('<?xml version="1.0" encoding="UTF-8"?>', '<?xml version="1.0"?><!DOCTYPE x [<!ENTITY xxe SYSTEM "file:///etc/passwd">]>')
       .replace('F001-123', '&xxe;')
-    const r = parseUblInvoice(xml)
-    if (r.ok) expect(r.invoice.seriesNumber).not.toContain('root:')
+    expect(parseError(xml).code).toBe('XML_DOCTYPE_NOT_ALLOWED')
+  })
+
+  it('rechaza un XML mayor al tope recibido por parámetro', () => {
+    const xml = buildInvoiceXml()
+    expect(parseError(xml, { maxLength: 100 }).code).toBe('XML_TOO_LARGE')
+    expect(parseUblInvoice(xml, { maxLength: xml.length }).ok).toBe(true)
   })
 })
 
@@ -1577,7 +1733,7 @@ Expected: FAIL, "Cannot find module './ubl-parser.js'".
 import { XMLParser, XMLValidator } from 'fast-xml-parser'
 import { isIsoDate } from '../dates/index.js'
 import { type Problem, createProblem } from '../errors/index.js'
-import { normalizeAmount } from '../money/index.js'
+import { type Amount, normalizeAmount } from '../money/index.js'
 import type { PaymentTerms } from './codes.js'
 import { type Installment, type ParsedInvoice, parsedInvoiceSchema } from './parsed-invoice.js'
 
@@ -1661,8 +1817,18 @@ function nameOf(inv: Record<string, unknown>, role: string): string | undefined 
   )
 }
 
-export function parseUblInvoice(rawXml: string): ParseResult {
+export type ParseOptions = {
+  /** Tope de caracteres del XML. La API lo toma de su configuración (STACK §8: 1 MB por XML). Sin tope si se omite. */
+  maxLength?: number
+}
+
+export function parseUblInvoice(rawXml: string, options: ParseOptions = {}): ParseResult {
   const xml = rawXml.replace(/^﻿/, '')
+  if (options.maxLength !== undefined && xml.length > options.maxLength) {
+    return fail(createProblem('XML_TOO_LARGE'))
+  }
+  // Una factura de SUNAT nunca trae DOCTYPE; rechazarlo cierra de raíz la expansión de entidades.
+  if (/<!DOCTYPE/i.test(xml)) return fail(createProblem('XML_DOCTYPE_NOT_ALLOWED'))
   if (!xml.trimStart().startsWith('<') || XMLValidator.validate(xml) !== true) {
     return fail(createProblem('UNREADABLE_XML'))
   }
@@ -1705,7 +1871,7 @@ export function parseUblInvoice(rawXml: string): ParseResult {
   }
 
   let paymentTerms: PaymentTerms | null = null
-  let netPendingAmount: string | null = null
+  let netPendingAmount: Amount | null = null
   const installments: Installment[] = []
   let detraction: ParsedInvoice['detraction'] = null
 
@@ -1761,7 +1927,7 @@ export {
 } from './build-test-xml.js'
 export { DOCUMENT_TYPE, DOCUMENT_TYPE_NAMES, type DocumentType, PAYMENT_TERMS, type PaymentTerms } from './codes.js'
 export { type Installment, installmentSchema, type ParsedInvoice, parsedInvoiceSchema } from './parsed-invoice.js'
-export { decodeXml, type ParseResult, parseUblInvoice } from './ubl-parser.js'
+export { decodeXml, type ParseOptions, type ParseResult, parseUblInvoice } from './ubl-parser.js'
 ```
 
 Agregar a `packages/shared/src/index.ts`:
@@ -1792,9 +1958,9 @@ git commit -m "feat(shared): lector de factura electrónica UBL 2.1 con fábrica
 
 **Interfaces:**
 - Consumes: `ParsedInvoice`, `parseUblInvoice`, `buildInvoiceXml` (Tarea 5); `Amount`, `sumAmounts`, `percentOf`, `compareAmounts`, `normalizeAmount`, `toCents` (Tarea 4); `daysBetween` (Tarea 4); `createProblem` (Tarea 2).
-- Produces: `ValidationContext`, `InvoiceRule`, `INVOICE_RULES`, `validateInvoices(invoices, ctx): ValidationResult`, `validateRequestedAmount(amount, result): Problem | null`. La landing los corre en el navegador y la API en el servidor con el mismo contexto (D24).
+- Produces: `ValidationContext`, `RULE_IDS`, `RuleId`, `InvoiceRule = { id, run }`, `INVOICE_RULES`, `validateInvoices(invoices, ctx): ValidationResult`, `validateRequestedAmount(amount, result): Problem | null`. Cada `Problem` devuelto lleva `rule` con el id de la regla que lo produjo. La landing los corre en el navegador y la API en el servidor con el mismo contexto (D24).
 
-**Diseño.** Cada regla es una función pura `(invoice, context) => Problem[]`. El contexto trae todo lo que varía por pagador o por configuración; ninguna regla contiene un valor de negocio. `supplierRuc` es opcional porque en la landing las facturas se leen antes de que el proveedor confirme su RUC (D22): si no viene, la regla del emisor se omite y la del conjunto exige que todas las facturas compartan emisor.
+**Diseño.** Cada regla es un objeto `{ id, run }` con `run` pura `(invoice, context) => Problem[]`; el `id` estable viaja en cada `Problem` para medir qué regla rechaza más facturas. El contexto trae todo lo que varía por pagador o por configuración; ninguna regla contiene un valor de negocio. `supplierRuc` es opcional porque en la landing las facturas se leen antes de que el proveedor confirme su RUC (D22): si no viene, la regla del emisor se omite y la del conjunto exige que todas las facturas compartan emisor.
 
 - [ ] **Step 1: Escribir los tests que fallan**
 
@@ -1802,7 +1968,7 @@ git commit -m "feat(shared): lector de factura electrónica UBL 2.1 con fábrica
 ```ts
 import { describe, expect, it } from 'vitest'
 import { buildInvoiceXml, type TestXmlOptions } from './build-test-xml.js'
-import { type ValidationContext, validateInvoices, validateRequestedAmount } from './rules.js'
+import { INVOICE_RULES, type ValidationContext, validateInvoices, validateRequestedAmount } from './rules.js'
 import { parseUblInvoice } from './ubl-parser.js'
 
 function invoice(options: TestXmlOptions = {}) {
@@ -1849,7 +2015,14 @@ describe('validateInvoices · reglas por factura', () => {
     const r = validateInvoices([invoice({ documentType: '03' })], ctx)
     expect(codes(r)).toEqual(['DOCUMENT_TYPE_NOT_ALLOWED'])
     expect(r.problems[0]?.invoice).toBe('F001-123')
+    expect(r.problems[0]?.rule).toBe('document-type')
     expect(r.problems[0]?.message).toContain('boleta de venta')
+  })
+
+  it('cada problema lleva el id de la regla que lo produjo, y los ids son únicos', () => {
+    const r = validateInvoices([invoice({ documentType: '03', currency: 'EUR' })], ctx)
+    expect(r.problems.map((p) => p.rule)).toEqual(['document-type', 'currency-allowed'])
+    expect(new Set(INVOICE_RULES.map((rule) => rule.id)).size).toBe(INVOICE_RULES.length)
   })
 
   it('rechaza una factura emitida a otro receptor', () => {
@@ -1913,8 +2086,10 @@ describe('validateInvoices · reglas por factura', () => {
 })
 
 describe('validateInvoices · reglas del conjunto', () => {
-  it('rechaza una solicitud sin facturas', () => {
-    expect(codes(validateInvoices([], ctx))).toEqual(['NO_INVOICES'])
+  it('rechaza una solicitud sin facturas, con el id de la regla del conjunto', () => {
+    const r = validateInvoices([], ctx)
+    expect(codes(r)).toEqual(['NO_INVOICES'])
+    expect(r.problems[0]?.rule).toBe('no-invoices')
   })
 
   it('rechaza más facturas que el máximo del contexto', () => {
@@ -1997,67 +2172,124 @@ export type ValidationContext = {
   today: IsoDate
 }
 
-export type InvoiceRule = (invoice: ParsedInvoice, ctx: ValidationContext) => Problem[]
+/** Identificadores estables de las reglas. Viajan en `Problem.rule` para métricas. */
+export const RULE_IDS = [
+  'document-type',
+  'recipient-is-payer',
+  'issuer-is-supplier',
+  'credit-with-pending-amount',
+  'currency-allowed',
+  'installments-due-in-future',
+  'no-invoices',
+  'max-invoices',
+  'duplicate-invoice',
+  'mixed-issuers',
+  'mixed-currencies',
+  'requested-amount',
+] as const
+export type RuleId = (typeof RULE_IDS)[number]
 
-const forInvoice = (inv: ParsedInvoice, problem: Problem): Problem => ({ ...problem, invoice: inv.seriesNumber })
+export type InvoiceRule = {
+  id: RuleId
+  run: (invoice: ParsedInvoice, ctx: ValidationContext) => Problem[]
+}
 
-export const documentTypeRule: InvoiceRule = (inv) =>
-  inv.documentType === DOCUMENT_TYPE.INVOICE
-    ? []
-    : [
-        forInvoice(
+const problemFor = (rule: RuleId, inv: ParsedInvoice, problem: Problem): Problem => ({
+  ...problem,
+  invoice: inv.seriesNumber,
+  rule,
+})
+
+export const documentTypeRule: InvoiceRule = {
+  id: 'document-type',
+  run: (inv) =>
+    inv.documentType === DOCUMENT_TYPE.INVOICE
+      ? []
+      : [
+          problemFor(
+            'document-type',
+            inv,
+            createProblem('DOCUMENT_TYPE_NOT_ALLOWED', {
+              data: { kind: DOCUMENT_TYPE_NAMES[inv.documentType] ?? inv.documentType },
+            }),
+          ),
+        ],
+}
+
+export const recipientIsPayerRule: InvoiceRule = {
+  id: 'recipient-is-payer',
+  run: (inv, ctx) =>
+    inv.recipientRuc === ctx.payerRuc
+      ? []
+      : [problemFor('recipient-is-payer', inv, createProblem('RECIPIENT_IS_NOT_PAYER', { data: { payer: ctx.payerName } }))],
+}
+
+export const issuerIsSupplierRule: InvoiceRule = {
+  id: 'issuer-is-supplier',
+  run: (inv, ctx) =>
+    ctx.supplierRuc === undefined || inv.issuerRuc === ctx.supplierRuc
+      ? []
+      : [problemFor('issuer-is-supplier', inv, createProblem('ISSUER_IS_NOT_SUPPLIER', { data: { issuer: inv.issuerRuc } }))],
+}
+
+export const creditWithPendingAmountRule: InvoiceRule = {
+  id: 'credit-with-pending-amount',
+  run: (inv) => {
+    if (inv.paymentTerms === 'CASH') return [problemFor('credit-with-pending-amount', inv, createProblem('CASH_INVOICE'))]
+    if (inv.paymentTerms !== 'CREDIT' || inv.netPendingAmount === null || toCents(inv.netPendingAmount) === 0n) {
+      return [problemFor('credit-with-pending-amount', inv, createProblem('NO_PENDING_AMOUNT'))]
+    }
+    return []
+  },
+}
+
+export const currencyAllowedRule: InvoiceRule = {
+  id: 'currency-allowed',
+  run: (inv, ctx) =>
+    ctx.allowedCurrencies.includes(inv.currency)
+      ? []
+      : [problemFor('currency-allowed', inv, createProblem('CURRENCY_NOT_ALLOWED', { data: { currency: inv.currency } }))],
+}
+
+export const installmentsDueInFutureRule: InvoiceRule = {
+  id: 'installments-due-in-future',
+  run: (inv, ctx) => {
+    if (inv.paymentTerms !== 'CREDIT') return []
+    if (inv.installments.length === 0) {
+      return [
+        problemFor(
+          'installments-due-in-future',
           inv,
-          createProblem('DOCUMENT_TYPE_NOT_ALLOWED', {
-            data: { kind: DOCUMENT_TYPE_NAMES[inv.documentType] ?? inv.documentType },
-          }),
+          createProblem('XML_MISSING_REQUIRED_FIELD', { data: { field: 'fechas de vencimiento (cuotas)' } }),
         ),
       ]
-
-export const recipientIsPayerRule: InvoiceRule = (inv, ctx) =>
-  inv.recipientRuc === ctx.payerRuc
-    ? []
-    : [forInvoice(inv, createProblem('RECIPIENT_IS_NOT_PAYER', { data: { payer: ctx.payerName } }))]
-
-export const issuerIsSupplierRule: InvoiceRule = (inv, ctx) =>
-  ctx.supplierRuc === undefined || inv.issuerRuc === ctx.supplierRuc
-    ? []
-    : [forInvoice(inv, createProblem('ISSUER_IS_NOT_SUPPLIER', { data: { issuer: inv.issuerRuc } }))]
-
-export const creditWithPendingAmountRule: InvoiceRule = (inv) => {
-  if (inv.paymentTerms === 'CASH') return [forInvoice(inv, createProblem('CASH_INVOICE'))]
-  if (inv.paymentTerms !== 'CREDIT' || inv.netPendingAmount === null || toCents(inv.netPendingAmount) === 0n) {
-    return [forInvoice(inv, createProblem('NO_PENDING_AMOUNT'))]
-  }
-  return []
-}
-
-export const currencyAllowedRule: InvoiceRule = (inv, ctx) =>
-  ctx.allowedCurrencies.includes(inv.currency)
-    ? []
-    : [forInvoice(inv, createProblem('CURRENCY_NOT_ALLOWED', { data: { currency: inv.currency } }))]
-
-export const installmentsDueInFutureRule: InvoiceRule = (inv, ctx) => {
-  if (inv.paymentTerms !== 'CREDIT') return []
-  if (inv.installments.length === 0) {
-    return [forInvoice(inv, createProblem('XML_MISSING_REQUIRED_FIELD', { data: { field: 'fechas de vencimiento (cuotas)' } }))]
-  }
-  const problems: Problem[] = []
-  for (const installment of inv.installments) {
-    const days = daysBetween(ctx.today, installment.dueDate)
-    if (days < 0) {
-      problems.push(
-        forInvoice(inv, createProblem('INSTALLMENT_OVERDUE', { data: { installment: installment.id, date: installment.dueDate } })),
-      )
-    } else if (days < ctx.minTermDays) {
-      problems.push(
-        forInvoice(inv, createProblem('INSUFFICIENT_TERM', { data: { installment: installment.id, days: ctx.minTermDays } })),
-      )
     }
-  }
-  return problems
+    const problems: Problem[] = []
+    for (const installment of inv.installments) {
+      const days = daysBetween(ctx.today, installment.dueDate)
+      if (days < 0) {
+        problems.push(
+          problemFor(
+            'installments-due-in-future',
+            inv,
+            createProblem('INSTALLMENT_OVERDUE', { data: { installment: installment.id, date: installment.dueDate } }),
+          ),
+        )
+      } else if (days < ctx.minTermDays) {
+        problems.push(
+          problemFor(
+            'installments-due-in-future',
+            inv,
+            createProblem('INSUFFICIENT_TERM', { data: { installment: installment.id, days: ctx.minTermDays } }),
+          ),
+        )
+      }
+    }
+    return problems
+  },
 }
 
-/** Orden de evaluación. Agregar una regla = agregar una función aquí y su test. */
+/** Orden de evaluación. Agregar una regla = agregar su id a RULE_IDS, un objeto aquí y su test. */
 export const INVOICE_RULES: readonly InvoiceRule[] = [
   documentTypeRule,
   recipientIsPayerRule,
@@ -2084,11 +2316,11 @@ export function validateInvoices(invoices: readonly ParsedInvoice[], ctx: Valida
   const empty: ValidationResult = { problems, validInvoices: [], currency: null, totalNetPending: '0.00', maxAmount: '0.00' }
 
   if (invoices.length === 0) {
-    problems.push(createProblem('NO_INVOICES'))
+    problems.push(createProblem('NO_INVOICES', { rule: 'no-invoices' }))
     return empty
   }
   if (invoices.length > ctx.maxInvoices) {
-    problems.push(createProblem('TOO_MANY_INVOICES', { data: { max: ctx.maxInvoices } }))
+    problems.push(createProblem('TOO_MANY_INVOICES', { rule: 'max-invoices', data: { max: ctx.maxInvoices } }))
     return empty
   }
 
@@ -2097,7 +2329,9 @@ export function validateInvoices(invoices: readonly ParsedInvoice[], ctx: Valida
   for (const inv of invoices) {
     const key = invoiceKey(inv)
     if (seen.has(key)) {
-      problems.push(createProblem('DUPLICATE_INVOICE', { invoice: inv.seriesNumber, data: { invoice: inv.seriesNumber } }))
+      problems.push(
+        createProblem('DUPLICATE_INVOICE', { rule: 'duplicate-invoice', invoice: inv.seriesNumber, data: { invoice: inv.seriesNumber } }),
+      )
       continue
     }
     seen.add(key)
@@ -2105,18 +2339,18 @@ export function validateInvoices(invoices: readonly ParsedInvoice[], ctx: Valida
   }
 
   const validInvoices = candidates.filter((inv) => {
-    const own = INVOICE_RULES.flatMap((rule) => rule(inv, ctx))
+    const own = INVOICE_RULES.flatMap((rule) => rule.run(inv, ctx))
     problems.push(...own)
     return own.length === 0
   })
   if (validInvoices.length === 0) return { ...empty, problems }
 
   const issuers = new Set(validInvoices.map((inv) => inv.issuerRuc))
-  if (issuers.size > 1) problems.push(createProblem('MIXED_ISSUERS'))
+  if (issuers.size > 1) problems.push(createProblem('MIXED_ISSUERS', { rule: 'mixed-issuers' }))
 
   const currencies = new Set(validInvoices.map((inv) => inv.currency))
   if (currencies.size > 1) {
-    problems.push(createProblem('MIXED_CURRENCIES'))
+    problems.push(createProblem('MIXED_CURRENCIES', { rule: 'mixed-currencies' }))
     return { ...empty, problems, validInvoices }
   }
 
@@ -2132,9 +2366,12 @@ export function validateInvoices(invoices: readonly ParsedInvoice[], ctx: Valida
 
 export function validateRequestedAmount(amount: string, result: ValidationResult): Problem | null {
   const normalized = normalizeAmount(amount)
-  if (normalized === null || toCents(normalized) === 0n) return createProblem('INVALID_AMOUNT', { field: 'requestedAmount' })
+  if (normalized === null || toCents(normalized) === 0n) {
+    return createProblem('INVALID_AMOUNT', { rule: 'requested-amount', field: 'requestedAmount' })
+  }
   if (compareAmounts(normalized, result.maxAmount) > 0) {
     return createProblem('AMOUNT_EXCEEDS_MAXIMUM', {
+      rule: 'requested-amount',
       field: 'requestedAmount',
       data: { max: result.maxAmount, currency: result.currency ?? '' },
     })
@@ -2148,6 +2385,8 @@ Agregar a `packages/shared/src/invoice/index.ts`:
 export {
   INVOICE_RULES,
   type InvoiceRule,
+  RULE_IDS,
+  type RuleId,
   creditWithPendingAmountRule,
   currencyAllowedRule,
   documentTypeRule,
@@ -2179,12 +2418,12 @@ git commit -m "feat(shared): reglas de factura parametrizadas por contexto del p
 
 **Files:**
 - Create: `packages/shared/src/user/roles.ts`, `packages/shared/src/user/index.ts`
-- Create: `packages/shared/src/advance-request/statuses.ts`, `packages/shared/src/advance-request/close-reasons.ts`, `packages/shared/src/advance-request/transitions.ts`, `packages/shared/src/advance-request/index.ts`
-- Test: `packages/shared/src/user/roles.test.ts`, `packages/shared/src/advance-request/transitions.test.ts`
+- Create: `packages/shared/src/advance-request/statuses.ts`, `packages/shared/src/advance-request/close-reasons.ts`, `packages/shared/src/advance-request/transitions.ts`, `packages/shared/src/advance-request/events.ts`, `packages/shared/src/advance-request/index.ts`
+- Test: `packages/shared/src/user/roles.test.ts`, `packages/shared/src/advance-request/transitions.test.ts`, `packages/shared/src/advance-request/events.test.ts`
 - Modify: `packages/shared/src/index.ts`
 
 **Interfaces:**
-- Produces: `ROLES`, `Role`, `hasRoleAtLeast(role, minimum)`, `roleSchema`, `ROLE_LABELS`; `ADVANCE_REQUEST_STATUSES`, `AdvanceRequestStatus`, `INITIAL_STATUS`, `TERMINAL_STATUSES`, `isTerminalStatus`, `STATUS_LABELS`, `advanceRequestStatusSchema`; `CLOSE_REASONS`, `CloseReason`, `CLOSE_REASONS_BY_STATUS`, `CLOSE_REASON_LABELS`, `closeReasonSchema`; `GUARDS`, `Guard`, `Facts`, `Transition`, `TRANSITIONS`, `transitionsFrom(from, role)`, `availableTransitions(from, role, facts)`, `evaluateStatusChange(change): StatusChangeResult`, `statusChangeSchema`. La API calcula los `Facts` con Prisma (por ejemplo `documentsValid`), devuelve `availableTransitions` como `allowedActions` en cada respuesta de solicitud y vuelve a evaluar en el PATCH; el admin pinta solo esos botones.
+- Produces: `ROLES`, `Role`, `hasRoleAtLeast(role, minimum)`, `roleSchema`, `ROLE_LABELS`; `ADVANCE_REQUEST_STATUSES`, `AdvanceRequestStatus`, `INITIAL_STATUS`, `TERMINAL_STATUSES`, `isTerminalStatus`, `STATUS_LABELS`, `advanceRequestStatusSchema`; `CLOSE_REASONS`, `CloseReason`, `CLOSE_REASONS_BY_STATUS`, `CLOSE_REASON_LABELS`, `closeReasonSchema`; `GUARDS`, `Guard`, `Facts`, `Transition`, `TRANSITIONS`, `transitionsFrom(from, role)`, `availableTransitions(from, role, facts)`, `evaluateStatusChange(change): StatusChangeResult`, `statusChangeSchema`; `EVENT_TYPES`, `advanceRequestCreatedEventSchema`, `statusChangedEventSchema`, `domainEventSchema`, `DomainEvent`. Los eventos son el contrato del outbox (D29): la API los escribe en la misma transacción y cualquier consumidor los valida con el mismo esquema. La API calcula los `Facts` con Prisma (por ejemplo `documentsValid`), devuelve `availableTransitions` como `allowedActions` en cada respuesta de solicitud y vuelve a evaluar en el PATCH; el admin pinta solo esos botones.
 
 - [ ] **Step 1: Escribir los tests que fallan**
 
@@ -2327,6 +2566,65 @@ describe('statusChangeSchema (cuerpo del PATCH de la API)', () => {
   it('rechaza estados desconocidos y versiones no enteras', () => {
     expect(statusChangeSchema.safeParse({ to: 'CLOSED', version: 1 }).success).toBe(false)
     expect(statusChangeSchema.safeParse({ to: 'CONTACTED', version: 1.5 }).success).toBe(false)
+  })
+})
+```
+
+`packages/shared/src/advance-request/events.test.ts`:
+```ts
+import { describe, expect, it } from 'vitest'
+import { EVENT_TYPES, domainEventSchema } from './events.js'
+
+const created = {
+  id: '6f1c2c1e-3b7d-4c39-9a3e-7d2f9d8e1a11',
+  occurredAt: '2026-09-24T15:00:00.000Z',
+  version: 1,
+  type: 'advance-request.created',
+  payload: {
+    advanceRequestId: '0b4e6c2d-5b1a-4f6e-8c2d-1a2b3c4d5e6f',
+    publicCode: 'ANT-2026-000123',
+    payerSlug: 'sea',
+    supplierRuc: '20100070970',
+    currency: 'PEN',
+    requestedAmount: '8000.00',
+    invoiceCount: 2,
+    contactEmail: 'ana@proveedor.pe',
+  },
+}
+
+describe('domainEventSchema', () => {
+  it('acepta un evento de creación y discrimina por tipo', () => {
+    const r = domainEventSchema.parse(created)
+    expect(r.type).toBe('advance-request.created')
+    if (r.type === 'advance-request.created') expect(r.payload.invoiceCount).toBe(2)
+  })
+
+  it('acepta un cambio de estado con motivo y usuario nulos', () => {
+    const r = domainEventSchema.safeParse({
+      ...created,
+      type: 'advance-request.status-changed',
+      payload: {
+        advanceRequestId: created.payload.advanceRequestId,
+        publicCode: 'ANT-2026-000123',
+        from: 'NEW',
+        to: 'CONTACTED',
+        closeReason: null,
+        changedByUserId: null,
+      },
+    })
+    expect(r.success).toBe(true)
+  })
+
+  it('rechaza tipos desconocidos, fechas sin zona y montos sin formato', () => {
+    expect(domainEventSchema.safeParse({ ...created, type: 'advance-request.deleted' }).success).toBe(false)
+    expect(domainEventSchema.safeParse({ ...created, occurredAt: '2026-09-24 15:00' }).success).toBe(false)
+    expect(
+      domainEventSchema.safeParse({ ...created, payload: { ...created.payload, requestedAmount: '8000' } }).success,
+    ).toBe(false)
+  })
+
+  it('EVENT_TYPES cubre exactamente los tipos de la unión', () => {
+    expect([...EVENT_TYPES].sort()).toEqual(['advance-request.created', 'advance-request.status-changed'])
   })
 })
 ```
@@ -2525,6 +2823,57 @@ export const statusChangeSchema = z.object({
 export type StatusChangeDto = z.infer<typeof statusChangeSchema>
 ```
 
+`packages/shared/src/advance-request/events.ts` (contrato del outbox y de cualquier consumidor; `occurredAt` es un instante UTC, no una fecha de negocio):
+```ts
+import { z } from 'zod'
+import { rucSchema } from '../identity/index.js'
+import { amountSchema, currencySchema } from '../money/index.js'
+import { closeReasonSchema } from './close-reasons.js'
+import { advanceRequestStatusSchema } from './statuses.js'
+
+export const EVENT_TYPES = ['advance-request.created', 'advance-request.status-changed'] as const
+export type EventType = (typeof EVENT_TYPES)[number]
+
+const baseEventSchema = z.object({
+  id: z.uuid(),
+  occurredAt: z.iso.datetime(),
+  /** Versión del esquema del evento. Se incrementa si cambia el payload de forma incompatible. */
+  version: z.literal(1),
+})
+
+export const advanceRequestCreatedEventSchema = baseEventSchema.extend({
+  type: z.literal('advance-request.created'),
+  payload: z.object({
+    advanceRequestId: z.uuid(),
+    publicCode: z.string().min(1),
+    payerSlug: z.string().min(1),
+    supplierRuc: rucSchema,
+    currency: currencySchema,
+    requestedAmount: amountSchema,
+    invoiceCount: z.number().int().positive(),
+    contactEmail: z.email(),
+  }),
+})
+export type AdvanceRequestCreatedEvent = z.infer<typeof advanceRequestCreatedEventSchema>
+
+export const statusChangedEventSchema = baseEventSchema.extend({
+  type: z.literal('advance-request.status-changed'),
+  payload: z.object({
+    advanceRequestId: z.uuid(),
+    publicCode: z.string().min(1),
+    from: advanceRequestStatusSchema,
+    to: advanceRequestStatusSchema,
+    closeReason: closeReasonSchema.nullable(),
+    /** null cuando el cambio lo hace el sistema (por ejemplo, la creación desde la landing). */
+    changedByUserId: z.uuid().nullable(),
+  }),
+})
+export type StatusChangedEvent = z.infer<typeof statusChangedEventSchema>
+
+export const domainEventSchema = z.discriminatedUnion('type', [advanceRequestCreatedEventSchema, statusChangedEventSchema])
+export type DomainEvent = z.infer<typeof domainEventSchema>
+```
+
 `packages/shared/src/advance-request/index.ts` (formulario y código público se agregan en la Tarea 8):
 ```ts
 export {
@@ -2534,6 +2883,16 @@ export {
   type CloseReason,
   closeReasonSchema,
 } from './close-reasons.js'
+export {
+  type AdvanceRequestCreatedEvent,
+  advanceRequestCreatedEventSchema,
+  type DomainEvent,
+  domainEventSchema,
+  EVENT_TYPES,
+  type EventType,
+  type StatusChangedEvent,
+  statusChangedEventSchema,
+} from './events.js'
 export {
   ADVANCE_REQUEST_STATUSES,
   type AdvanceRequestStatus,
@@ -2575,7 +2934,7 @@ Expected: todos PASS. En particular los tests estructurales: si alguien quita un
 
 ```bash
 git add packages/shared/src
-git commit -m "feat(shared): máquina de estados como datos con guardas, roles, motivos y test estructural"
+git commit -m "feat(shared): máquina de estados como datos, roles, motivos, eventos de dominio y test estructural"
 ```
 
 ---
@@ -3047,7 +3406,220 @@ git commit -m "feat(shared): vigencia de documentos del proveedor y esquema púb
 
 ---
 
-### Task 10: CI, documentación y cierre de la fase
+### Task 10: Test de arquitectura, suite dorada y verificación del paquete
+
+**Files:**
+- Create: `packages/shared/src/architecture.test.ts`
+- Create: `packages/shared/test/golden/README.md`, `packages/shared/test/golden/generate-seed-cases.ts`, `packages/shared/test/golden/golden.test.ts`, `packages/shared/test/golden/cases/*.xml`, `packages/shared/test/golden/expected/*.json`
+- Modify: `.gitignore` (agregar `packages/shared/test/golden/private/`)
+
+**Interfaces:**
+- Consumes: todo `shared`.
+- Produces: la garantía de que la dirección de dependencias entre dominios se mantiene, la suite donde entrarán los XML reales de SEA, y la verificación de que el paquete compilado es correcto para consumidores ESM. Nada que otras tareas importen.
+
+- [ ] **Step 1: Escribir el test de arquitectura**
+
+`packages/shared/src/architecture.test.ts`:
+```ts
+import { readdirSync, readFileSync } from 'node:fs'
+import { join, relative, sep } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { describe, expect, it } from 'vitest'
+
+const SRC = fileURLToPath(new URL('.', import.meta.url))
+
+/** Qué dominios puede importar cada dominio. Agregar un dominio = agregar su fila; el test falla si falta. */
+const ALLOWED: Record<string, readonly string[]> = {
+  errors: [],
+  identity: ['errors'],
+  money: ['errors'],
+  dates: [],
+  user: [],
+  invoice: ['errors', 'money', 'dates'],
+  'advance-request': ['identity', 'money', 'dates', 'user'],
+  'supplier-document': ['dates'],
+  payer: ['identity', 'money'],
+}
+
+type Edge = { file: string; domain: string; target: string; specifier: string }
+
+function sourceFiles(): string[] {
+  return readdirSync(SRC, { recursive: true, withFileTypes: true })
+    .filter((e) => e.isFile() && e.name.endsWith('.ts') && !e.name.endsWith('.test.ts'))
+    .map((e) => join(e.parentPath, e.name))
+}
+
+function crossDomainImports(): Edge[] {
+  const edges: Edge[] = []
+  for (const file of sourceFiles()) {
+    const parts = relative(SRC, file).split(sep)
+    if (parts.length < 2) continue // index.ts de la raíz: reexporta todo a propósito
+    const domain = parts[0] as string
+    const source = readFileSync(file, 'utf8')
+    for (const m of source.matchAll(/from\s+'(\.\.?\/[^']+)'/g)) {
+      const specifier = m[1] as string
+      if (!specifier.startsWith('../')) continue // import dentro del mismo dominio
+      edges.push({ file: relative(SRC, file), domain, target: specifier.split('/')[1] as string, specifier })
+    }
+  }
+  return edges
+}
+
+describe('arquitectura de shared', () => {
+  const edges = crossDomainImports()
+
+  it('todo dominio está declarado en la tabla de dependencias', () => {
+    const domains = readdirSync(SRC, { withFileTypes: true })
+      .filter((e) => e.isDirectory())
+      .map((e) => e.name)
+    expect(domains.sort()).toEqual(Object.keys(ALLOWED).sort())
+  })
+
+  it('los imports entre dominios pasan por el index del dominio destino', () => {
+    const bad = edges.filter((e) => e.specifier !== `../${e.target}/index.js`)
+    expect(bad, JSON.stringify(bad, null, 2)).toEqual([])
+  })
+
+  it('cada dominio solo importa lo que la tabla permite', () => {
+    const bad = edges.filter((e) => !(ALLOWED[e.domain] ?? []).includes(e.target))
+    expect(bad, JSON.stringify(bad, null, 2)).toEqual([])
+  })
+
+  it('la tabla no tiene ciclos', () => {
+    const visit = (domain: string, stack: string[]): void => {
+      if (stack.includes(domain)) throw new Error(`Ciclo: ${[...stack, domain].join(' -> ')}`)
+      for (const next of ALLOWED[domain] ?? []) visit(next, [...stack, domain])
+    }
+    for (const domain of Object.keys(ALLOWED)) visit(domain, [])
+  })
+})
+```
+
+- [ ] **Step 2: Correr el test de arquitectura**
+
+Run: `pnpm --filter @anticipate/shared test -- architecture`
+Expected: 4 tests PASS. Si "cada dominio solo importa lo que la tabla permite" falla, el mensaje lista el archivo y el import que rompe la dirección; se corrige el import, no la tabla, salvo decisión explícita.
+
+- [ ] **Step 3: Crear la suite dorada con sus casos iniciales**
+
+`packages/shared/test/golden/README.md`:
+```markdown
+# Suite dorada
+
+Cada archivo de `cases/` pasa por el lector y las reglas con un contexto fijo (SEA, 80 %, 15 días, "hoy" = 2026-09-23) y su resultado se compara con el snapshot de `expected/`. Los casos `seed-*.xml` los genera la fábrica de XML de prueba; los demás son XML reales de proveedores.
+
+## Agregar un XML real
+
+1. Guardar el original en `private/` (ignorado por git; nunca se commitea).
+2. Copiarlo a `cases/` con un nombre descriptivo: `<pagador>-<caso>.xml`, por ejemplo `sea-credito-detraccion-2cuotas.xml`.
+3. Anonimizar la copia: reemplazar las razones sociales por `EMISOR ANONIMO N`, y los correos y direcciones si aparecen. El RUC es público y se conserva; los montos pueden conservarse o escalarse, pero todos por el mismo factor.
+4. Correr `pnpm --filter @anticipate/shared exec vitest run test/golden -u` para crear el snapshot, y revisar `expected/<caso>.json` a mano: es la afirmación de cómo debe comportarse el sistema con ese XML.
+5. Commitear caso y snapshot juntos. El revisor del PR lee el JSON, no el XML.
+
+Si un snapshot cambia sin que cambie el caso, cambió una regla: el PR tiene que explicar por qué.
+```
+
+`packages/shared/test/golden/generate-seed-cases.ts`:
+```ts
+import { mkdirSync, writeFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import { buildCdrXml, buildInvoiceXml } from '../../src/invoice/build-test-xml.js'
+
+const dir = fileURLToPath(new URL('./cases/', import.meta.url))
+mkdirSync(dir, { recursive: true })
+
+const cases: Record<string, string> = {
+  'seed-credit-pen.xml': buildInvoiceXml(),
+  'seed-credit-usd-two-installments.xml': buildInvoiceXml({
+    currency: 'USD',
+    installments: [
+      { id: 'Cuota001', amount: '5000.00', dueDate: '2026-10-30' },
+      { id: 'Cuota002', amount: '5620.00', dueDate: '2026-11-30' },
+    ],
+  }),
+  'seed-cash.xml': buildInvoiceXml({ paymentTerms: 'Contado', netPendingAmount: null, installments: [] }),
+  'seed-receipt.xml': buildInvoiceXml({ documentType: '03' }),
+  'seed-other-recipient.xml': buildInvoiceXml({ recipientRuc: '20100070970' }),
+  'seed-legacy-ruc-path.xml': buildInvoiceXml({ legacyRucPath: true }),
+  'seed-cdr.xml': buildCdrXml(),
+}
+
+for (const [name, xml] of Object.entries(cases)) writeFileSync(dir + name, xml)
+console.log(`${Object.keys(cases).length} casos escritos en ${dir}`)
+```
+
+Run: `pnpm --filter @anticipate/shared exec tsx test/golden/generate-seed-cases.ts`
+Expected: "7 casos escritos en …/test/golden/cases/".
+
+Agregar a `.gitignore` de la raíz:
+```
+# XML reales sin anonimizar de la suite dorada
+packages/shared/test/golden/private/
+```
+
+- [ ] **Step 4: Escribir el test dorado y crear los snapshots**
+
+`packages/shared/test/golden/golden.test.ts`:
+```ts
+import { readdirSync, readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import { describe, expect, it } from 'vitest'
+import { type ValidationContext, validateInvoices } from '../../src/invoice/rules.js'
+import { parseUblInvoice } from '../../src/invoice/ubl-parser.js'
+
+const casesDir = fileURLToPath(new URL('./cases/', import.meta.url))
+
+/** Contexto fijo para que los snapshots sean reproducibles. Sin `supplierRuc`: los casos reales vienen de emisores distintos. */
+const ctx: ValidationContext = {
+  payerRuc: '20131312955',
+  payerName: 'SEA',
+  advancePercent: 80,
+  minTermDays: 15,
+  maxInvoices: 10,
+  allowedCurrencies: ['PEN', 'USD'],
+  today: '2026-09-23',
+}
+
+const files = readdirSync(casesDir)
+  .filter((f) => f.endsWith('.xml'))
+  .sort()
+
+describe('suite dorada', () => {
+  it('hay al menos un caso', () => {
+    expect(files.length).toBeGreaterThan(0)
+  })
+
+  it.each(files)('%s produce el resultado esperado', async (file) => {
+    const parsed = parseUblInvoice(readFileSync(casesDir + file, 'utf8'))
+    const result = parsed.ok
+      ? { parsed: parsed.invoice, validation: validateInvoices([parsed.invoice], ctx) }
+      : { parsed: parsed.problem }
+    await expect(JSON.stringify(result, null, 2)).toMatchFileSnapshot(`./expected/${file.replace(/\.xml$/, '.json')}`)
+  })
+})
+```
+
+Run: `pnpm --filter @anticipate/shared exec vitest run test/golden -u`
+Expected: crea `expected/seed-*.json`, uno por caso. Abrirlos y comprobar a mano: `seed-credit-pen` sin problemas y `maxAmount` de `8496.00`; `seed-cash` con `CASH_INVOICE`; `seed-receipt` con `DOCUMENT_TYPE_NOT_ALLOWED`; `seed-other-recipient` con `RECIPIENT_IS_NOT_PAYER`; `seed-cdr` con `XML_NOT_AN_INVOICE`; `seed-legacy-ruc-path` idéntico a `seed-credit-pen`.
+
+Run: `pnpm --filter @anticipate/shared test`
+Expected: todos PASS sin `-u`, incluida la suite dorada, y la cobertura por encima de los umbrales.
+
+- [ ] **Step 5: Verificar el paquete compilado**
+
+Run: `pnpm --filter @anticipate/shared build && pnpm --filter @anticipate/shared check:package`
+Expected: `publint` sin errores ni advertencias; `attw` muestra todos los subpaths de `exports` en verde para ESM (node16 y bundler).
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add packages/shared/src/architecture.test.ts packages/shared/test/golden .gitignore
+git commit -m "test(shared): test de arquitectura, suite dorada y verificación del paquete"
+```
+
+---
+
+### Task 11: CI, documentación y cierre de la fase
 
 **Files:**
 - Create: `.github/workflows/ci.yml`, `README.md`
@@ -3075,6 +3647,8 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # turbo --affected necesita la historia para comparar con main
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
@@ -3082,10 +3656,17 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
-      - run: pnpm typecheck
-      - run: pnpm test
-      - run: pnpm build
+      - name: Verificar solo lo afectado (pull request)
+        if: github.event_name == 'pull_request'
+        run: pnpm turbo run typecheck test build --affected
+      - name: Verificar todo (main)
+        if: github.event_name != 'pull_request'
+        run: pnpm turbo run typecheck test build
+      - name: Verificar el empaquetado de shared
+        run: pnpm --filter @anticipate/shared check:package
 ```
+
+`pnpm test` en cada paquete corre con cobertura y umbrales, así que un PR que baje la cobertura de `shared` del 90 % falla aquí.
 
 - [ ] **Step 2: Mover el documento vivo a `docs/` y escribir el README**
 
@@ -3113,6 +3694,7 @@ Adelanto de facturas para proveedores de empresas pagadoras. Documento de arquit
 | `pnpm build` | Compila los paquetes |
 | `pnpm verify` | Todo lo anterior, en orden. Es lo que corre CI |
 | `pnpm test:watch` | Vitest en modo interactivo sobre todos los paquetes |
+| `pnpm --filter @anticipate/shared check:package` | Verifica `exports` y tipos del paquete compilado |
 
 ## Estructura
 
@@ -3123,7 +3705,9 @@ Adelanto de facturas para proveedores de empresas pagadoras. Documento de arquit
 ## Convenciones
 
 - Código en inglés (identificadores, archivos, modelos); español en mensajes, textos, documentación, comentarios y commits. Glosario en `docs/STACK.md`.
-- Las versiones se fijan en el `catalog` de `pnpm-workspace.yaml`; los `package.json` usan `catalog:`.
+- Las versiones se fijan en el `catalog` de `pnpm-workspace.yaml`; los `package.json` usan `catalog:`. Renovate propone actualizaciones agrupadas los lunes.
+- Cada commit pasa por lefthook: Biome sobre lo cambiado y commitlint (Conventional Commits).
+- `packages/shared` tiene un test de arquitectura (dirección de dependencias entre dominios) y una suite dorada con XML reales anonimizados (`packages/shared/test/golden/README.md`).
 ```
 
 - [ ] **Step 3: Registrar en `docs/STACK.md` la convención de nombres y el glosario**
@@ -3190,7 +3774,7 @@ Y en el historial, fila 0.4, agregar al final: `; convención de nombres en ingl
 - [ ] **Step 5: Verificación completa y commit**
 
 Run: `pnpm verify`
-Expected: lint, typecheck, test y build sin errores. Contar los tests: `pnpm --filter @anticipate/shared test 2>&1 | grep -E "Tests|Test Files"` debe mostrar más de 90 tests en verde.
+Expected: lint, typecheck, test y build sin errores. Contar los tests: `pnpm --filter @anticipate/shared test 2>&1 | grep -E "Tests|Test Files"` debe mostrar más de 110 tests en verde.
 
 ```bash
 git add .github README.md docs
@@ -3214,15 +3798,23 @@ Si el repositorio ya tiene remoto en GitHub: crear rama `feat/foundations-and-sh
 | Motivos de cierre | Enum en `shared`, validado por estado destino | Métricas por motivo sin inventar estados (D27) |
 | `supplierRuc` opcional en el contexto | La landing lee facturas antes de conocer el RUC | D22: el XML completa la empresa |
 | Retención | No se lee todavía | Va en `AllowanceCharge` código 62; el neto pendiente ya viene descontado; se agrega con XML reales |
-| Turborepo | Desde el día 1, sin caché remota | Ordena `build` de packages antes que apps y cachea en local; cuesta un archivo de diez líneas |
+| Turborepo | Desde el día 1, sin caché remota; `--affected` en los PR | Ordena `build` de packages antes que apps y cachea en local; cuesta un archivo de diez líneas |
+| Tipos marcados | `Amount` e `IsoDate` como tipos de plantilla | Un `string` cualquiera no compila donde se espera un monto o una fecha; los literales de los tests sí |
+| Dirección de dependencias | Tabla en `architecture.test.ts` | Un import fuera de la dirección rompe CI; evita la bola de barro cuando `shared` crezca |
+| Reglas con id | `InvoiceRule = { id, run }`, `Problem.rule` | Métricas de rechazo por regla sin tocar las reglas |
+| Eventos de dominio | Esquemas Zod en `advance-request/events.ts` | Contrato del outbox y de consumidores futuros, versionado desde el día 1 |
+| Lector endurecido | DOCTYPE rechazado, tope por parámetro, sin entidades | Cierra la superficie de ataque del único endpoint público |
+| Calidad medida | fast-check, suite dorada, cobertura 90 %, publint y attw | Casos borde generados, XML reales como verdad, empaquetado verificado |
+| Higiene | lefthook + commitlint, Renovate con espera de tres días | Igual que los otros repos de Anticipate; protección ante paquetes recién publicados |
 | TypeScript 6 vía alias | `typescript@npm:@typescript/typescript6` | 7.0 es `latest` pero no tiene API programática y lo rechazan el CLI de NestJS 12 y @nestjs/swagger |
 | `nestjs-zod` | Descartado | No soporta NestJS 12; la validación nativa con Standard Schema lo reemplaza (paso 2) |
 
 ## Self-review (hecho al escribir el plan)
 
-- **Cobertura de STACK.md**: §4 stack raíz (Tarea 1), §5 estructura y reglas de dependencia (Tareas 1 y 2), §9 reglas de factura (Tarea 6), estados y transiciones con motivo codificado (Tarea 7), tipos y vigencia de documentos (Tarea 9), convenciones de dinero y fechas (Tarea 4), campos del formulario §6 (Tarea 8), campos públicos del pagador §8 (Tarea 9), tests obligatorios y test estructural §12 (Tareas 3, 6, 7), CI §12 (Tarea 10), convención de nombres, glosario y versiones verificadas (Tarea 10). Fuera de este plan, a propósito: esquema Prisma, API, landing, admin, Docker Compose (pasos 2 a 4).
-- **Placeholders**: los únicos valores por completar son las versiones del catálogo (Tarea 1, paso 2), que por diseño se toman de `pnpm view` en el momento de ejecutar.
+- **Cobertura de STACK.md**: §4 stack raíz (Tarea 1), §5 estructura y reglas de dependencia (Tareas 1 y 2), §9 reglas de factura (Tarea 6), estados y transiciones con motivo codificado (Tarea 7), tipos y vigencia de documentos (Tarea 9), convenciones de dinero y fechas (Tarea 4), campos del formulario §6 (Tarea 8), campos públicos del pagador §8 (Tarea 9), tests obligatorios y test estructural §12 (Tareas 3, 6, 7), CI §12 (Tarea 11), convención de nombres, glosario y versiones verificadas (Tarea 11). Fuera de este plan, a propósito: esquema Prisma, API, landing, admin, Docker Compose (pasos 2 a 4).
+- **Placeholders**: los únicos valores por completar son las versiones del catálogo (Tarea 1, paso 2), que por diseño se toman de `pnpm view` en el momento de ejecutar, y los snapshots de la suite dorada (Tarea 10), que se generan y revisan a mano.
+- **Robustez y escalabilidad** (agregadas el 2026-09-24 a pedido): tipos marcados (Tarea 4), tests de propiedades (Tareas 3 y 4), lector endurecido (Tarea 5), reglas con id (Tarea 6), eventos de dominio (Tarea 7), test de arquitectura, suite dorada y verificación del paquete (Tarea 10), cobertura mínima (Tarea 2), lefthook, commitlint y Renovate (Tarea 1), CI con `--affected` (Tarea 11).
 - **Consistencia de nombres**: `createProblem`, `Problem`, `Amount`, `normalizeAmount`, `ParsedInvoice`, `ValidationContext`, `validateInvoices`, `evaluateStatusChange`, `availableTransitions`, `isCurrentlyValid`, `publicPayerSchema` se usan con la misma firma en todas las tareas que los mencionan.
 - **Review Focus**: los cinco puntos tienen test: BOM y CRLF (Tarea 5, "robustez de formato"), prefijos de espacio de nombres y ruta legada del RUC (Tarea 5), montos sin dos decimales (Tareas 4 y 5), cuota vencida entre cuotas futuras (Tarea 6), factura repetida y emisores distintos (Tarea 6).
 - **Revisión adversarial del plan** (2026-09-24, parcial por límite de sesión): corrieron los lentes de nombres e idioma; confirmaron y se corrigieron dos errores de compilación (`TRANSITIONS` tipada como `readonly Transition[]` en vez de `as const`, e `include` de `packages/shared/tsconfig.json` limitado a `src` por `rootDir`) y el script raíz pasó de `verificar` a `verify`. Pendientes de correr: APIs de librerías, tests contra código y ejecutabilidad.
-- **Verificación de versiones**: hecha el 2026-09-23 con seis agentes contra el registro npm y documentación oficial (Node, pnpm, TypeScript, NestJS, Prisma, Vitest, Biome, Astro, Next.js, fast-xml-parser, SUNAT). Pins y consecuencias incorporados en Global Constraints, Tarea 1, Tarea 2 y Tarea 10.
+- **Verificación de versiones**: hecha el 2026-09-23 con seis agentes contra el registro npm y documentación oficial (Node, pnpm, TypeScript, NestJS, Prisma, Vitest, Biome, Astro, Next.js, fast-xml-parser, SUNAT). Pins y consecuencias incorporados en Global Constraints, Tarea 1, Tarea 2 y Tarea 11.
