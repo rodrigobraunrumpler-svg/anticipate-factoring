@@ -97,7 +97,7 @@ function packageNameOf(specifier: string): string {
  * que solo empieza con `///` sin `<reference` es un comentario común y no cuenta.
  */
 function referenceDirectives(source: string): string[] {
-  const pattern = /^﻿?[ \t]*(\/\/\/[ \t]*<reference\b[^>]*>)/gm
+  const pattern = /^\uFEFF?[ \t]*(\/\/\/[ \t]*<reference\b[^>]*>)/gm
   return [...source.matchAll(pattern)].map((m) => m[1] as string)
 }
 

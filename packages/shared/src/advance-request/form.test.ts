@@ -166,6 +166,7 @@ describe('advanceRequestFormSchema', () => {
         termsVersion: '',
         privacyVersion: 'v'.repeat(21),
       },
+      // El referrer inválido se descarta a propósito (P2); el problema viene de la clave utm.
       source: { utm: { password: 'x' }, referrer: 'not-a-url' },
     }
     const r = advanceRequestFormSchema.safeParse(invalid)
