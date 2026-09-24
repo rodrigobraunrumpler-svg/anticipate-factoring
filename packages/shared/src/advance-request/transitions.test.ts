@@ -103,6 +103,21 @@ describe('availableTransitions', () => {
     ).toEqual(['UNDER_REVIEW', 'REJECTED', 'WITHDRAWN'])
   })
 
+  it('permite registrar el retiro del proveedor durante la evaluación', () => {
+    expect(availableTransitions('UNDER_REVIEW', 'AGENT', {}).map((t) => t.to)).toEqual([
+      'QUOTE_SENT',
+      'REJECTED',
+      'WITHDRAWN',
+    ])
+    const r = evaluateStatusChange({
+      from: 'UNDER_REVIEW',
+      to: 'WITHDRAWN',
+      role: 'AGENT',
+      closeReason: 'SUPPLIER_WITHDREW',
+    })
+    expect(r).toEqual({ ok: true, guard: null, requiresReason: true })
+  })
+
   it('oculta la aprobación hasta que la proforma esté aceptada', () => {
     expect(availableTransitions('QUOTE_SENT', 'AGENT', {}).map((t) => t.to)).toEqual(['WITHDRAWN'])
     expect(

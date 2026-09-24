@@ -5,7 +5,7 @@
 
 | | |
 |---|---|
-| **Estado** | Borrador v0.6 |
+| **Estado** | Borrador v0.7 |
 | **Última actualización** | 2026-09-24 |
 | **Alcance** | Landing multiempresa + API + admin para gestión de solicitudes |
 
@@ -594,6 +594,7 @@ stateDiagram-v2
     NO_CONTESTA --> DESISTIDA
     APROBADA --> DESISTIDA
     EN_EVALUACION --> RECHAZADA
+    EN_EVALUACION --> DESISTIDA
     DOCUMENTOS_PENDIENTES --> RECHAZADA
     RECHAZADA --> [*]
     DESISTIDA --> [*]
@@ -790,6 +791,7 @@ Rama `main` protegida; ramas cortas por funcionalidad; pull request con revisió
 | D33 | Idioma del código | Identificadores en inglés; español para personas; glosario en la sección 1 | Igual que `anticipate-health-backend` y los portales; el glosario evita traducciones inconsistentes de los términos del negocio | Todo en español (único repo distinto del resto de la empresa) |
 | D34 | Fechas | date-fns 4 con `@date-fns/tz`; fechas de negocio como texto ISO de calendario; `shared` recibe "hoy" por parámetro | Misma librería que el resto de repos; las fechas de vencimiento son de calendario, no instantes; la zona horaria se aplica en un solo lugar | Aritmética de fechas propia; guardar vencimientos como timestamps |
 | D35 | Aritmética de montos | decimal.js con una instancia propia (`Decimal.clone`), redondeo explícito (`down` para el máximo a adelantar, `half-up` para cálculos generales) y `Amount` como texto en los bordes | Pedido del equipo; es la base del `Decimal` de Prisma y la usa anticipate-health-backend; prepara tasas e intereses de las proformas | Aritmética propia en céntimos con `bigint` (correcta para sumar y porcentajes, incómoda para tasas) |
+| D36 | Retiro durante la evaluación | Transición EN_EVALUACION → DESISTIDA, con motivo obligatorio | Un proveedor puede retirarse mientras se evalúa su solicitud; sin esta flecha solo podía registrarse como RECHAZADA, lo que mezcla retiros con rechazos en las métricas de D27 | Registrar el retiro como RECHAZADA con motivo |
 
 ---
 
@@ -836,3 +838,4 @@ Rama `main` protegida; ramas cortas por funcionalidad; pull request con revisió
 | 0.4 | 2026-09-23 | Alta de representantes legales, automática y manual (D25); columna `activa` en FACTURA e índice único parcial para la regla de duplicados (D26); máquina de estados robusta: transiciones como datos, guardas, cierre siempre posible con motivo codificado (D27), bloqueo optimista (D28) y outbox de notificaciones (D29); historial reordenado |
 | 0.5 | 2026-09-24 | Convención de nombres en inglés con glosario (D33); fechas con date-fns (D34); montos con decimal.js (D35); versiones fijadas, shared en ESM y validación nativa de NestJS 12 (D30 a D32); documento movido a docs/ |
 | 0.6 | 2026-09-24 | Coherencia con el código: D8 marcada como reemplazada por D32 y sin `nestjs-zod` en la validación; Biome configurado en la raíz; la landing v0.3 es un proyecto aparte que entra después como `apps/landing`; nota de rutas en inglés en la API; CI con `--affected` y `check:package` |
+| 0.7 | 2026-09-24 | Transición EN_EVALUACION → DESISTIDA para registrar el retiro del proveedor durante la evaluación (D36) |

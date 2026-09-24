@@ -35,6 +35,7 @@ export const TRANSITIONS: readonly Readonly<Transition>[] = [
   { from: 'DOCUMENTS_PENDING', to: 'WITHDRAWN', requiresReason: true },
   { from: 'UNDER_REVIEW', to: 'QUOTE_SENT' },
   { from: 'UNDER_REVIEW', to: 'REJECTED', requiresReason: true },
+  { from: 'UNDER_REVIEW', to: 'WITHDRAWN', requiresReason: true },
   { from: 'QUOTE_SENT', to: 'APPROVED', guard: 'quoteAccepted' },
   { from: 'QUOTE_SENT', to: 'WITHDRAWN', requiresReason: true },
   { from: 'APPROVED', to: 'DISBURSED', minRole: 'ADMIN' },
