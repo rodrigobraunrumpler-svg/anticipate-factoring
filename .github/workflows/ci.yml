@@ -32,5 +32,5 @@ jobs:
       - name: Verificar todo (main)
         if: github.event_name != 'pull_request'
         run: pnpm turbo run typecheck test build
-      - name: Verificar el empaquetado de shared
-        run: pnpm --filter @anticipate/shared check:package
+      - name: Construir shared y verificar su empaquetado
+        run: pnpm turbo run build --filter=@anticipate/shared && pnpm --filter @anticipate/shared check:package

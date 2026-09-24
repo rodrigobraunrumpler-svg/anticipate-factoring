@@ -5,7 +5,7 @@ Adelanto de facturas para proveedores de empresas pagadoras. Documento de arquit
 ## Requisitos
 
 - Node.js 24.15 o superior (`.node-version`)
-- pnpm 12.6 o superior, instalado de forma nativa (`corepack enable`)
+- pnpm 12.6 o superior instalado de forma nativa
 
 Si `pnpm build` o `pnpm test` fallan con `Exec format error (os error 8)`, es que pnpm 12 quedó descargado sin su binario nativo (pasa cuando un pnpm 10 global lo descarga con los scripts bloqueados); se arregla instalando pnpm 12 directamente (`npm install -g pnpm@12` o `corepack enable && corepack prepare pnpm@12.6.0 --activate`).
 
