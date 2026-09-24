@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import { MESSAGES_ES, VALIDATION_MESSAGES_ES } from '../errors/index.js'
-import { CLOSE_REASONS_BY_STATUS } from './close-reasons.js'
+import { CLOSE_REASON_LABELS, CLOSE_REASONS, CLOSE_REASONS_BY_STATUS } from './close-reasons.js'
 import {
   ADVANCE_REQUEST_STATUSES,
   INITIAL_STATUS,
   isTerminalStatus,
+  STATUS_LABELS,
   TERMINAL_STATUSES,
 } from './statuses.js'
 import {
@@ -272,5 +273,30 @@ describe('statusChangeSchema (cuerpo del PATCH de la API)', () => {
         VALIDATION_MESSAGES_ES.advanceRequest.closeReasonDetailMax,
       )
     }
+  })
+})
+
+describe('tablas del dominio', () => {
+  it('todo estado y todo motivo tienen etiqueta en español', () => {
+    for (const status of ADVANCE_REQUEST_STATUSES) expect(STATUS_LABELS[status]).toBeTruthy()
+    for (const reason of CLOSE_REASONS) expect(CLOSE_REASON_LABELS[reason]).toBeTruthy()
+  })
+
+  it('son de solo lectura en tiempo de compilación', () => {
+    // Nunca se ejecuta: solo comprueba con `tsc` que las tablas no se pueden modificar.
+    const mutate = () => {
+      // @ts-expect-error la tabla es de solo lectura
+      STATUS_LABELS.NEW = 'x'
+      // @ts-expect-error la tabla es de solo lectura
+      CLOSE_REASON_LABELS.OTHER = 'x'
+      const [first] = TRANSITIONS
+      if (first) {
+        // @ts-expect-error cada transición es de solo lectura
+        first.to = 'DISBURSED'
+      }
+      // @ts-expect-error la tabla es de solo lectura
+      TRANSITIONS.push({ from: 'NEW', to: 'DISBURSED' })
+    }
+    expect(mutate).toBeTypeOf('function')
   })
 })

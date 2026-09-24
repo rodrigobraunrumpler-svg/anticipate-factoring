@@ -174,7 +174,7 @@ export const installmentsDueInFutureRule: InvoiceRule = {
 }
 
 /** Orden de evaluación. Agregar una regla = agregar su id a RULE_IDS, un objeto aquí y su test. */
-export const INVOICE_RULES: readonly InvoiceRule[] = [
+export const INVOICE_RULES: readonly Readonly<InvoiceRule>[] = [
   documentTypeRule,
   recipientIsPayerRule,
   issuerIsSupplierRule,

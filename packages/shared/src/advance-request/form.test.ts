@@ -1,6 +1,16 @@
 import { describe, expect, it } from 'vitest'
 import { MESSAGES_ES, VALIDATION_MESSAGES_ES } from '../errors/index.js'
-import { advanceRequestFormSchema, FORM_MESSAGES } from './form.js'
+import {
+  type AdvanceRequestForm,
+  advanceRequestFormSchema,
+  CAVALI_REGISTRATION,
+  CAVALI_REGISTRATION_LABELS,
+  type CavaliRegistration,
+  CONTACT_TIME_SLOT_LABELS,
+  CONTACT_TIME_SLOTS,
+  type ContactTimeSlot,
+  FORM_MESSAGES,
+} from './form.js'
 
 /** Todo texto de validación en español que puede devolver el formulario. */
 const spanishMessages = (value: unknown): string[] =>
@@ -9,6 +19,7 @@ const spanishMessages = (value: unknown): string[] =>
     : Object.values(value as Record<string, unknown>).flatMap((v) => spanishMessages(v))
 
 const valid = {
+  payerSlug: 'sea',
   contact: {
     fullName: 'Ana Pérez',
     dni: '46728673',
@@ -173,5 +184,65 @@ describe('advanceRequestFormSchema', () => {
 
   it('FORM_MESSAGES es el grupo del formulario de los mensajes de errors', () => {
     expect(FORM_MESSAGES).toBe(VALIDATION_MESSAGES_ES.advanceRequestForm)
+  })
+
+  it('la URL de referencia solo acepta http o https', () => {
+    for (const referrer of ['javascript:alert(1)', 'data:text/html,x', 'ftp://ejemplo.pe/x']) {
+      const r = advanceRequestFormSchema.safeParse({ ...valid, source: { referrer } })
+      expect(r.success, referrer).toBe(false)
+      if (!r.success) expect(r.error.issues[0]?.message).toBe(FORM_MESSAGES.referrer)
+    }
+    expect(
+      advanceRequestFormSchema.safeParse({
+        ...valid,
+        source: { referrer: 'https://www.google.com/search?q=adelanto' },
+      }).success,
+    ).toBe(true)
+  })
+
+  it('rechaza una URL de referencia de más de 2000 caracteres sin evaluar su formato', () => {
+    const r = advanceRequestFormSchema.safeParse({
+      ...valid,
+      source: { referrer: `https://ejemplo.pe/${'a'.repeat(2000)}` },
+    })
+    expect(r.success).toBe(false)
+    if (!r.success) expect(r.error.issues[0]?.message).toBe(FORM_MESSAGES.referrerMax)
+  })
+
+  it('identifica al pagador con su slug', () => {
+    const { payerSlug: _omitted, ...withoutPayer } = valid
+    expect(advanceRequestFormSchema.safeParse(withoutPayer).success).toBe(false)
+    for (const payerSlug of ['SEA', 'sea 2', '']) {
+      const r = advanceRequestFormSchema.safeParse({ ...valid, payerSlug })
+      expect(r.success, payerSlug).toBe(false)
+      if (!r.success) {
+        expect(Object.values(VALIDATION_MESSAGES_ES.payer)).toContain(r.error.issues[0]?.message)
+      }
+    }
+    expect(advanceRequestFormSchema.parse(valid).payerSlug).toBe('sea')
+  })
+})
+
+describe('etiquetas y tipos del formulario', () => {
+  it('toda opción de horario y de Cavali tiene etiqueta en español', () => {
+    for (const slot of CONTACT_TIME_SLOTS) expect(CONTACT_TIME_SLOT_LABELS[slot]).toBeTruthy()
+    for (const option of CAVALI_REGISTRATION)
+      expect(CAVALI_REGISTRATION_LABELS[option]).toBeTruthy()
+    expect(Object.keys(CAVALI_REGISTRATION_LABELS).sort()).toEqual([...CAVALI_REGISTRATION].sort())
+  })
+
+  it('exporta los tipos de las opciones y las tablas son de solo lectura', () => {
+    const slot: ContactTimeSlot = 'MORNING'
+    const cavali: CavaliRegistration = 'UNKNOWN'
+    const form: AdvanceRequestForm['cavaliRegistration'] = cavali
+    expect([slot, form]).toEqual(['MORNING', 'UNKNOWN'])
+    // Nunca se ejecuta: solo comprueba con `tsc` que las tablas no se pueden modificar.
+    const mutate = () => {
+      // @ts-expect-error la tabla es de solo lectura
+      CAVALI_REGISTRATION_LABELS.YES = 'x'
+      // @ts-expect-error la tabla es de solo lectura
+      CONTACT_TIME_SLOT_LABELS.ANY = 'x'
+    }
+    expect(mutate).toBeTypeOf('function')
   })
 })

@@ -32,7 +32,7 @@ export function isTerminalStatus(status: AdvanceRequestStatus): status is Termin
 }
 
 /** Etiquetas en español para la interfaz. */
-export const STATUS_LABELS: Record<AdvanceRequestStatus, string> = {
+export const STATUS_LABELS: Readonly<Record<AdvanceRequestStatus, string>> = {
   NEW: 'Nueva',
   NO_ANSWER: 'No contesta',
   CONTACTED: 'Contactado',

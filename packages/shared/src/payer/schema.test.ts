@@ -143,4 +143,19 @@ describe('publicPayerSchema', () => {
       }
     }
   })
+
+  it('el logo solo acepta URL http o https', () => {
+    for (const logoUrl of [
+      'javascript:alert(1)',
+      'data:text/html,x',
+      'ftp://cdn.ejemplo.pe/a.svg',
+    ]) {
+      const r = publicPayerSchema.safeParse({ ...sea, logoUrl })
+      expect(r.success, logoUrl).toBe(false)
+      if (!r.success) expect(r.error.issues[0]?.message).toBe(VALIDATION_MESSAGES_ES.payer.logoUrl)
+    }
+    expect(
+      publicPayerSchema.safeParse({ ...sea, logoUrl: 'https://cdn.ejemplo.pe/sea.svg' }).success,
+    ).toBe(true)
+  })
 })

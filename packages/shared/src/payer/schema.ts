@@ -63,7 +63,8 @@ export const publicPayerSchema = z.object({
     .array(z.enum(CURRENCIES, { error: M.allowedCurrencies }), { error: M.allowedCurrencies })
     .min(1, { error: M.allowedCurrencies }),
   accentColor: z.string({ error: M.accentColor }).refine(isHexColor, { error: M.accentColor }),
-  logoUrl: z.url({ error: M.logoUrl }).nullable(),
+  // Solo http o https: `z.url()` acepta `javascript:` y `data:`, y la landing pinta este valor.
+  logoUrl: z.httpUrl({ error: M.logoUrl }).nullable(),
   texts: textsSchema,
 })
 export type PublicPayer = z.infer<typeof publicPayerSchema>

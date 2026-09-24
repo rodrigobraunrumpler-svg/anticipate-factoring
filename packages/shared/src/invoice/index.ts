@@ -16,6 +16,7 @@ export {
 export {
   type Installment,
   installmentSchema,
+  PARSED_INVOICE_LIMITS,
   type ParsedInvoice,
   parsedInvoiceSchema,
 } from './parsed-invoice.js'

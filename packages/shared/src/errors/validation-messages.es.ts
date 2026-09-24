@@ -59,6 +59,16 @@ export const VALIDATION_MESSAGES_ES = {
     referrer: 'La URL de referencia no es válida.',
     referrerMax: 'La URL de referencia no puede tener más de 2000 caracteres.',
   },
+  money: {
+    currency: 'Selecciona una moneda válida (PEN o USD).',
+  },
+  user: {
+    role: 'Selecciona un rol válido.',
+  },
+  supplierDocument: {
+    type: 'Selecciona un tipo de documento válido.',
+    status: 'Selecciona un estado de documento válido.',
+  },
   advanceRequest: {
     publicCode: 'El código de solicitud no es válido.',
     status: 'Selecciona un estado de solicitud válido.',

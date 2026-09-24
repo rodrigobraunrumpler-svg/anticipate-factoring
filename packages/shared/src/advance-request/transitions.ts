@@ -22,7 +22,7 @@ export type Transition = {
 }
 
 /** Única fuente de verdad de la máquina de estados (STACK §9). El admin pinta botones con esto; la API lo hace cumplir. */
-export const TRANSITIONS: readonly Transition[] = [
+export const TRANSITIONS: readonly Readonly<Transition>[] = [
   { from: 'NEW', to: 'CONTACTED' },
   { from: 'NEW', to: 'NO_ANSWER' },
   { from: 'NEW', to: 'WITHDRAWN', requiresReason: true },
@@ -41,7 +41,7 @@ export const TRANSITIONS: readonly Transition[] = [
   { from: 'APPROVED', to: 'WITHDRAWN', requiresReason: true },
 ]
 
-export function transitionsFrom(from: AdvanceRequestStatus, role: Role): Transition[] {
+export function transitionsFrom(from: AdvanceRequestStatus, role: Role): Readonly<Transition>[] {
   return TRANSITIONS.filter((t) => t.from === from && hasRoleAtLeast(role, t.minRole ?? 'AGENT'))
 }
 
@@ -53,7 +53,7 @@ export function availableTransitions(
   from: AdvanceRequestStatus,
   role: Role,
   facts: Facts,
-): Transition[] {
+): Readonly<Transition>[] {
   return transitionsFrom(from, role).filter((t) => t.guard === undefined || facts[t.guard] === true)
 }
 

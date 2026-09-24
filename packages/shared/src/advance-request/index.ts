@@ -19,8 +19,11 @@ export {
   type AdvanceRequestForm,
   advanceRequestFormSchema,
   CAVALI_REGISTRATION,
+  CAVALI_REGISTRATION_LABELS,
+  type CavaliRegistration,
   CONTACT_TIME_SLOT_LABELS,
   CONTACT_TIME_SLOTS,
+  type ContactTimeSlot,
   FORM_MESSAGES,
 } from './form.js'
 export {

@@ -15,7 +15,7 @@ export const closeReasonSchema = z.enum(CLOSE_REASONS, {
   error: VALIDATION_MESSAGES_ES.advanceRequest.closeReason,
 })
 
-export const CLOSE_REASON_LABELS: Record<CloseReason, string> = {
+export const CLOSE_REASON_LABELS: Readonly<Record<CloseReason, string>> = {
   NO_RESPONSE: 'El proveedor no respondió',
   SPAM_OR_INVALID: 'Solicitud de prueba, spam o inválida',
   SUPPLIER_WITHDREW: 'El proveedor decidió no continuar',
