@@ -1,7 +1,9 @@
+glob_matcher: doublestar
+
 pre-commit:
   commands:
     biome:
-      glob: '*.{ts,tsx,js,mjs,cjs,json,jsonc,css,astro}'
+      glob: '**/*.{ts,tsx,js,mjs,cjs,json,jsonc,css,astro}'
       run: pnpm biome check --write --no-errors-on-unmatched --files-ignore-unknown=true {staged_files}
       stage_fixed: true
 
