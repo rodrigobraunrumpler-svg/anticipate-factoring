@@ -5,8 +5,8 @@
 
 | | |
 |---|---|
-| **Estado** | Borrador v0.4 |
-| **Última actualización** | 2026-09-23 |
+| **Estado** | Borrador v0.5 |
+| **Última actualización** | 2026-09-24 |
 | **Alcance** | Landing multiempresa + API + admin para gestión de solicitudes |
 
 ---
@@ -76,6 +76,35 @@ Anticipate Factoring adelanta a los proveedores el dinero de las facturas que em
 | Cesión | Transferencia de la factura a Anticipate; desde ahí el pagador le paga a Anticipate al vencimiento. |
 | Seguimiento | Cada contacto registrado por el equipo (llamada, WhatsApp, correo) con su nota y próxima acción. |
 
+**Convención de nombres en el código**
+
+Identificadores en inglés (archivos, funciones, tipos, propiedades, valores de enums, modelos y columnas), igual que en el resto de proyectos de Anticipate. Español en todo lo que lee una persona: mensajes, textos, documentación, comentarios y commits. Los términos legales peruanos sin traducción real se quedan como préstamos (`ruc`, `dni`, `sunat`, `sunarp`, `cavali`). Los literales que SUNAT define en el XML (`FormaPago`, `Credito`, `Cuota001`, `Detraccion`) no se traducen.
+
+| Término del documento | Nombre en el código |
+|---|---|
+| Pagador | `Payer` |
+| Proveedor | `Supplier` |
+| Solicitud | `AdvanceRequest` |
+| Factura, cuota | `Invoice`, `Installment` |
+| Serie y número | `seriesNumber` |
+| Emisor, receptor | `issuer`, `recipient` |
+| Forma de pago (contado, crédito) | `paymentTerms` (`CASH`, `CREDIT`) |
+| Monto neto pendiente | `netPendingAmount` |
+| Detracción, retención, percepción | `detraction`, `withholding`, `perception` |
+| Representante legal | `LegalRepresentative` |
+| Documento del proveedor | `SupplierDocument` (`REPRESENTATIVE_ID`, `POWER_OF_ATTORNEY_CERTIFICATE`, `MASTER_AGREEMENT`, `OTHER`) |
+| Seguimiento | `FollowUp` |
+| Historial de estado | `StatusHistory` |
+| Consentimiento | `Consent` |
+| Archivo | `StoredFile` |
+| Auditoría | `AuditLog` |
+| Proforma, cesión, desembolso | `Quote`, `Assignment`, `Disbursement` |
+| Estados de la solicitud | `NEW`, `NO_ANSWER`, `CONTACTED`, `DOCUMENTS_PENDING`, `UNDER_REVIEW`, `QUOTE_SENT`, `APPROVED`, `DISBURSED`, `REJECTED`, `WITHDRAWN` |
+| Motivos de cierre | `NO_RESPONSE`, `SPAM_OR_INVALID`, `SUPPLIER_WITHDREW`, `INVALID_DOCUMENTS`, `INVOICE_NOT_ELIGIBLE`, `UNACCEPTABLE_RISK`, `OTHER` |
+| Roles | `AGENT` (gestor), `ADMIN` |
+
+Los diagramas de la sección 9 conservan los nombres en español del glosario; el `schema.prisma` (siguiente plan) usa los nombres de esta tabla.
+
 ---
 
 ## 2. Alcance de la primera versión
@@ -133,14 +162,14 @@ Todo el tráfico entra por Cloudflare (DNS, SSL, WAF). La landing y el admin cor
 
 | Capa | Tecnología | Uso |
 |---|---|---|
-| Lenguaje | TypeScript (modo `strict`) | En todo el monorepo |
-| Runtime | Node.js LTS activo | API y herramientas |
+| Lenguaje | TypeScript 6 (modo `strict`; 7.0 no lo soportan el CLI de NestJS ni @nestjs/swagger) | En todo el monorepo |
+| Runtime | Node.js 24 LTS | API y herramientas |
 | Monorepo | pnpm workspaces + Turborepo | Dependencias, tareas y caché de builds |
 | Landing | Astro + islas de React | Páginas estáticas por pagador; solo el formulario es interactivo |
 | Admin | Next.js (App Router) | Interfaz interna; sin lógica de negocio propia |
 | API | NestJS | Toda la lógica de negocio |
-| Validación y contratos | Zod + `nestjs-zod` | Mismos esquemas en formulario, admin y API |
-| Documentación API | OpenAPI (Swagger) generado desde Zod | Contrato entre API y frontends |
+| Validación y contratos | Zod 4 + validación nativa de NestJS 12 (Standard Schema; `nestjs-zod` no soporta NestJS 12) | Mismos esquemas en formulario, admin y API |
+| Documentación API | OpenAPI generado por @nestjs/swagger 12 directamente desde los esquemas Zod (≥ 4.2, sin conversor) | Contrato entre API y frontends |
 | Cliente API | Orval | Genera cliente tipado y hooks de TanStack Query |
 | Estado del servidor | TanStack Query | Datos que vienen de la API |
 | Estado en URL | `nuqs` | Filtros, búsqueda y paginación del admin |
@@ -152,7 +181,7 @@ Todo el tráfico entra por Cloudflare (DNS, SSL, WAF). La landing y el admin cor
 | ORM | Prisma | Esquema, migraciones y tipos |
 | Archivos | Cloudflare R2 vía `@aws-sdk/client-s3` | PDF y XML de facturas |
 | Lectura de XML | `fast-xml-parser` | Factura electrónica UBL |
-| Correos | Brevo (API transaccional) + React Email | Plantillas en `packages/emails` |
+| Correos | Brevo (API transaccional) + React Email 6 (paquete único `react-email`) | Plantillas en `packages/emails` |
 | Antispam | Cloudflare Turnstile | Formulario público |
 | Auth | JWT en cookies httpOnly + argon2 | Login del admin |
 | Logs | `nestjs-pino` | Logs estructurados |
@@ -161,7 +190,8 @@ Todo el tráfico entra por Cloudflare (DNS, SSL, WAF). La landing y el admin cor
 | Calidad | Biome | Linter y formateo |
 | Tests | Vitest + Supertest + Playwright | Unitarios, API y flujo completo |
 | CI/CD | GitHub Actions | Lint, tipos, tests, build y despliegue |
-| Fechas | `date-fns` | Guardar en UTC, mostrar en `America/Lima` |
+| Fechas | `date-fns` | date-fns 4 con `@date-fns/tz`; fechas de negocio como calendario ISO, instantes en UTC, "hoy" calculado una vez en `America/Lima` |
+| Montos | decimal.js 10 (instancia propia con `Decimal.clone`) | Aritmética de montos en `packages/shared`; texto con dos decimales en los bordes; límite `Decimal(14, 2)` |
 | Entorno local | Docker Compose | PostgreSQL, almacenamiento compatible con S3 (S3Mock) y correo de prueba (Mailpit) |
 | Contenedor de la API | Docker (imagen multi-etapa) | La misma imagen se prueba en local, CI y producción |
 
@@ -178,7 +208,7 @@ anticipate/
 │   ├── admin/          Next.js · admin interno
 │   └── api/            NestJS + Prisma · única app que toca BD y archivos
 ├── packages/
-│   ├── shared/         Esquemas Zod, tipos, enums de estado, validadores RUC/DNI
+│   ├── shared/         Esquemas Zod, tipos, reglas de factura, lector UBL, máquina de estados, validadores RUC/DNI
 │   ├── ui/             Componentes shadcn + tokens.css
 │   ├── api-client/     Cliente y hooks generados por Orval (no se edita a mano)
 │   ├── emails/         Plantillas React Email
@@ -574,7 +604,7 @@ Las transiciones permitidas viven en `packages/shared` para que el admin solo of
 | Regla | Cómo se implementa |
 |---|---|
 | Transiciones como datos | Una tabla `{ desde, hacia, guarda?, rolMinimo? }` en `packages/shared`. El admin la lee para mostrar solo los botones válidos; la API la lee para rechazar cualquier otro cambio. Nunca `if` sueltos en servicios |
-| Guardas con nombre | Funciones puras y testeadas: `documentosVigentes` para entrar a `EN_EVALUACION`, `proformaAceptada` para `APROBADA`. La guarda vive junto a la transición, no repartida por el código |
+| Guardas con nombre | Funciones puras y testeadas: `documentosVigentes` (`documentsValid`) para entrar a `EN_EVALUACION`, `proformaAceptada` (`quoteAccepted`) para `APROBADA`. La guarda vive junto a la transición, no repartida por el código |
 | Cierre siempre posible | Toda solicitud puede cerrarse desde cualquier estado no terminal: `DESISTIDA` cuando el proveedor se retira, no responde tras los intentos definidos o la solicitud es spam o inválida; `RECHAZADA` cuando Anticipate la descarta por evaluación o por documentos |
 | Motivo codificado | Los cierres exigen `motivo_codigo` (`SIN_RESPUESTA`, `SPAM_O_INVALIDA`, `PROVEEDOR_SE_RETIRA`, `DOCUMENTOS_INVALIDOS`, `FACTURA_NO_ELEGIBLE`, `RIESGO_NO_ACEPTABLE`, `OTRO`) y `motivo_detalle` libre. Así se mide por qué se pierden solicitudes sin inventar estados |
 | Estados terminales inmutables | `DESEMBOLSADA`, `RECHAZADA` y `DESISTIDA` no tienen salida. Si algún día hace falta reabrir, se agrega como transición explícita con rol admin y queda en el historial; nunca editando el estado a mano |
@@ -594,7 +624,7 @@ Las transiciones permitidas viven en `packages/shared` para que el admin solo of
 | Monto | Monto solicitado ≤ suma de los netos pendientes × porcentaje de adelanto del pagador |
 | Moneda | Todas las facturas de una solicitud en la misma moneda |
 | Vencimiento | Fechas de las cuotas del XML. Deben ser futuras (plazo mínimo por definir) |
-| Duplicados | No pueden existir dos solicitudes activas con la misma factura (RUC emisor + serie-número). Se implementa con la columna `activa` de FACTURA y un índice único parcial sobre (`ruc_emisor`, `serie_numero`) `WHERE activa`, escrito a mano en el SQL de la migración porque Prisma no expresa índices parciales. Al pasar una solicitud a RECHAZADA o DESISTIDA, la misma transacción pone `activa = false` en sus facturas. Un índice parcial no puede mirar el estado de SOLICITUD porque vive en otra tabla |
+| Duplicados | No pueden existir dos solicitudes activas con la misma factura (RUC emisor + serie-número). Se implementa con la columna `activa` de FACTURA y un índice único parcial sobre (`ruc_emisor`, `serie_numero`) `WHERE activa`, declarado en `schema.prisma` con la vista previa `partialIndexes` (Prisma ≥ 7.4); un índice parcial escrito a mano en SQL lo detecta como drift. Al pasar una solicitud a RECHAZADA o DESISTIDA, la misma transacción pone `activa = false` en sus facturas. Un índice parcial no puede mirar el estado de SOLICITUD porque vive en otra tabla |
 
 Antes de fijar estas reglas en código se validan con XML reales de proveedores de SEA (sección 14).
 
@@ -748,10 +778,16 @@ Rama `main` protegida; ramas cortas por funcionalidad; pull request con revisió
 | D23 | Color por pagador | Solo acento; el principal es de Anticipate | La landing es de Anticipate; el pagador aporta identidad sin cambiar la marca | Reemplazar el color principal por el del pagador |
 | D24 | Validación de facturas en la landing | Mismo lector y reglas que la API (`packages/shared`) | Feedback inmediato y cero diferencias entre lo que ve el proveedor y lo que valida la API | Validar solo en el servidor |
 | D25 | Alta del representante legal | Automática al crear la solicitud si el contacto marca que es representante, más endpoint manual en el admin | El caso común no le cuesta nada a Matías; cuando el contacto es otra persona (contador, asistente) alguien tiene que crearlo; la autodeclaración no vale hasta aprobar sus documentos | Solo manual (más clics) o solo automática (no cubre al contacto que no es representante) |
-| D26 | Unicidad de facturas activas | Columna `activa` en FACTURA + índice único parcial escrito en la migración | Un índice parcial no puede mirar el estado de SOLICITUD; la restricción en base de datos resiste envíos concurrentes | Comprobación en la aplicación con bloqueo (frágil ante concurrencia); trigger (más difícil de leer) |
+| D26 | Unicidad de facturas activas | Columna `activa` en FACTURA + índice único parcial declarado en `schema.prisma` con la vista previa `partialIndexes` (Prisma ≥ 7.4) | Un índice parcial no puede mirar el estado de SOLICITUD; la restricción en base de datos resiste envíos concurrentes | Comprobación en la aplicación con bloqueo (frágil ante concurrencia); trigger (más difícil de leer); índice parcial escrito a mano en SQL (Prisma lo detecta como drift) |
 | D27 | Cierre de solicitudes | Cuatro transiciones nuevas: NUEVA y NO_CONTESTA → DESISTIDA, DOCUMENTOS_PENDIENTES → RECHAZADA, APROBADA → DESISTIDA | Toda solicitud debe poder cerrarse, o queda en la bandeja para siempre y bloquea sus facturas; el motivo va codificado en `HISTORIAL_ESTADO.motivo_codigo` para medir por qué se pierden solicitudes | Estados nuevos como SIN_RESPUESTA o DESCARTADA (más estados sin más información) |
 | D28 | Concurrencia en cambios de estado | Bloqueo optimista con `SOLICITUD.version` y respuesta 409 | Dos usuarios del admin pueden tocar la misma solicitud; sin versión, el último pisa al primero sin aviso | Bloqueo pesimista con `SELECT FOR UPDATE` (bloquea la fila mientras alguien mira la pantalla) |
 | D29 | Notificaciones confiables | Tabla `OUTBOX` escrita en la misma transacción + scheduler con reintentos exponenciales | Un reintento en memoria se pierde al reiniciar; con outbox nada se pierde y el envío no alarga la petición del proveedor | Envío síncrono en la petición (latencia y pérdida si cae la API); cola externa desde el inicio (una pieza más de infraestructura antes de necesitarla) |
+| D30 | Compilación de `packages/shared` | `tsdown` a ESM con tipos, `exports` por dominio, imports internos con `.js` | NestJS 12 es ESM y Node ≥ 22.12 tiene `require(esm)`; un solo formato evita el "dual package hazard" y el `dist` obsoleto | Dual ESM + CJS con `tsup` (sin mantenimiento); consumir el TypeScript fuente sin build (Turbopack no resuelve `./x.js` → `x.ts`) |
+| D31 | Versiones fijadas de las fundaciones | Node 24, pnpm 12, TypeScript 6 (`typescript` fijado a `~6.0.3`), Zod 4, Vitest 5, Biome 2.5, Prisma 7.10 sin caret | Verificadas contra npm y documentación oficial el 2026-09-23; TypeScript 7 y Prisma 8 (RC) rompen dependencias del stack | Última versión de cada paquete sin mirar compatibilidad; `typescript@npm:@typescript/typescript6` (publica el binario `tsc6` y rompe `tsc --noEmit`) |
+| D32 | Validación en la API | Standard Schema nativo de NestJS 12 (`@Body({ schema })`) | `nestjs-zod` 5.5 no soporta NestJS 12; @nestjs/swagger 12 convierte esquemas Zod ≥ 4.2 sin configuración | `nestjs-zod` (D8 queda reemplazada por esta decisión) |
+| D33 | Idioma del código | Identificadores en inglés; español para personas; glosario en la sección 1 | Igual que `anticipate-health-backend` y los portales; el glosario evita traducciones inconsistentes de los términos del negocio | Todo en español (único repo distinto del resto de la empresa) |
+| D34 | Fechas | date-fns 4 con `@date-fns/tz`; fechas de negocio como texto ISO de calendario; `shared` recibe "hoy" por parámetro | Misma librería que el resto de repos; las fechas de vencimiento son de calendario, no instantes; la zona horaria se aplica en un solo lugar | Aritmética de fechas propia; guardar vencimientos como timestamps |
+| D35 | Aritmética de montos | decimal.js con una instancia propia (`Decimal.clone`), redondeo explícito (`down` para el máximo a adelantar, `half-up` para cálculos generales) y `Amount` como texto en los bordes | Pedido del equipo; es la base del `Decimal` de Prisma y la usa anticipate-health-backend; prepara tasas e intereses de las proformas | Aritmética propia en céntimos con `bigint` (correcta para sumar y porcentajes, incómoda para tasas) |
 
 ---
 
@@ -796,3 +832,4 @@ Rama `main` protegida; ramas cortas por funcionalidad; pull request con revisió
 | 0.2 | 2026-09-23 | Flujo y requisitos del negocio; varias facturas por solicitud; XML obligatorio y PDF opcional; representantes legales y documentos del proveedor con vigencia; reglas sobre neto pendiente y forma de pago; nuevos estados; entorno local con Docker (PostgreSQL, S3Mock, Mailpit); hoja de ruta con portal del proveedor |
 | 0.3 | 2026-09-23 | Landing construida: orden del formulario, lectura de XML en el navegador, color del pagador como acento, modo demostración, datos de prueba |
 | 0.4 | 2026-09-23 | Alta de representantes legales, automática y manual (D25); columna `activa` en FACTURA e índice único parcial para la regla de duplicados (D26); máquina de estados robusta: transiciones como datos, guardas, cierre siempre posible con motivo codificado (D27), bloqueo optimista (D28) y outbox de notificaciones (D29); historial reordenado |
+| 0.5 | 2026-09-24 | Convención de nombres en inglés con glosario (D33); fechas con date-fns (D34); montos con decimal.js (D35); versiones fijadas, shared en ESM y validación nativa de NestJS 12 (D30 a D32); documento movido a docs/ |

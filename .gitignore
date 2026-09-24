@@ -20,6 +20,7 @@ apps/api/prisma/*.db
 .DS_Store
 .vscode/*
 !.vscode/extensions.json
+!.vscode/settings.json
 .idea/
 
 # cloudflare
