@@ -1,7 +1,12 @@
+import fc from 'fast-check'
 import { describe, expect, it } from 'vitest'
+import type { IsoDate } from '../dates/index.js'
+import { type Amount, fromCents } from '../money/index.js'
 import { buildInvoiceXml, type TestXmlOptions } from './build-test-xml.js'
+import { type ParsedInvoice, parsedInvoiceSchema } from './parsed-invoice.js'
 import {
   INVOICE_RULES,
+  RULE_IDS,
   type ValidationContext,
   validateInvoices,
   validateRequestedAmount,
@@ -205,5 +210,146 @@ describe('validateRequestedAmount', () => {
   it('rechaza montos inválidos', () => {
     expect(validateRequestedAmount('abc', result)?.code).toBe('INVALID_AMOUNT')
     expect(validateRequestedAmount('0.00', result)?.code).toBe('INVALID_AMOUNT')
+  })
+})
+
+describe('validateInvoices · montos fuera de rango', () => {
+  const huge = '999999999999.99'
+  const hugeInvoice = (seriesNumber: string) =>
+    invoice({
+      seriesNumber,
+      total: huge,
+      netPendingAmount: huge,
+      installments: [{ id: 'Cuota001', amount: huge, dueDate: '2026-11-30' }],
+    })
+
+  it('dos facturas con el neto máximo: problema TOTAL_OUT_OF_RANGE, sin excepción', () => {
+    const invoices = [hugeInvoice('F001-1'), hugeInvoice('F001-2')]
+    expect(() => validateInvoices(invoices, ctx)).not.toThrow()
+    const r = validateInvoices(invoices, ctx)
+    expect(codes(r)).toEqual(['TOTAL_OUT_OF_RANGE'])
+    expect(r.problems[0]?.rule).toBe('total-within-limit')
+    expect(r.problems[0]?.message).toBe(
+      'La suma de las facturas supera el monto máximo que podemos procesar.',
+    )
+    expect(r.maxAmount).toBe('0.00')
+    expect(r.validInvoices).toHaveLength(2)
+  })
+
+  it('una sola factura con el neto máximo sigue siendo procesable', () => {
+    const r = validateInvoices([hugeInvoice('F001-1')], { ...ctx, advancePercent: 100 })
+    expect(r.problems).toEqual([])
+    expect(r.totalNetPending).toBe(huge)
+    expect(r.maxAmount).toBe(huge)
+  })
+
+  it('la regla total-within-limit está registrada', () => {
+    expect(RULE_IDS).toContain('total-within-limit')
+  })
+})
+
+describe('validateInvoices · propiedad: nunca lanza', () => {
+  const rucs = ['20100070970', '20131312955', '10467286736'] as const
+  const amount = fc.oneof(
+    fc.bigInt({ min: 0n, max: 10n ** 14n - 1n }).map((c) => fromCents(c)),
+    fc.constant<Amount>('999999999999.99'),
+  )
+  const isoDate = fc
+    .date({
+      min: new Date('2000-01-01T00:00:00Z'),
+      max: new Date('2099-12-31T00:00:00Z'),
+      noInvalidDate: true,
+    })
+    .map((d) => d.toISOString().slice(0, 10) as IsoDate)
+  const seriesNumber = fc
+    .tuple(fc.stringMatching(/^[A-Z0-9]{4}$/), fc.integer({ min: 0, max: 99_999_999 }))
+    .map(([series, n]) => `${series}-${n}`)
+  const installment = fc.record({
+    id: fc.integer({ min: 1, max: 999 }).map((n) => `Cuota${String(n).padStart(3, '0')}`),
+    amount,
+    dueDate: isoDate,
+  })
+
+  const context: fc.Arbitrary<ValidationContext> = fc.record(
+    {
+      payerRuc: fc.constantFrom(...rucs),
+      payerName: fc.string({ maxLength: 20 }),
+      supplierRuc: fc.constantFrom(...rucs),
+      advancePercent: fc.double({ min: 0, max: 100, noNaN: true }),
+      minTermDays: fc.integer({ min: 0, max: 400 }),
+      maxInvoices: fc.integer({ min: 1, max: 20 }),
+      allowedCurrencies: fc.subarray(['PEN', 'USD'] as const),
+      today: isoDate,
+    },
+    {
+      requiredKeys: [
+        'payerRuc',
+        'payerName',
+        'advancePercent',
+        'minTermDays',
+        'maxInvoices',
+        'allowedCurrencies',
+        'today',
+      ],
+    },
+  )
+
+  /** Cualquier factura que acepte `parsedInvoiceSchema`. */
+  const anyInvoice = fc.record({
+    documentType: fc.constantFrom('01', '03', '07'),
+    seriesNumber,
+    issueDate: isoDate,
+    currency: fc.constantFrom('PEN', 'USD', 'EUR'),
+    issuerRuc: fc.constantFrom(...rucs),
+    issuerName: fc.string({ maxLength: 40 }),
+    recipientRuc: fc.constantFrom(...rucs),
+    recipientName: fc.option(fc.string({ maxLength: 40 }), { nil: null }),
+    total: amount,
+    paymentTerms: fc.constantFrom('CASH', 'CREDIT', null),
+    netPendingAmount: fc.option(amount, { nil: null }),
+    installments: fc.array(installment, { maxLength: 4 }),
+    detraction: fc.option(fc.record({ percent: fc.integer({ min: 0, max: 100 }), amount }), {
+      nil: null,
+    }),
+    signed: fc.boolean(),
+  })
+
+  /** Factura que pasa las reglas individuales del contexto, para llegar a la suma y al máximo. */
+  const alignedInvoice = (c: ValidationContext) =>
+    fc.record({
+      documentType: fc.constant('01'),
+      seriesNumber,
+      issueDate: isoDate,
+      currency: fc.constantFrom(
+        ...(c.allowedCurrencies.length > 0 ? c.allowedCurrencies : ['PEN']),
+      ),
+      issuerRuc: fc.constant(c.supplierRuc ?? rucs[0]),
+      issuerName: fc.string({ maxLength: 40 }),
+      recipientRuc: fc.constant(c.payerRuc),
+      recipientName: fc.constant(null),
+      total: amount,
+      paymentTerms: fc.constant('CREDIT'),
+      netPendingAmount: amount,
+      installments: fc.array(installment, { minLength: 1, maxLength: 3 }),
+      detraction: fc.constant(null),
+      signed: fc.constant(true),
+    })
+
+  const scenario = context.chain((c) =>
+    fc.tuple(fc.constant(c), fc.array(fc.oneof(anyInvoice, alignedInvoice(c)), { maxLength: 12 })),
+  )
+
+  it('para facturas válidas según parsedInvoiceSchema y un contexto válido', () => {
+    fc.assert(
+      fc.property(scenario, ([c, candidates]) => {
+        const invoices = candidates.flatMap((candidate) => {
+          const parsed = parsedInvoiceSchema.safeParse(candidate)
+          return parsed.success ? [parsed.data as ParsedInvoice] : []
+        })
+        const r = validateInvoices(invoices, c)
+        return Array.isArray(r.problems)
+      }),
+      { numRuns: 500 },
+    )
   })
 })

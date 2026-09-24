@@ -51,6 +51,25 @@ describe('aritmética en céntimos', () => {
     expect(() => fromCents(-100n)).toThrow(RangeError)
   })
 
+  it('fromCents rechaza un monto que no cabe en Decimal(14, 2)', () => {
+    expect(fromCents(99_999_999_999_999n)).toBe('999999999999.99')
+    expect(() => fromCents(100_000_000_000_000n)).toThrow(RangeError)
+  })
+
+  it('sumAmounts rechaza una suma que no cabe en Decimal(14, 2)', () => {
+    expect(sumAmounts('999999999999.98', '0.01')).toBe('999999999999.99')
+    expect(() => sumAmounts('999999999999.99', '0.01')).toThrow(RangeError)
+    expect(() => sumAmounts('999999999999.99', '999999999999.99')).toThrow(/supera/)
+  })
+
+  it('percentOf rechaza porcentajes no finitos o fuera de 0 a 100', () => {
+    for (const pct of [101, -1, Number.NaN, Number.POSITIVE_INFINITY, 100.01]) {
+      expect(() => percentOf('100.00', pct), String(pct)).toThrow(RangeError)
+    }
+    expect(percentOf('100.00', 0)).toBe('0.00')
+    expect(percentOf('100.00', 100)).toBe('100.00')
+  })
+
   it('suma sin errores de coma flotante', () => {
     expect(sumAmounts('0.10', '0.20')).toBe('0.30')
     expect(sumAmounts('10620.00', '5310.50', '0.01')).toBe('15930.51')
@@ -69,8 +88,19 @@ describe('aritmética en céntimos', () => {
   })
 })
 
+const MAX_CENTS = 10n ** 14n - 1n
+
+function throwsRange(fn: () => unknown): boolean {
+  try {
+    fn()
+    return false
+  } catch (error) {
+    return error instanceof RangeError
+  }
+}
+
 describe('propiedades del dinero', () => {
-  const cents = fc.bigInt({ min: 0n, max: 10n ** 14n - 1n })
+  const cents = fc.bigInt({ min: 0n, max: MAX_CENTS })
 
   it('fromCents y toCents son inversas', () => {
     fc.assert(fc.property(cents, (c) => toCents(fromCents(c)) === c))
@@ -80,12 +110,12 @@ describe('propiedades del dinero', () => {
     fc.assert(fc.property(cents, (c) => normalizeAmount(fromCents(c)) === fromCents(c)))
   })
 
-  it('sumar montos equivale a sumar céntimos', () => {
+  it('sumar montos equivale a sumar céntimos, y fuera de rango lanza', () => {
     fc.assert(
-      fc.property(
-        cents,
-        cents,
-        (a, b) => sumAmounts(fromCents(a), fromCents(b)) === fromCents(a + b),
+      fc.property(cents, cents, (a, b) =>
+        a + b <= MAX_CENTS
+          ? sumAmounts(fromCents(a), fromCents(b)) === fromCents(a + b)
+          : throwsRange(() => sumAmounts(fromCents(a), fromCents(b))),
       ),
     )
   })

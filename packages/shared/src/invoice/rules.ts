@@ -3,9 +3,10 @@ import { createProblem, type Problem, VALIDATION_MESSAGES_ES } from '../errors/i
 import {
   type Amount,
   compareAmounts,
+  fromCents,
+  MAX_AMOUNT,
   normalizeAmount,
   percentOf,
-  sumAmounts,
   toCents,
 } from '../money/index.js'
 import { DOCUMENT_TYPE, documentTypeName } from './codes.js'
@@ -38,6 +39,7 @@ export const RULE_IDS = [
   'duplicate-invoice',
   'mixed-issuers',
   'mixed-currencies',
+  'total-within-limit',
   'requested-amount',
 ] as const
 export type RuleId = (typeof RULE_IDS)[number]
@@ -251,7 +253,19 @@ export function validateInvoices(
     return { ...empty, problems, validInvoices }
   }
 
-  const totalNetPending = sumAmounts(...validInvoices.map((inv) => inv.netPendingAmount ?? '0.00'))
+  // Suma en céntimos `bigint`, sin tope: los netos vienen del XML y varias facturas pueden superar
+  // juntas `Decimal(14, 2)`. Fuera de rango es un problema de la solicitud, nunca una excepción, y
+  // `percentOf` solo recibe un total representable.
+  const totalCents = validInvoices.reduce(
+    (acc, inv) => acc + toCents(inv.netPendingAmount ?? '0.00'),
+    0n,
+  )
+  if (totalCents > toCents(MAX_AMOUNT)) {
+    problems.push(createProblem('TOTAL_OUT_OF_RANGE', { rule: 'total-within-limit' }))
+    return { ...empty, problems, validInvoices }
+  }
+
+  const totalNetPending = fromCents(totalCents)
   return {
     problems,
     validInvoices,

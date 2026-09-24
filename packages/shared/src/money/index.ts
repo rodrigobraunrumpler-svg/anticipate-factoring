@@ -7,6 +7,7 @@ export {
   type Decimal,
   fromCents,
   fromDecimal,
+  MAX_AMOUNT,
   normalizeAmount,
   percentOf,
   sumAmounts,

@@ -15,7 +15,10 @@ export type Amount = `${bigint}.${string}`
 // El límite de 12 dígitos en la parte entera refleja la columna Decimal(14, 2) de PostgreSQL
 // (STACK.md §9, D14): 12 dígitos enteros + 2 decimales, máximo 999999999999.99.
 const AMOUNT_FORMAT = /^\d{1,12}\.\d{2}$/
-const MAX_AMOUNT = '999999999999.99'
+
+/** Mayor monto representable en `Decimal(14, 2)`. Ninguna operación del dominio devuelve uno mayor. */
+export const MAX_AMOUNT: Amount = '999999999999.99'
+const MAX_CENTS = 99_999_999_999_999n
 
 // Instancia propia de decimal.js: nunca se toca `Decimal.set(...)` sobre la clase global,
 // porque la API y Prisma también usan decimal.js en el mismo proceso.
@@ -47,9 +50,12 @@ export function toCents(amount: Amount): bigint {
   return BigInt(whole) * 100n + BigInt(decimals.padEnd(2, '0').slice(0, 2))
 }
 
-/** Los montos del dominio nunca son negativos; lanza si `cents` lo es. */
+/** Los montos del dominio nunca son negativos ni superan `Decimal(14, 2)`; lanza `RangeError` si no. */
 export function fromCents(cents: bigint): Amount {
   if (cents < 0n) throw new RangeError(`Monto negativo: ${cents} céntimos`)
+  if (cents > MAX_CENTS) {
+    throw new RangeError(`Monto fuera de rango, supera ${MAX_AMOUNT}: ${cents} céntimos`)
+  }
   const text = cents.toString().padStart(3, '0')
   return `${text.slice(0, -2)}.${text.slice(-2)}` as Amount
 }
@@ -78,13 +84,27 @@ export function fromDecimal(value: Decimal | string | number, rounding: AmountRo
   return rounded.toFixed(2) as Amount
 }
 
+/**
+ * Suma exacta. Lanza `RangeError` si el total supera `Decimal(14, 2)`: quien sume montos que vienen
+ * de afuera (por ejemplo, los netos de varias facturas) debe comprobar el rango antes y devolver un
+ * `Problem`, como hace `validateInvoices`.
+ */
 export function sumAmounts(...amounts: Amount[]): Amount {
   const total = amounts.reduce((acc, a) => acc.plus(toDecimal(a)), new MoneyDecimal(0))
+  if (total.greaterThan(MAX_AMOUNT)) {
+    throw new RangeError(`Monto fuera de rango, supera ${MAX_AMOUNT}: ${total.toFixed(2)}`)
+  }
   return total.toFixed(2) as Amount
 }
 
-/** `pct` en escala 0 a 100, con hasta dos decimales (80, 33.33). Redondea hacia abajo al céntimo. */
+/**
+ * `pct` en escala 0 a 100 (80, 33.33). Redondea hacia abajo al céntimo. Lanza `RangeError` si `pct`
+ * no es finito o está fuera de 0 a 100: el porcentaje es configuración, no dato del usuario.
+ */
 export function percentOf(amount: Amount, pct: number): Amount {
+  if (!Number.isFinite(pct) || pct < 0 || pct > 100) {
+    throw new RangeError(`Porcentaje fuera de rango (0 a 100): ${pct}`)
+  }
   const result = toDecimal(amount).times(new MoneyDecimal(pct)).dividedBy(100)
   return fromDecimal(result, 'down')
 }

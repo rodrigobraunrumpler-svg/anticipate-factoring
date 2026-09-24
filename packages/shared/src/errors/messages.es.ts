@@ -25,6 +25,7 @@ export const MESSAGES_ES: Readonly<Record<ProblemCode, string>> = {
   MIXED_ISSUERS: 'Todas las facturas deben ser de la misma empresa emisora.',
   MIXED_CURRENCIES: 'Todas las facturas de una solicitud deben estar en la misma moneda.',
   DUPLICATE_INVOICE: 'La factura {invoice} está repetida en esta solicitud.',
+  TOTAL_OUT_OF_RANGE: 'La suma de las facturas supera el monto máximo que podemos procesar.',
   INVALID_AMOUNT: 'El monto debe ser un número mayor que cero con dos decimales.',
   AMOUNT_EXCEEDS_MAXIMUM: 'El monto solicitado supera el máximo de {max} {currency}.',
   TRANSITION_NOT_ALLOWED: 'Este cambio de estado no está permitido desde el estado actual.',
