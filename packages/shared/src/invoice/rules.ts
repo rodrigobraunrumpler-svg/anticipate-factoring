@@ -2,8 +2,10 @@ import { daysBetween, type IsoDate } from '../dates/index.js'
 import { createProblem, type Problem, VALIDATION_MESSAGES_ES } from '../errors/index.js'
 import {
   type Amount,
+  type Currency,
   compareAmounts,
   fromCents,
+  isCurrency,
   MAX_AMOUNT,
   normalizeAmount,
   percentOf,
@@ -22,7 +24,7 @@ export type ValidationContext = {
   advancePercent: number
   minTermDays: number
   maxInvoices: number
-  allowedCurrencies: readonly string[]
+  allowedCurrencies: readonly Currency[]
   today: IsoDate
 }
 
@@ -118,7 +120,7 @@ export const creditWithPendingAmountRule: InvoiceRule = {
 export const currencyAllowedRule: InvoiceRule = {
   id: 'currency-allowed',
   run: (inv, ctx) =>
-    ctx.allowedCurrencies.includes(inv.currency)
+    isCurrency(inv.currency) && ctx.allowedCurrencies.includes(inv.currency)
       ? []
       : [
           problemFor(
@@ -186,14 +188,27 @@ export const INVOICE_RULES: readonly Readonly<InvoiceRule>[] = [
 export type ValidationResult = {
   problems: Problem[]
   validInvoices: ParsedInvoice[]
-  /** Moneda común de las facturas válidas, o null si no hay o difieren. */
-  currency: string | null
+  /** Moneda común de las facturas válidas, o null si no hay, difieren o su total está fuera de rango. */
+  currency: Currency | null
   totalNetPending: Amount
   /** Neto pendiente total × porcentaje de adelanto. "0.00" si no se puede calcular. */
   maxAmount: Amount
 }
 
-const invoiceKey = (inv: ParsedInvoice) => inv.seriesNumber.trim().toUpperCase()
+/**
+ * Clave canónica de una factura: RUC del emisor + serie en mayúsculas + correlativo sin ceros a la
+ * izquierda (`F001-00000123` ≡ `F001-123`). Es la identidad de la regla de duplicados dentro de la
+ * solicitud; la API la usa también para el índice único de facturas activas (STACK §9, D26).
+ * Sin expresiones regulares con retroceso: la entrada puede venir de afuera.
+ */
+export function invoiceKey(invoice: Pick<ParsedInvoice, 'issuerRuc' | 'seriesNumber'>): string {
+  const seriesNumber = invoice.seriesNumber.trim().toUpperCase()
+  const dash = seriesNumber.lastIndexOf('-')
+  const series = dash === -1 ? seriesNumber : seriesNumber.slice(0, dash)
+  const number = dash === -1 ? '' : seriesNumber.slice(dash + 1)
+  const canonicalNumber = /^\d+$/.test(number) ? number.replace(/^0+(?=\d)/, '') : number
+  return `${invoice.issuerRuc.trim()}|${dash === -1 ? series : `${series}-${canonicalNumber}`}`
+}
 
 export function validateInvoices(
   invoices: readonly ParsedInvoice[],
@@ -266,25 +281,37 @@ export function validateInvoices(
   }
 
   const totalNetPending = fromCents(totalCents)
+  // Toda factura válida pasó `currency-allowed`, así que su moneda es un `Currency`.
+  const currency = validInvoices[0]?.currency
   return {
     problems,
     validInvoices,
-    currency: validInvoices[0]?.currency ?? null,
+    currency: currency !== undefined && isCurrency(currency) ? currency : null,
     totalNetPending,
     maxAmount: percentOf(totalNetPending, ctx.advancePercent),
   }
 }
 
-export function validateRequestedAmount(amount: string, result: ValidationResult): Problem | null {
+/**
+ * Valida el monto pedido contra el máximo de `validateInvoices`. `amount` ya viene de `amountSchema`;
+ * igual se vuelve a comprobar en runtime, porque `Amount` no fija el formato exacto en el tipo.
+ */
+export function validateRequestedAmount(amount: Amount, result: ValidationResult): Problem | null {
   const normalized = normalizeAmount(amount)
   if (normalized === null || toCents(normalized) === 0n) {
     return createProblem('INVALID_AMOUNT', { rule: 'requested-amount', field: 'requestedAmount' })
+  }
+  if (result.currency === null || result.validInvoices.length === 0) {
+    return createProblem('NO_MAXIMUM_AVAILABLE', {
+      rule: 'requested-amount',
+      field: 'requestedAmount',
+    })
   }
   if (compareAmounts(normalized, result.maxAmount) > 0) {
     return createProblem('AMOUNT_EXCEEDS_MAXIMUM', {
       rule: 'requested-amount',
       field: 'requestedAmount',
-      data: { max: result.maxAmount, currency: result.currency ?? '' },
+      data: { max: result.maxAmount, currency: result.currency },
     })
   }
   return null

@@ -20,6 +20,7 @@ export {
   INVOICE_RULES,
   type InvoiceRule,
   installmentsDueInFutureRule,
+  invoiceKey,
   issuerIsSupplierRule,
   RULE_IDS,
   type RuleId,

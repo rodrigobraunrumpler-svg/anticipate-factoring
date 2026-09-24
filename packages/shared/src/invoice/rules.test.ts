@@ -1,11 +1,12 @@
 import fc from 'fast-check'
 import { describe, expect, it } from 'vitest'
 import type { IsoDate } from '../dates/index.js'
-import { type Amount, fromCents } from '../money/index.js'
+import { type Amount, type Currency, fromCents } from '../money/index.js'
 import { buildInvoiceXml, type TestXmlOptions } from '../testing/index.js'
 import { type ParsedInvoice, parsedInvoiceSchema } from './parsed-invoice.js'
 import {
   INVOICE_RULES,
+  invoiceKey,
   RULE_IDS,
   type ValidationContext,
   validateInvoices,
@@ -164,6 +165,18 @@ describe('validateInvoices · reglas del conjunto', () => {
     expect(codes(r)).toEqual(['DUPLICATE_INVOICE'])
   })
 
+  it('el correlativo con ceros a la izquierda es la misma factura', () => {
+    const r = validateInvoices([invoice(), invoice({ seriesNumber: 'F001-00000123' })], ctx)
+    expect(codes(r)).toEqual(['DUPLICATE_INVOICE'])
+    expect(r.problems[0]?.invoice).toBe('F001-00000123')
+  })
+
+  it('el mismo número de otro emisor no es un duplicado', () => {
+    const { supplierRuc: _omitted, ...withoutSupplier } = ctx
+    const r = validateInvoices([invoice(), invoice({ issuerRuc: '10467286736' })], withoutSupplier)
+    expect(codes(r)).toEqual(['MIXED_ISSUERS'])
+  })
+
   it('rechaza emisores distintos cuando no hay RUC del proveedor en el contexto', () => {
     const { supplierRuc: _omitted, ...withoutSupplier } = ctx
     const r = validateInvoices(
@@ -205,11 +218,62 @@ describe('validateRequestedAmount', () => {
     const p = validateRequestedAmount('8496.01', result)
     expect(p?.code).toBe('AMOUNT_EXCEEDS_MAXIMUM')
     expect(p?.message).toBe('El monto solicitado supera el máximo de 8496.00 PEN.')
+    expect(p?.params).toEqual({ max: '8496.00', currency: 'PEN' })
   })
 
-  it('rechaza montos inválidos', () => {
-    expect(validateRequestedAmount('abc', result)?.code).toBe('INVALID_AMOUNT')
+  it('rechaza montos inválidos aunque lleguen sin validar en runtime', () => {
+    expect(validateRequestedAmount('abc' as Amount, result)?.code).toBe('INVALID_AMOUNT')
     expect(validateRequestedAmount('0.00', result)?.code).toBe('INVALID_AMOUNT')
+  })
+
+  it('sin máximo calculable devuelve NO_MAXIMUM_AVAILABLE en vez de "máximo de 0.00"', () => {
+    const mixed = validateInvoices(
+      [invoice(), invoice({ seriesNumber: 'F001-9', currency: 'USD' })],
+      ctx,
+    )
+    const noValid = validateInvoices([invoice({ documentType: '03' })], ctx)
+    for (const r of [mixed, noValid, validateInvoices([], ctx)]) {
+      const p = validateRequestedAmount('100.00', r)
+      expect(p?.code).toBe('NO_MAXIMUM_AVAILABLE')
+      expect(p?.message).toBe(
+        'No podemos calcular el monto máximo porque las facturas tienen problemas.',
+      )
+      expect(p?.field).toBe('requestedAmount')
+    }
+  })
+
+  it('el tipo exige un Amount, no un texto cualquiera', () => {
+    const typed = (text: string) => {
+      // @ts-expect-error un texto cualquiera no es un Amount
+      return validateRequestedAmount(text, result)
+    }
+    expect(typed).toBeTypeOf('function')
+  })
+})
+
+describe('invoiceKey', () => {
+  it('es RUC del emisor + serie en mayúsculas + correlativo sin ceros a la izquierda', () => {
+    const base = { issuerRuc: '20100070970', seriesNumber: 'F001-123' }
+    expect(invoiceKey(base)).toBe(invoiceKey({ ...base, seriesNumber: ' f001-00000123 ' }))
+    expect(invoiceKey(base)).not.toBe(invoiceKey({ ...base, issuerRuc: '10467286736' }))
+    expect(invoiceKey(base)).not.toBe(invoiceKey({ ...base, seriesNumber: 'F002-123' }))
+    expect(invoiceKey({ ...base, seriesNumber: 'F001-0' })).toBe(
+      invoiceKey({ ...base, seriesNumber: 'F001-00000000' }),
+    )
+  })
+})
+
+describe('tipos de moneda del contexto y del resultado', () => {
+  it('las monedas son Currency, no texto', () => {
+    const r = validateInvoices([invoice()], ctx)
+    const currency: Currency | null = r.currency
+    expect(currency).toBe('PEN')
+    const invalidContext = () => {
+      // @ts-expect-error EUR no es una moneda que el sistema sepa representar
+      const c: ValidationContext = { ...ctx, allowedCurrencies: ['EUR'] }
+      return c
+    }
+    expect(invalidContext).toBeTypeOf('function')
   })
 })
 

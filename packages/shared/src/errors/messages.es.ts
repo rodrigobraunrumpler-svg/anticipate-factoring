@@ -29,6 +29,7 @@ export const MESSAGES_ES: Readonly<Record<ProblemCode, string>> = {
   TOTAL_OUT_OF_RANGE: 'La suma de las facturas supera el monto máximo que podemos procesar.',
   INVALID_AMOUNT: 'El monto debe ser un número mayor que cero con dos decimales.',
   AMOUNT_EXCEEDS_MAXIMUM: 'El monto solicitado supera el máximo de {max} {currency}.',
+  NO_MAXIMUM_AVAILABLE: 'No podemos calcular el monto máximo porque las facturas tienen problemas.',
   TRANSITION_NOT_ALLOWED: 'Este cambio de estado no está permitido desde el estado actual.',
   INSUFFICIENT_ROLE: 'Tu rol no permite hacer este cambio de estado.',
   CLOSE_REASON_REQUIRED: 'Indica el motivo del cierre.',

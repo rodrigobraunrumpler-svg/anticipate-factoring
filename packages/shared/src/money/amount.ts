@@ -12,9 +12,13 @@ import { MESSAGES_ES } from '../errors/index.js'
  */
 export type Amount = `${bigint}.${string}`
 
-// El límite de 12 dígitos en la parte entera refleja la columna Decimal(14, 2) de PostgreSQL
-// (STACK.md §9, D14): 12 dígitos enteros + 2 decimales, máximo 999999999999.99.
-const AMOUNT_FORMAT = /^\d{1,12}\.\d{2}$/
+// El límite de 12 dígitos en la parte entera (sin contar ceros a la izquierda) refleja la columna
+// Decimal(14, 2) de PostgreSQL (STACK.md §9, D14): 12 dígitos enteros + 2 decimales, máximo
+// 999999999999.99. Lo aplica `normalizeAmount`.
+const MAX_WHOLE_DIGITS = 12
+
+/** Monto escrito por una persona: dos decimales obligatorios. */
+const ENTERED_AMOUNT_FORMAT = /^\d+\.\d{2}$/
 
 /** Mayor monto representable en `Decimal(14, 2)`. Ninguna operación del dominio devuelve uno mayor. */
 export const MAX_AMOUNT: Amount = '999999999999.99'
@@ -34,13 +38,18 @@ const ROUNDING_MODE: Record<AmountRounding, Decimal.Rounding> = {
   'half-up': MoneyDecimal.ROUND_HALF_UP,
 }
 
-/** Acepta lo que venga de un XML o de un input y lo lleva a `Amount`. Devuelve null si no es un número no negativo. */
+/**
+ * Acepta lo que venga de un XML o de un input y lo lleva al `Amount` canónico: dos decimales y sin
+ * ceros a la izquierda (`'00008000.5'` → `'8000.50'`). Devuelve null si no es un número no negativo
+ * con hasta dos decimales o si no cabe en `Decimal(14, 2)`.
+ */
 export function normalizeAmount(value: string | number): Amount | null {
   const text =
     typeof value === 'number' ? (Number.isFinite(value) ? value.toString() : '') : value.trim()
-  const parts = /^(\d{1,12})(?:\.(\d{1,2}))?$/.exec(text)
+  const parts = /^(\d+)(?:\.(\d{1,2}))?$/.exec(text)
   if (!parts) return null
-  const whole = parts[1] ?? '0'
+  const whole = (parts[1] ?? '0').replace(/^0+(?=\d)/, '')
+  if (whole.length > MAX_WHOLE_DIGITS) return null
   const decimals = (parts[2] ?? '').padEnd(2, '0')
   return `${whole}.${decimals}` as Amount
 }
@@ -114,11 +123,19 @@ export function compareAmounts(a: Amount, b: Amount): -1 | 0 | 1 {
   return comparison < 0 ? -1 : comparison > 0 ? 1 : 0
 }
 
-/** Monto ingresado por una persona: dos decimales obligatorios y mayor que cero. Su salida ya es `Amount`. */
+/** Monto escrito por una persona, ya canónico, o null si no tiene dos decimales o no es mayor que cero. */
+function parseEnteredAmount(text: string): Amount | null {
+  if (!ENTERED_AMOUNT_FORMAT.test(text)) return null
+  const amount = normalizeAmount(text)
+  return amount !== null && toCents(amount) > 0n ? amount : null
+}
+
+/**
+ * Monto ingresado por una persona: dos decimales obligatorios y mayor que cero. Su salida es el
+ * `Amount` canónico (`'00008000.00'` → `'8000.00'`), el mismo que se guarda y se compara.
+ */
 export const amountSchema = z
-  .string()
+  .string({ error: MESSAGES_ES.INVALID_AMOUNT })
   .trim()
-  .refine((v) => AMOUNT_FORMAT.test(v) && toCents(v as Amount) > 0n, {
-    error: MESSAGES_ES.INVALID_AMOUNT,
-  })
-  .transform((v) => v as Amount)
+  .refine((v) => parseEnteredAmount(v) !== null, { error: MESSAGES_ES.INVALID_AMOUNT })
+  .transform((v) => parseEnteredAmount(v) as Amount)

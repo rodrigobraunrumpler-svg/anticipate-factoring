@@ -5,3 +5,7 @@ import { VALIDATION_MESSAGES_ES } from '../errors/index.js'
 export const CURRENCIES = ['PEN', 'USD'] as const
 export type Currency = (typeof CURRENCIES)[number]
 export const currencySchema = z.enum(CURRENCIES, { error: VALIDATION_MESSAGES_ES.money.currency })
+
+export function isCurrency(value: string): value is Currency {
+  return (CURRENCIES as readonly string[]).includes(value)
+}

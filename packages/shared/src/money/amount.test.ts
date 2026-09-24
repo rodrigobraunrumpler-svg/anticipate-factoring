@@ -29,6 +29,13 @@ describe('normalizeAmount', () => {
     expect(normalizeAmount(input)).toBeNull()
   })
 
+  it('devuelve el monto canónico, sin ceros a la izquierda', () => {
+    expect(normalizeAmount('00008000.00')).toBe('8000.00')
+    expect(normalizeAmount('000')).toBe('0.00')
+    expect(normalizeAmount('00.5')).toBe('0.50')
+    expect(normalizeAmount('0000000000001.00')).toBe('1.00')
+  })
+
   it('acepta el monto máximo que cabe en Decimal(14, 2)', () => {
     expect(normalizeAmount('999999999999.99')).toBe('999999999999.99')
   })
@@ -110,6 +117,17 @@ describe('propiedades del dinero', () => {
     fc.assert(fc.property(cents, (c) => normalizeAmount(fromCents(c)) === fromCents(c)))
   })
 
+  it('los ceros a la izquierda no cambian el monto canónico', () => {
+    fc.assert(
+      fc.property(cents, fc.integer({ min: 0, max: 5 }), (c, zeros) => {
+        const padded = `${'0'.repeat(zeros)}${fromCents(c)}`
+        return normalizeAmount(padded) === fromCents(c) && amountSchema.safeParse(padded).success
+          ? amountSchema.parse(padded) === fromCents(c)
+          : c === 0n
+      }),
+    )
+  })
+
   it('sumar montos equivale a sumar céntimos, y fuera de rango lanza', () => {
     fc.assert(
       fc.property(cents, cents, (a, b) =>
@@ -140,6 +158,21 @@ describe('amountSchema', () => {
 
   it('rechaza un monto que no cabe en Decimal(14, 2)', () => {
     expect(amountSchema.safeParse('1000000000000.00').success).toBe(false)
+  })
+
+  it('devuelve el monto canónico, sin ceros a la izquierda', () => {
+    expect(amountSchema.parse('00008000.00')).toBe('8000.00')
+    expect(amountSchema.parse(' 0000000000001.50 ')).toBe('1.50')
+    expect(amountSchema.safeParse('0000.00').success).toBe(false)
+  })
+
+  it('rechaza con el mensaje en español, también si no es texto', () => {
+    for (const value of ['abc', 25000, null]) {
+      const r = amountSchema.safeParse(value)
+      expect(!r.success && r.error.issues[0]?.message).toBe(
+        'El monto debe ser un número mayor que cero con dos decimales.',
+      )
+    }
   })
 })
 

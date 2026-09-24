@@ -14,4 +14,4 @@ export {
   toCents,
   toDecimal,
 } from './amount.js'
-export { CURRENCIES, type Currency, currencySchema } from './currency.js'
+export { CURRENCIES, type Currency, currencySchema, isCurrency } from './currency.js'

@@ -29,6 +29,7 @@ export const PROBLEM_CODES = [
   // monto solicitado
   'INVALID_AMOUNT',
   'AMOUNT_EXCEEDS_MAXIMUM',
+  'NO_MAXIMUM_AVAILABLE',
   // cambio de estado de una solicitud
   'TRANSITION_NOT_ALLOWED',
   'INSUFFICIENT_ROLE',
