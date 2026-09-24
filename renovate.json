@@ -1,0 +1,20 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended", ":semanticCommits", "group:allNonMajor"],
+  "timezone": "America/Lima",
+  "schedule": ["before 6am on monday"],
+  "minimumReleaseAge": "3 days",
+  "packageRules": [
+    { "matchPackageNames": ["typescript"], "allowedVersions": "<7" },
+    {
+      "matchPackageNames": [
+        "prisma",
+        "@prisma/client",
+        "@prisma/adapter-pg",
+        "@prisma/adapter-neon"
+      ],
+      "allowedVersions": "<8"
+    },
+    { "matchUpdateTypes": ["major"], "dependencyDashboardApproval": true }
+  ]
+}
