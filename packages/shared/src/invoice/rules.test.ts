@@ -2,7 +2,7 @@ import fc from 'fast-check'
 import { describe, expect, it } from 'vitest'
 import type { IsoDate } from '../dates/index.js'
 import { type Amount, fromCents } from '../money/index.js'
-import { buildInvoiceXml, type TestXmlOptions } from './build-test-xml.js'
+import { buildInvoiceXml, type TestXmlOptions } from '../testing/index.js'
 import { type ParsedInvoice, parsedInvoiceSchema } from './parsed-invoice.js'
 import {
   INVOICE_RULES,

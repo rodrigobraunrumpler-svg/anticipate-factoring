@@ -1,6 +1,8 @@
 # Suite dorada
 
-Cada archivo de `cases/` pasa por el lector y las reglas con un contexto fijo (SEA, 80 %, 15 días, "hoy" = 2026-09-23) y su resultado se compara con el snapshot de `expected/`. Los casos `seed-*.xml` los genera la fábrica de XML de prueba; los demás son XML reales de proveedores.
+Cada archivo de `cases/` se lee como bytes con `decodeXml` (igual que la API), pasa por el lector y las reglas con un contexto fijo (SEA, 80 %, 15 días, "hoy" = 2026-09-23) y su resultado se compara con el snapshot de `expected/`.
+
+Hoy la suite solo tiene casos semilla (`seed-*.xml`), generados con la fábrica de XML de prueba (`@anticipate/shared/testing`) por `pnpm --filter @anticipate/shared exec tsx test/golden/generate-seed-cases.ts`. El más cercano a un XML real es `seed-sunat-realistic.xml`: dos `UBLExtension` con la firma en la segunda, `cac:Signature` de primer nivel, razón social en CDATA, finales CRLF, bytes ISO-8859-1 y detracción al 12 %. Los XML reales de proveedores se agregan con el procedimiento de abajo; todo caso que no empieza con `seed-` se trata como real.
 
 ## Agregar un XML real
 

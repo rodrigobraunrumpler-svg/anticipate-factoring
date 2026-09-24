@@ -20,6 +20,9 @@ const ALLOWED: Record<string, readonly string[]> = {
   'advance-request': ['errors', 'identity', 'money', 'dates', 'user', 'payer'],
   'supplier-document': ['errors', 'dates'],
   payer: ['errors', 'identity', 'money'],
+  // Fábrica de XML de prueba (`@anticipate/shared/testing`): no depende de nadie y ningún dominio de
+  // producción la importa.
+  testing: [],
 }
 
 /**
@@ -126,6 +129,11 @@ describe('arquitectura de shared', () => {
       .filter((e) => e.isDirectory())
       .map((e) => e.name)
     expect(domains.sort()).toEqual(Object.keys(ALLOWED).sort())
+  })
+
+  it('ningún dominio de producción importa la fábrica de prueba, y el índice raíz no la exporta', () => {
+    expect(edges.filter((e) => e.target === 'testing')).toEqual([])
+    expect(readFileSync(join(SRC, 'index.ts'), 'utf8')).not.toContain('testing')
   })
 
   it('los imports entre dominios pasan por el index del dominio destino', () => {

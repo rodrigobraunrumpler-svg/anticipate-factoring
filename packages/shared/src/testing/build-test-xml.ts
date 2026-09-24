@@ -1,6 +1,11 @@
 /**
  * Construye XML UBL 2.1 con la forma de una factura electrónica de SUNAT, para tests y para el modo
- * demostración de la landing. No es un XML válido ante SUNAT (no está firmado de verdad).
+ * demostración de la landing. No es un XML válido ante SUNAT (no está firmado de verdad). Se publica
+ * en `@anticipate/shared/testing`, fuera de los puntos de entrada de producción.
+ *
+ * Todo texto y todo atributo que emite se escapa (`&`, `<`, `>`, `"`): un nombre como `A & B` produce
+ * XML válido que el lector devuelve como `A & B`. Para probar referencias de carácter o XML mal
+ * formado, los tests reemplazan texto en el XML ya construido.
  */
 export type TestInstallment = { id: string; amount: string; dueDate: string }
 
@@ -26,7 +31,7 @@ export type TestXmlOptions = {
   extensionBeforeSignature?: boolean
   /** Agrega el `cac:Signature` de primer nivel que referencia a la firma (como las facturas de SUNAT). */
   signatoryReference?: boolean
-  /** Emite las razones sociales dentro de `<![CDATA[…]]>`. */
+  /** Emite las razones sociales dentro de `<![CDATA[…]]>`, sin escapar. */
   cdataNames?: boolean
   /** Emite el RUC por la ruta legada PartyTaxScheme/CompanyID en vez de PartyIdentification/ID. */
   legacyRucPath?: boolean
@@ -64,57 +69,87 @@ export const DEFAULT_TEST_XML = {
   omit: [],
 } as const satisfies Required<TestXmlOptions>
 
+const XML_ESCAPES: Readonly<Record<string, string>> = {
+  '&': '&amp;',
+  '<': '&lt;',
+  '>': '&gt;',
+  '"': '&quot;',
+}
+
+/** Escapa `&`, `<`, `>` y `"` para usar un valor como texto o como atributo entre comillas dobles. */
+export function escapeXmlText(value: string): string {
+  return value.replace(/[&<>"]/g, (ch) => XML_ESCAPES[ch] ?? ch)
+}
+
+/** Sección CDATA; un `]]>` dentro del valor se parte en dos secciones, como manda XML. */
+function cdata(value: string): string {
+  return `<![CDATA[${value.replaceAll(']]>', ']]]]><![CDATA[>')}]]>`
+}
+
+type Attributes = Readonly<Record<string, string>>
+
+const attributesOf = (attributes: Attributes): string =>
+  Object.entries(attributes)
+    .map(([key, value]) => ` ${key}="${escapeXmlText(value)}"`)
+    .join('')
+
+/** Elemento con hijos ya construidos (no se escapan). */
+const node = (name: string, children: string, attributes: Attributes = {}): string =>
+  `<${name}${attributesOf(attributes)}>${children}</${name}>`
+
+/** Elemento hoja con texto, que siempre se escapa. */
+const leaf = (name: string, value: string, attributes: Attributes = {}): string =>
+  node(name, escapeXmlText(value), attributes)
+
 export function buildInvoiceXml(options: TestXmlOptions = {}): string {
   const o = { ...DEFAULT_TEST_XML, ...options }
   const cbc = (t: string) => (o.prefixes.cbc ? `${o.prefixes.cbc}:${t}` : t)
   const cac = (t: string) => (o.prefixes.cac ? `${o.prefixes.cac}:${t}` : t)
-  const el = (name: string, content: string, attributes = ''): string =>
-    `<${name}${attributes}>${content}</${name}>`
   const omitted = (name: (typeof o.omit)[number]) => o.omit.includes(name)
-  const money = (name: string, value: string) => el(cbc(name), value, ` currencyID="${o.currency}"`)
-
-  const name = (value: string) => (o.cdataNames ? `<![CDATA[${value}]]>` : value)
+  const money = (name: string, value: string) => leaf(cbc(name), value, { currencyID: o.currency })
+  const nameElement = (tag: string, value: string) =>
+    o.cdataNames ? node(tag, cdata(value)) : leaf(tag, value)
 
   const party = (
     role: 'AccountingSupplierParty' | 'AccountingCustomerParty',
     ruc: string,
     legalName: string | null,
   ) =>
-    el(
+    node(
       cac(role),
-      el(
+      node(
         cac('Party'),
         o.legacyRucPath
-          ? el(
+          ? node(
               cac('PartyTaxScheme'),
-              (legalName === null ? '' : el(cbc('RegistrationName'), name(legalName))) +
-                el(cbc('CompanyID'), ruc, ' schemeID="6"'),
+              (legalName === null ? '' : nameElement(cbc('RegistrationName'), legalName)) +
+                leaf(cbc('CompanyID'), ruc, { schemeID: '6' }),
             )
-          : el(cac('PartyIdentification'), el(cbc('ID'), ruc, ' schemeID="6"')) +
+          : node(cac('PartyIdentification'), leaf(cbc('ID'), ruc, { schemeID: '6' })) +
               (legalName === null
                 ? ''
-                : el(cac('PartyLegalEntity'), el(cbc('RegistrationName'), name(legalName)))),
+                : node(cac('PartyLegalEntity'), nameElement(cbc('RegistrationName'), legalName))),
       ),
     )
 
   const paymentTermsBlocks: string[] = []
   if (o.detraction) {
     paymentTermsBlocks.push(
-      el(
+      node(
         cac('PaymentTerms'),
-        el(cbc('ID'), 'Detraccion') +
-          el(cbc('PaymentMeansID'), '001') +
-          el(cbc('PaymentPercent'), o.detraction.percent) +
+        leaf(cbc('ID'), 'Detraccion') +
+          leaf(cbc('PaymentMeansID'), '001') +
+          leaf(cbc('PaymentPercent'), o.detraction.percent) +
           money('Amount', o.detraction.amount),
       ),
     )
   }
   if (o.paymentTerms) {
     paymentTermsBlocks.push(
-      el(
+      node(
         cac('PaymentTerms'),
-        el(cbc('ID'), 'FormaPago') +
-          el(cbc('PaymentMeansID'), o.paymentTerms) +
+        leaf(cbc('ID'), 'FormaPago') +
+          leaf(cbc('PaymentMeansID'), o.paymentTerms) +
           (o.paymentTerms === 'Credito' && o.netPendingAmount !== null
             ? money('Amount', o.netPendingAmount)
             : ''),
@@ -123,12 +158,12 @@ export function buildInvoiceXml(options: TestXmlOptions = {}): string {
   }
   for (const i of o.installments) {
     paymentTermsBlocks.push(
-      el(
+      node(
         cac('PaymentTerms'),
-        el(cbc('ID'), 'FormaPago') +
-          el(cbc('PaymentMeansID'), i.id) +
+        leaf(cbc('ID'), 'FormaPago') +
+          leaf(cbc('PaymentMeansID'), i.id) +
           money('Amount', i.amount) +
-          el(cbc('PaymentDueDate'), i.dueDate),
+          leaf(cbc('PaymentDueDate'), i.dueDate),
       ),
     )
   }
@@ -136,37 +171,40 @@ export function buildInvoiceXml(options: TestXmlOptions = {}): string {
   const extensions: string[] = []
   if (o.extensionBeforeSignature) {
     extensions.push(
-      el(
+      node(
         'ext:UBLExtension',
-        el('ext:ExtensionContent', el('ext:AdditionalInformation', el('ext:Note', 'SIN FIRMA'))),
+        node(
+          'ext:ExtensionContent',
+          node('ext:AdditionalInformation', leaf('ext:Note', 'SIN FIRMA')),
+        ),
       ),
     )
   }
   if (o.signed) {
     extensions.push(
-      el(
+      node(
         'ext:UBLExtension',
-        el(
+        node(
           'ext:ExtensionContent',
-          el('ds:Signature', el('ds:SignatureValue', 'ZmlybWE='), ' Id="SignSUNAT"'),
+          node('ds:Signature', leaf('ds:SignatureValue', 'ZmlybWE='), { Id: 'SignSUNAT' }),
         ),
       ),
     )
   }
-  const signature = extensions.length > 0 ? el('ext:UBLExtensions', extensions.join('')) : ''
+  const signature = extensions.length > 0 ? node('ext:UBLExtensions', extensions.join('')) : ''
 
   const signatoryReference = o.signatoryReference
-    ? el(
+    ? node(
         cac('Signature'),
-        el(cbc('ID'), 'IDSignSP') +
-          el(
+        leaf(cbc('ID'), 'IDSignSP') +
+          node(
             cac('SignatoryParty'),
-            el(cac('PartyIdentification'), el(cbc('ID'), o.issuerRuc)) +
-              el(cac('PartyName'), el(cbc('Name'), name(o.issuerName))),
+            node(cac('PartyIdentification'), leaf(cbc('ID'), o.issuerRuc)) +
+              node(cac('PartyName'), nameElement(cbc('Name'), o.issuerName)),
           ) +
-          el(
+          node(
             cac('DigitalSignatureAttachment'),
-            el(cac('ExternalReference'), el(cbc('URI'), '#SignatureSP')),
+            node(cac('ExternalReference'), leaf(cbc('URI'), '#SignatureSP')),
           ),
       )
     : ''
@@ -174,17 +212,17 @@ export function buildInvoiceXml(options: TestXmlOptions = {}): string {
   const typeTag = o.root === 'CreditNote' ? 'CreditNoteTypeCode' : 'InvoiceTypeCode'
   const body = [
     signature,
-    el(cbc('UBLVersionID'), '2.1'),
-    el(cbc('CustomizationID'), '2.0'),
-    omitted('ID') ? '' : el(cbc('ID'), o.seriesNumber),
-    omitted('IssueDate') ? '' : el(cbc('IssueDate'), o.issueDate),
-    omitted('InvoiceTypeCode') ? '' : el(cbc(typeTag), o.documentType, ' listID="0101"'),
-    omitted('DocumentCurrencyCode') ? '' : el(cbc('DocumentCurrencyCode'), o.currency),
+    leaf(cbc('UBLVersionID'), '2.1'),
+    leaf(cbc('CustomizationID'), '2.0'),
+    omitted('ID') ? '' : leaf(cbc('ID'), o.seriesNumber),
+    omitted('IssueDate') ? '' : leaf(cbc('IssueDate'), o.issueDate),
+    omitted('InvoiceTypeCode') ? '' : leaf(cbc(typeTag), o.documentType, { listID: '0101' }),
+    omitted('DocumentCurrencyCode') ? '' : leaf(cbc('DocumentCurrencyCode'), o.currency),
     signatoryReference,
     party('AccountingSupplierParty', o.issuerRuc, o.issuerName),
     party('AccountingCustomerParty', o.recipientRuc, o.recipientName),
     ...paymentTermsBlocks,
-    el(
+    node(
       cac('LegalMonetaryTotal'),
       money('TaxInclusiveAmount', o.total) +
         (omitted('PayableAmount') ? '' : money('PayableAmount', o.total)),
@@ -204,7 +242,7 @@ export function buildInvoiceXml(options: TestXmlOptions = {}): string {
     if (p && p !== 'cbc' && p !== 'cac') namespaces.push(`xmlns:${p}="urn:example:${p}"`)
   }
 
-  let xml = `<?xml version="1.0" encoding="${o.declaredEncoding}"?>\n<${o.root} ${namespaces.join(' ')}>\n  ${body}\n</${o.root}>\n`
+  let xml = `<?xml version="1.0" encoding="${escapeXmlText(o.declaredEncoding)}"?>\n<${o.root} ${namespaces.join(' ')}>\n  ${body}\n</${o.root}>\n`
   if (o.windowsLineEndings) xml = xml.replace(/\n/g, '\r\n')
   if (o.bom) xml = `\uFEFF${xml}`
   return xml

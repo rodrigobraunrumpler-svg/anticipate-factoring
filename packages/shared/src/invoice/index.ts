@@ -1,11 +1,4 @@
 export {
-  buildCdrXml,
-  buildInvoiceXml,
-  DEFAULT_TEST_XML,
-  type TestInstallment,
-  type TestXmlOptions,
-} from './build-test-xml.js'
-export {
   DOCUMENT_TYPE,
   DOCUMENT_TYPE_NAMES,
   type DocumentType,

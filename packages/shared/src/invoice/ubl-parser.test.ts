@@ -1,7 +1,9 @@
 import { readFileSync } from 'node:fs'
+import fc from 'fast-check'
 import { describe, expect, it } from 'vitest'
-import { buildCdrXml, buildInvoiceXml } from './build-test-xml.js'
-import { decodeXml, parseUblInvoice } from './ubl-parser.js'
+import { buildCdrXml, buildInvoiceXml, DEFAULT_TEST_XML } from '../testing/index.js'
+import { parsedInvoiceSchema } from './parsed-invoice.js'
+import { decodeXml, type ParseResult, parseUblInvoice } from './ubl-parser.js'
 
 function parseOk(xml: string) {
   const r = parseUblInvoice(xml)
@@ -52,50 +54,57 @@ describe('parseUblInvoice · factura al crédito', () => {
   })
 })
 
+/**
+ * La fábrica escapa todo texto; para probar referencias de carácter hay que inyectarlas tal cual en
+ * el XML ya construido.
+ */
+const withRawIssuerName = (raw: string) =>
+  buildInvoiceXml().replace(`>${DEFAULT_TEST_XML.issuerName}<`, `>${raw}<`)
+
 describe('parseUblInvoice · referencias de carácter en texto', () => {
   it('decodifica &amp; en nombres', () => {
-    const inv = parseOk(buildInvoiceXml({ issuerName: 'M &amp; M S.A.C.' }))
+    const inv = parseOk(withRawIssuerName('M &amp; M S.A.C.'))
     expect(inv.issuerName).toBe('M & M S.A.C.')
   })
 
   it('decodifica referencias numéricas decimales', () => {
-    const inv = parseOk(buildInvoiceXml({ issuerName: 'CASTA&#209;EDA S.A.C.' }))
+    const inv = parseOk(withRawIssuerName('CASTA&#209;EDA S.A.C.'))
     expect(inv.issuerName).toBe('CASTAÑEDA S.A.C.')
   })
 
   it('decodifica referencias numéricas hexadecimales', () => {
-    const inv = parseOk(buildInvoiceXml({ issuerName: 'CASTA&#xD1;EDA' }))
+    const inv = parseOk(withRawIssuerName('CASTA&#xD1;EDA'))
     expect(inv.issuerName).toBe('CASTAÑEDA')
   })
 
   it('decodifica en una sola pasada: &amp;lt; no se convierte en <', () => {
-    const inv = parseOk(buildInvoiceXml({ issuerName: 'A &amp;lt; B' }))
+    const inv = parseOk(withRawIssuerName('A &amp;lt; B'))
     expect(inv.issuerName).toBe('A &lt; B')
   })
 
   it('deja intacta una referencia con nombre desconocido', () => {
-    const inv = parseOk(buildInvoiceXml({ issuerName: 'A &foo; B' }))
+    const inv = parseOk(withRawIssuerName('A &foo; B'))
     expect(inv.issuerName).toBe('A &foo; B')
   })
 
   it('deja intacta una referencia decimal fuera del rango Unicode (&#1114112;)', () => {
-    const inv = parseOk(buildInvoiceXml({ issuerName: 'X &#1114112; Y' }))
+    const inv = parseOk(withRawIssuerName('X &#1114112; Y'))
     expect(inv.issuerName).toBe('X &#1114112; Y')
   })
 
   it('deja intacta una referencia decimal desbordada', () => {
     const overlong = 'X &#99999999999999999999999999999999999999999999; Y'
-    expect(parseOk(buildInvoiceXml({ issuerName: overlong })).issuerName).toBe(overlong)
+    expect(parseOk(withRawIssuerName(overlong)).issuerName).toBe(overlong)
   })
 
   it('deja intacta una referencia hexadecimal fuera del rango Unicode (&#x110000;)', () => {
-    const inv = parseOk(buildInvoiceXml({ issuerName: 'X &#x110000; Y' }))
+    const inv = parseOk(withRawIssuerName('X &#x110000; Y'))
     expect(inv.issuerName).toBe('X &#x110000; Y')
   })
 
   it('nunca lanza: una referencia fuera de rango en el ID no revienta el parseo', () => {
     expect(() =>
-      parseUblInvoice(buildInvoiceXml({ seriesNumber: 'F001-&#1114112;' })),
+      parseUblInvoice(buildInvoiceXml().replace('>F001-123<', '>F001-&#1114112;<')),
     ).not.toThrow()
   })
 })
@@ -458,5 +467,120 @@ describe('parseUblInvoice · CDATA', () => {
       '<cbc:RegistrationName>A &amp;<![CDATA[ B &amp; C]]></cbc:RegistrationName>',
     )
     expect(parseOk(xml).issuerName).toBe('A & B &amp; C')
+  })
+})
+
+describe('parseUblInvoice · propiedad: nunca lanza', () => {
+  /** Nunca lanza, y si lee la factura, lo leído cumple `parsedInvoiceSchema`. */
+  const wellBehaved = (xml: string): boolean => {
+    let r: ParseResult
+    try {
+      r = parseUblInvoice(xml)
+    } catch {
+      return false
+    }
+    return r.ok
+      ? parsedInvoiceSchema.safeParse(r.invoice).success
+      : typeof r.problem.code === 'string'
+  }
+
+  it('con cadenas arbitrarias', () => {
+    fc.assert(fc.property(fc.string({ unit: 'binary', maxLength: 500 }), wellBehaved), {
+      numRuns: 500,
+    })
+    fc.assert(
+      fc.property(fc.string({ maxLength: 500 }), (tail) =>
+        wellBehaved(`<?xml version="1.0"?><Invoice>${tail}</Invoice>`),
+      ),
+      { numRuns: 500 },
+    )
+  })
+
+  const base = buildInvoiceXml({
+    extensionBeforeSignature: true,
+    signatoryReference: true,
+    installments: [
+      { id: 'Cuota001', amount: '5000.00', dueDate: '2026-10-30' },
+      { id: 'Cuota002', amount: '5620.00', dueDate: '2026-11-30' },
+    ],
+  })
+
+  const fragment = fc.oneof(
+    fc.string({ maxLength: 20 }),
+    fc.string({ unit: 'binary', maxLength: 10 }),
+    fc.constantFrom(
+      '<',
+      '>',
+      '&',
+      '&amp;',
+      '&#0;',
+      '&#x110000;',
+      '<![CDATA[',
+      ']]>',
+      '<!DOCTYPE x>',
+      '<?pi x?>',
+      '<cbc:ID>',
+      '</cbc:ID>',
+      '<cac:PaymentTerms>',
+      '"',
+      '\uFEFF',
+      '9'.repeat(40),
+      'Cuota999',
+      'Detraccion',
+    ),
+  )
+
+  type Mutation =
+    | { kind: 'delete'; at: number; length: number }
+    | { kind: 'insert'; at: number; text: string }
+    | { kind: 'duplicate'; at: number; length: number }
+    | { kind: 'text'; nth: number; text: string }
+
+  const mutation: fc.Arbitrary<Mutation> = fc.oneof(
+    fc.record({
+      kind: fc.constant('delete' as const),
+      at: fc.nat(),
+      length: fc.integer({ min: 1, max: 40 }),
+    }),
+    fc.record({ kind: fc.constant('insert' as const), at: fc.nat(), text: fragment }),
+    fc.record({
+      kind: fc.constant('duplicate' as const),
+      at: fc.nat(),
+      length: fc.integer({ min: 1, max: 300 }),
+    }),
+    fc.record({ kind: fc.constant('text' as const), nth: fc.nat(), text: fragment }),
+  )
+
+  const apply = (xml: string, m: Mutation): string => {
+    if (m.kind === 'text') {
+      // Reemplaza el contenido de texto del n-ésimo elemento hoja.
+      const leaves = [...xml.matchAll(/>([^<>]*)</g)]
+      const target = leaves[m.nth % Math.max(leaves.length, 1)]
+      if (target?.index === undefined) return xml
+      const start = target.index + 1
+      return xml.slice(0, start) + m.text + xml.slice(start + (target[1] ?? '').length)
+    }
+    const at = m.at % (xml.length + 1)
+    if (m.kind === 'delete') return xml.slice(0, at) + xml.slice(at + m.length)
+    if (m.kind === 'insert') return xml.slice(0, at) + m.text + xml.slice(at)
+    return xml.slice(0, at) + xml.slice(at, at + m.length) + xml.slice(at)
+  }
+
+  it('con XML de la fábrica mutado', () => {
+    fc.assert(
+      fc.property(fc.array(mutation, { minLength: 1, maxLength: 6 }), (mutations) =>
+        wellBehaved(mutations.reduce(apply, base)),
+      ),
+      { numRuns: 1000 },
+    )
+  })
+
+  it('decodeXml nunca lanza con bytes arbitrarios', () => {
+    fc.assert(
+      fc.property(
+        fc.uint8Array({ maxLength: 300 }),
+        (bytes) => typeof decodeXml(bytes) === 'string',
+      ),
+    )
   })
 })

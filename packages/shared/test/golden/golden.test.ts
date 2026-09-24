@@ -2,7 +2,7 @@ import { readdirSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import { type ValidationContext, validateInvoices } from '../../src/invoice/rules.js'
-import { parseUblInvoice } from '../../src/invoice/ubl-parser.js'
+import { decodeXml, parseUblInvoice } from '../../src/invoice/ubl-parser.js'
 
 const casesDir = fileURLToPath(new URL('./cases/', import.meta.url))
 
@@ -21,13 +21,16 @@ const files = readdirSync(casesDir)
   .filter((f) => f.endsWith('.xml'))
   .sort()
 
+/** Como la API: bytes del archivo → `decodeXml` (BOM, codificación declarada, UTF-8 estricto). */
+const readCase = (file: string) => decodeXml(readFileSync(casesDir + file))
+
 describe('suite dorada', () => {
   it('hay al menos un caso', () => {
     expect(files.length).toBeGreaterThan(0)
   })
 
   it.each(files)('%s produce el resultado esperado', async (file) => {
-    const parsed = parseUblInvoice(readFileSync(casesDir + file, 'utf8'))
+    const parsed = parseUblInvoice(readCase(file))
     const result = parsed.ok
       ? { parsed: parsed.invoice, validation: validateInvoices([parsed.invoice], ctx) }
       : { parsed: parsed.problem }
@@ -36,6 +39,17 @@ describe('suite dorada', () => {
     await expect(`${JSON.stringify(result, null, 2)}\n`).toMatchFileSnapshot(
       `./expected/${file.replace(/\.xml$/, '.json')}`,
     )
+  })
+
+  it('el caso realista (ISO-8859-1, CRLF, CDATA, dos extensiones) se lee firmado y con el neto correcto', () => {
+    const parsed = parseUblInvoice(readCase('seed-sunat-realistic.xml'))
+    expect(parsed.ok).toBe(true)
+    if (parsed.ok) {
+      expect(parsed.invoice.signed).toBe(true)
+      expect(parsed.invoice.issuerName).toBe('CONSTRUCTORA PEÑA & ASOCIADOS S.A.C.')
+      expect(parsed.invoice.detraction).toEqual({ percent: 12, amount: '1416.00' })
+      expect(parsed.invoice.netPendingAmount).toBe('10384.00')
+    }
   })
 })
 
@@ -72,9 +86,7 @@ function signatureProblems(file: string, xml: string): SignatureProblem[] {
 describe('anonimización de la firma digital', () => {
   it('todo caso real reemplaza SignatureValue, DigestValue y X509Certificate por ANONIMIZADO', () => {
     const realFiles = files.filter((f) => !f.startsWith('seed-'))
-    const bad = realFiles.flatMap((file) =>
-      signatureProblems(file, readFileSync(casesDir + file, 'utf8')),
-    )
+    const bad = realFiles.flatMap((file) => signatureProblems(file, readCase(file)))
     expect(bad, JSON.stringify(bad, null, 2)).toEqual([])
   })
 })
