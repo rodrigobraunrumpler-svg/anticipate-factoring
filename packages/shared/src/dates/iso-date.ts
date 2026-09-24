@@ -2,10 +2,14 @@ import { TZDate } from '@date-fns/tz'
 import { addDays, differenceInCalendarDays, format, formatISO, isValid, parseISO } from 'date-fns'
 import { z } from 'zod'
 
-type Digit = '0' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9'
-
-/** Fecha de calendario sin hora ni zona: "2026-09-23". Tipo de plantilla: los literales bien formados compilan, un `string` cualquiera no. */
-export type IsoDate = `${bigint}-${Digit}${Digit}-${Digit}${Digit}`
+/**
+ * Fecha de calendario sin hora ni zona: "2026-09-23". Tipo de plantilla anclado (rechaza un
+ * `string` cualquiera en tiempo de compilación), pero no una unión: no fija los dígitos en el
+ * tipo para que TypeScript no la expanda en un tipo literal con miles de miembros (eso inflaba
+ * los `.d.ts` generados, ver STACK.md). El formato exacto (`AAAA-MM-DD`) lo garantiza en runtime
+ * `ISO_DATE_FORMAT`/`isIsoDate`, no el tipo.
+ */
+export type IsoDate = `${bigint}-${string}`
 
 /** Zona horaria de operación. Perú no tiene horario de verano. */
 export const LIMA_TIME_ZONE = 'America/Lima'

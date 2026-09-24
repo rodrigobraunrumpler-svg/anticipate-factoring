@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import type { IsoDate } from './iso-date.js'
 import {
   addDaysIso,
   daysBetween,
@@ -56,5 +57,14 @@ describe('isoDateSchema', () => {
     expect(r.success).toBe(false)
     if (!r.success)
       expect(r.error.issues[0]?.message).toBe('La fecha debe tener el formato AAAA-MM-DD.')
+  })
+})
+
+describe('tipo IsoDate', () => {
+  it('rechaza en tiempo de compilación un string cualquiera', () => {
+    const plain: string = 'x'
+    // @ts-expect-error un string cualquiera no es un IsoDate
+    const notIsoDate: IsoDate = plain
+    void notIsoDate
   })
 })

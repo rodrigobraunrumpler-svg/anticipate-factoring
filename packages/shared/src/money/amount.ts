@@ -2,13 +2,15 @@ import Decimal from 'decimal.js'
 import { z } from 'zod'
 import { MESSAGES_ES } from '../errors/index.js'
 
-type Digit = '0' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9'
-
 /**
  * Monto como texto con exactamente dos decimales, por ejemplo "25000.00". Nunca `number`.
- * Es un tipo de plantilla: los literales bien formados compilan, un `string` cualquiera no.
+ * Es un tipo de plantilla anclado (rechaza un `string` cualquiera en tiempo de compilación),
+ * pero no una unión: no fija los dígitos decimales en el tipo para que TypeScript no la expanda
+ * en un tipo literal con cientos de miembros (eso inflaba los `.d.ts` generados, ver STACK.md).
+ * El formato exacto (dos decimales, hasta 12 dígitos enteros) lo garantiza en runtime
+ * `AMOUNT_FORMAT`/`normalizeAmount`, no el tipo.
  */
-export type Amount = `${bigint}.${Digit}${Digit}`
+export type Amount = `${bigint}.${string}`
 
 // El límite de 12 dígitos en la parte entera refleja la columna Decimal(14, 2) de PostgreSQL
 // (STACK.md §9, D14): 12 dígitos enteros + 2 decimales, máximo 999999999999.99.

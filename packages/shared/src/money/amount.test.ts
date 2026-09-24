@@ -1,6 +1,7 @@
 import Decimal from 'decimal.js'
 import fc from 'fast-check'
 import { describe, expect, it } from 'vitest'
+import type { Amount } from './amount.js'
 import {
   amountSchema,
   compareAmounts,
@@ -168,5 +169,17 @@ describe('propiedades del puente', () => {
         return sumAmounts(fromCents(a), fromCents(b)) === fromCents(a + b)
       }),
     )
+  })
+})
+
+describe('tipo Amount', () => {
+  it('rechaza en tiempo de compilación un string cualquiera', () => {
+    const plain: string = 'x'
+    // @ts-expect-error un string cualquiera no es un Amount
+    const notAmount: Amount = plain
+    // @ts-expect-error texto sin punto decimal no es un Amount
+    const noDecimals: Amount = '25000'
+    void notAmount
+    void noDecimals
   })
 })
