@@ -9,13 +9,15 @@ type Digit = '0' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9'
  */
 export type Amount = `${bigint}.${Digit}${Digit}`
 
-const AMOUNT_FORMAT = /^\d{1,14}\.\d{2}$/
+// El límite de 12 dígitos en la parte entera refleja la columna Decimal(14, 2) de PostgreSQL
+// (STACK.md §9, D14): 12 dígitos enteros + 2 decimales, máximo 999999999999.99.
+const AMOUNT_FORMAT = /^\d{1,12}\.\d{2}$/
 
 /** Acepta lo que venga de un XML o de un input y lo lleva a `Amount`. Devuelve null si no es un número no negativo. */
 export function normalizeAmount(value: string | number): Amount | null {
   const text =
     typeof value === 'number' ? (Number.isFinite(value) ? value.toString() : '') : value.trim()
-  const parts = /^(\d{1,14})(?:\.(\d{1,2}))?$/.exec(text)
+  const parts = /^(\d{1,12})(?:\.(\d{1,2}))?$/.exec(text)
   if (!parts) return null
   const whole = parts[1] ?? '0'
   const decimals = (parts[2] ?? '').padEnd(2, '0')

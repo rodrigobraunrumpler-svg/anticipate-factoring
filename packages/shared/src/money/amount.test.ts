@@ -24,6 +24,14 @@ describe('normalizeAmount', () => {
   it.each(['', 'abc', '-5.00', '1,180.50', '1.234', Number.NaN])('rechaza %s', (input) => {
     expect(normalizeAmount(input)).toBeNull()
   })
+
+  it('acepta el monto máximo que cabe en Decimal(14, 2)', () => {
+    expect(normalizeAmount('999999999999.99')).toBe('999999999999.99')
+  })
+
+  it('rechaza un monto con 13 dígitos enteros, que no cabe en Decimal(14, 2)', () => {
+    expect(normalizeAmount('1000000000000.00')).toBeNull()
+  })
 })
 
 describe('aritmética en céntimos', () => {
@@ -53,7 +61,7 @@ describe('aritmética en céntimos', () => {
 })
 
 describe('propiedades del dinero', () => {
-  const cents = fc.bigInt({ min: 0n, max: 10n ** 15n })
+  const cents = fc.bigInt({ min: 0n, max: 10n ** 14n - 1n })
 
   it('fromCents y toCents son inversas', () => {
     fc.assert(fc.property(cents, (c) => toCents(fromCents(c)) === c))
@@ -89,5 +97,9 @@ describe('amountSchema', () => {
     expect(amountSchema.safeParse('0.00').success).toBe(false)
     expect(amountSchema.safeParse('25000').success).toBe(false)
     expect(amountSchema.safeParse(25000).success).toBe(false)
+  })
+
+  it('rechaza un monto que no cabe en Decimal(14, 2)', () => {
+    expect(amountSchema.safeParse('1000000000000.00').success).toBe(false)
   })
 })
