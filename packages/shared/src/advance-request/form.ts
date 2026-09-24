@@ -84,10 +84,19 @@ const utmSchema = z
 
 // Solo http o https: `z.url()` acepta `javascript:` y `data:`, que el admin podría terminar
 // mostrando como enlace. El tope de largo corre antes que el formato, como en el correo.
+//
+// El referrer es un dato de analítica que pone el navegador, no el proveedor: no lo ve ni puede
+// corregirlo. Chrome en Android informa `android-app://…` cuando el enlace se abre desde la app de
+// Google, así que un referrer que no pasa se descarta (queda `undefined`) en vez de invalidar el
+// formulario completo. `.catch` solo cambia qué pasa con un referrer que no pasa, no qué se guarda:
+// nunca un `javascript:`, un `data:` ni otro esquema, ni más de 2000 caracteres. Los mensajes en
+// español del esquema interno se quedan: si alguien quita el `.catch`, el rechazo sigue en español.
 const referrerSchema = z
   .string({ error: FORM_MESSAGES.referrer })
   .max(2000, { error: FORM_MESSAGES.referrerMax })
   .pipe(z.httpUrl({ error: FORM_MESSAGES.referrer }))
+  .optional()
+  .catch(undefined)
 
 /** Campo JSON del `multipart/form-data` de `POST /advance-requests`. Los archivos van aparte. */
 export const advanceRequestFormSchema = z.object({
@@ -131,7 +140,7 @@ export const advanceRequestFormSchema = z.object({
   source: z
     .object({
       utm: utmSchema.optional(),
-      referrer: referrerSchema.optional(),
+      referrer: referrerSchema,
     })
     .optional(),
 })

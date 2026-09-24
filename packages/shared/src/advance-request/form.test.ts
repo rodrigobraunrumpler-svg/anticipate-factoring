@@ -186,27 +186,59 @@ describe('advanceRequestFormSchema', () => {
     expect(FORM_MESSAGES).toBe(VALIDATION_MESSAGES_ES.advanceRequestForm)
   })
 
-  it('la URL de referencia solo acepta http o https', () => {
-    for (const referrer of ['javascript:alert(1)', 'data:text/html,x', 'ftp://ejemplo.pe/x']) {
-      const r = advanceRequestFormSchema.safeParse({ ...valid, source: { referrer } })
-      expect(r.success, referrer).toBe(false)
-      if (!r.success) expect(r.error.issues[0]?.message).toBe(FORM_MESSAGES.referrer)
-    }
-    expect(
-      advanceRequestFormSchema.safeParse({
-        ...valid,
-        source: { referrer: 'https://www.google.com/search?q=adelanto' },
-      }).success,
-    ).toBe(true)
-  })
+  describe('URL de referencia (dato de analítica que pone el navegador)', () => {
+    const withReferrer = (referrer: unknown) =>
+      advanceRequestFormSchema.safeParse({ ...valid, source: { ...valid.source, referrer } })
 
-  it('rechaza una URL de referencia de más de 2000 caracteres sin evaluar su formato', () => {
-    const r = advanceRequestFormSchema.safeParse({
-      ...valid,
-      source: { referrer: `https://ejemplo.pe/${'a'.repeat(2000)}` },
+    it('se descarta, sin invalidar el formulario, si no es http(s) o supera el tope', () => {
+      const discarded: unknown[] = [
+        'android-app://com.google.android.googlequicksearchbox/',
+        'javascript:alert(1)',
+        'data:text/html,x',
+        'ftp://ejemplo.pe/x',
+        'http://localhost:4321/sea',
+        'not-a-url',
+        `https://ejemplo.pe/${'a'.repeat(1982)}`, // 2001 caracteres
+        `https://ejemplo.pe/${'a'.repeat(5000)}`,
+        42,
+        null,
+      ]
+      for (const referrer of discarded) {
+        const r = withReferrer(referrer)
+        expect(r.success, String(referrer)).toBe(true)
+        if (r.success) {
+          expect(r.data.source?.referrer, String(referrer)).toBeUndefined()
+          // El resto de `source` se conserva.
+          expect(r.data.source?.utm).toEqual({ utm_source: 'linkedin' })
+        }
+      }
     })
-    expect(r.success).toBe(false)
-    if (!r.success) expect(r.error.issues[0]?.message).toBe(FORM_MESSAGES.referrerMax)
+
+    it('se conserva si es una URL http(s) de hasta 2000 caracteres', () => {
+      const google = withReferrer('https://www.google.com/search?q=adelanto')
+      expect(google.success && google.data.source?.referrer).toBe(
+        'https://www.google.com/search?q=adelanto',
+      )
+      const atLimit = `https://ejemplo.pe/${'a'.repeat(1981)}` // 2000 caracteres
+      expect(atLimit).toHaveLength(2000)
+      const r = withReferrer(atLimit)
+      expect(r.success && r.data.source?.referrer).toBe(atLimit)
+    })
+
+    it('una clave utm inválida sigue invalidando el formulario, aunque el referrer se descarte', () => {
+      const r = advanceRequestFormSchema.safeParse({
+        ...valid,
+        source: { utm: { password: 'x' }, referrer: 'android-app://com.google.android.gm/' },
+      })
+      expect(r.success).toBe(false)
+      if (!r.success) {
+        expect(r.error.issues.length).toBeGreaterThan(0)
+        for (const issue of r.error.issues) {
+          expect(issue.path.slice(0, 2)).toEqual(['source', 'utm'])
+          expect(issue.message).toBe(FORM_MESSAGES.utmKey)
+        }
+      }
+    })
   })
 
   it('identifica al pagador con su slug', () => {
