@@ -1,9 +1,9 @@
 /**
- * APIs de plataforma que usa el código de `shared`. `tsconfig.json` compila `src` sin tipos de Node
- * ni del DOM (`types: []`, `lib: ["ES2022"]`) para que el compilador rechace cualquier API que no
- * exista a la vez en Node, el navegador y los Workers; lo que sí existe en los tres se declara aquí,
- * con lo mínimo que se usa. Los tests compilan con `tsconfig.test.json` (tipos de Node) y no
- * incluyen este archivo.
+ * APIs de plataforma que usa el código de `shared`. `tsconfig.src.json` compila `src` sin tipos de
+ * Node ni del DOM (`types: []`, `lib: ["ES2022"]`) para que el compilador rechace cualquier API que
+ * no exista a la vez en Node, el navegador y los Workers; lo que sí existe en los tres se declara
+ * aquí, con lo mínimo que se usa. `tsconfig.json` (editor y tests, con tipos de Node) excluye este
+ * archivo: sus declaraciones chocarían con las de Node.
  */
 
 /** Subconjunto de `TextDecoder` (WHATWG Encoding) que usa `decodeXml`. */

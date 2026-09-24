@@ -1,5 +1,0 @@
-{
-  "extends": "@anticipate/config/tsconfig.base.json",
-  "compilerOptions": { "types": ["node"], "noEmit": true },
-  "include": ["src/**/*.test.ts", "test/**/*.ts", "*.config.ts"]
-}

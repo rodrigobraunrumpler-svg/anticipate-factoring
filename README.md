@@ -28,7 +28,7 @@ GitHub Actions (`.github/workflows/ci.yml`, permisos de solo lectura) corre `pnp
 
 ## Estructura
 
-- `packages/shared`: esquemas, reglas de negocio, lector de XML y máquina de estados. Sin código de servidor ni de navegador: su `tsconfig.json` compila sin tipos de Node ni del DOM y el test de arquitectura limita qué paquetes importa cada dominio. La fábrica de XML de prueba se publica aparte, en `@anticipate/shared/testing`.
+- `packages/shared`: esquemas, reglas de negocio, lector de XML y máquina de estados. Sin código de servidor ni de navegador: su `tsconfig.src.json` compila el código sin tipos de Node ni del DOM (`tsconfig.json` es la del editor y los tests, con modo estricto y tipos de Node) y el test de arquitectura limita qué paquetes importa cada dominio. La fábrica de XML de prueba se publica aparte, en `@anticipate/shared/testing`.
 - `packages/config`: presets de TypeScript. La configuración de Biome vive en `biome.json`, en la raíz.
 - `apps/`: landing, admin y api (fases siguientes).
 

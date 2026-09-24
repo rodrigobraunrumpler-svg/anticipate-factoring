@@ -56,7 +56,7 @@
   "scripts": {
     "build": "tsdown",
     "dev": "tsdown --watch",
-    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json",
+    "typecheck": "tsc --noEmit -p tsconfig.src.json && tsc --noEmit -p tsconfig.json",
     "test": "vitest run --coverage",
     "check:package": "publint && attw --pack . --profile esm-only"
   },
