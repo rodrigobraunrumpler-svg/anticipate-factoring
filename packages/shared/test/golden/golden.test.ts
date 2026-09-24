@@ -38,3 +38,43 @@ describe('suite dorada', () => {
     )
   })
 })
+
+/**
+ * Elementos que en un XML real de SUNAT pueden llevar datos de una persona natural: el certificado
+ * X.509 del firmante puede traer su nombre y su DNI, protegidos por la Ley 29733. El historial de
+ * git es permanente, así que ningún caso real (todo lo que no empieza con `seed-`) los conserva; ver
+ * el paso 3 de `README.md`.
+ */
+const SENSITIVE_ELEMENTS = ['SignatureValue', 'DigestValue', 'X509Certificate'] as const
+
+type SignatureProblem = {
+  file: string
+  element: (typeof SENSITIVE_ELEMENTS)[number]
+  content: string
+}
+
+/** Contenido de texto de cada elemento `name`, con cualquier prefijo de espacio de nombres (o ninguno). */
+function elementContents(xml: string, name: string): string[] {
+  const pattern = new RegExp(`<(?:\\w+:)?${name}\\b[^>]*>([\\s\\S]*?)</(?:\\w+:)?${name}>`, 'g')
+  return [...xml.matchAll(pattern)].map((m) => (m[1] as string).trim())
+}
+
+function signatureProblems(file: string, xml: string): SignatureProblem[] {
+  const problems: SignatureProblem[] = []
+  for (const element of SENSITIVE_ELEMENTS) {
+    for (const content of elementContents(xml, element)) {
+      if (content !== 'ANONIMIZADO') problems.push({ file, element, content })
+    }
+  }
+  return problems
+}
+
+describe('anonimización de la firma digital', () => {
+  it('todo caso real reemplaza SignatureValue, DigestValue y X509Certificate por ANONIMIZADO', () => {
+    const realFiles = files.filter((f) => !f.startsWith('seed-'))
+    const bad = realFiles.flatMap((file) =>
+      signatureProblems(file, readFileSync(casesDir + file, 'utf8')),
+    )
+    expect(bad, JSON.stringify(bad, null, 2)).toEqual([])
+  })
+})

@@ -1,5 +1,5 @@
 import { readdirSync, readFileSync } from 'node:fs'
-import { join, relative, sep } from 'node:path'
+import { dirname, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 
@@ -18,7 +18,7 @@ const ALLOWED: Record<string, readonly string[]> = {
   payer: ['identity', 'money'],
 }
 
-type Edge = { file: string; domain: string; target: string; specifier: string }
+type Edge = { file: string; domain: string; target: string; specifier: string; resolved: string }
 
 function sourceFiles(): string[] {
   return readdirSync(SRC, { recursive: true, withFileTypes: true })
@@ -26,22 +26,41 @@ function sourceFiles(): string[] {
     .map((e) => join(e.parentPath, e.name))
 }
 
+/**
+ * Especificadores relativos (`./…` o `../…`) de las cuatro formas de import de ES que puede traer un
+ * archivo de `shared`: estático con `from` (comilla simple o doble), de efecto sin `from`
+ * (`import '../x/index.js'`) y dinámico (`import('../x/index.js')`). Ignora los especificadores de
+ * paquete (`'zod'`): esos nunca cruzan un dominio de `shared`.
+ */
+function relativeSpecifiers(source: string): string[] {
+  const patterns = [
+    /from\s+(['"])([^'"]+)\1/g,
+    /import\s+(['"])([^'"]+)\1/g,
+    /import\s*\(\s*(['"])([^'"]+)\1\s*\)/g,
+  ]
+  const specifiers: string[] = []
+  for (const pattern of patterns) {
+    for (const m of source.matchAll(pattern)) {
+      const specifier = m[2] as string
+      if (specifier.startsWith('./') || specifier.startsWith('../')) specifiers.push(specifier)
+    }
+  }
+  return specifiers
+}
+
 function crossDomainImports(): Edge[] {
   const edges: Edge[] = []
   for (const file of sourceFiles()) {
-    const parts = relative(SRC, file).split(sep)
+    const fileRelative = relative(SRC, file)
+    const parts = fileRelative.split(sep)
     if (parts.length < 2) continue // index.ts de la raíz: reexporta todo a propósito
     const domain = parts[0] as string
     const source = readFileSync(file, 'utf8')
-    for (const m of source.matchAll(/from\s+'(\.\.?\/[^']+)'/g)) {
-      const specifier = m[1] as string
-      if (!specifier.startsWith('../')) continue // import dentro del mismo dominio
-      edges.push({
-        file: relative(SRC, file),
-        domain,
-        target: specifier.split('/')[1] as string,
-        specifier,
-      })
+    for (const specifier of relativeSpecifiers(source)) {
+      const resolved = relative(SRC, resolve(dirname(file), specifier))
+      const target = resolved.split(sep)[0] as string
+      if (target === domain) continue // import dentro del mismo dominio, aunque suba y baje niveles
+      edges.push({ file: fileRelative, domain, target, specifier, resolved })
     }
   }
   return edges
@@ -58,7 +77,10 @@ describe('arquitectura de shared', () => {
   })
 
   it('los imports entre dominios pasan por el index del dominio destino', () => {
-    const bad = edges.filter((e) => e.specifier !== `../${e.target}/index.js`)
+    const bad = edges.filter(
+      (e) =>
+        e.resolved !== `${e.target}${sep}index.js` && e.resolved !== `${e.target}${sep}index.ts`,
+    )
     expect(bad, JSON.stringify(bad, null, 2)).toEqual([])
   })
 
@@ -73,5 +95,31 @@ describe('arquitectura de shared', () => {
       for (const next of ALLOWED[domain] ?? []) visit(next, [...stack, domain])
     }
     for (const domain of Object.keys(ALLOWED)) visit(domain, [])
+  })
+})
+
+describe('relativeSpecifiers', () => {
+  it('detecta "from \'...\'"', () => {
+    expect(relativeSpecifiers("import { a } from '../mod/index.js'")).toEqual(['../mod/index.js'])
+  })
+
+  it('detecta \'from "..."\'', () => {
+    expect(relativeSpecifiers('import { a } from "../mod/index.js"')).toEqual(['../mod/index.js'])
+  })
+
+  it('detecta un import de efecto sin from, en ambas comillas', () => {
+    expect(relativeSpecifiers("import '../mod/index.js'")).toEqual(['../mod/index.js'])
+    expect(relativeSpecifiers('import "../mod/index.js"')).toEqual(['../mod/index.js'])
+  })
+
+  it('detecta un import dinámico, en ambas comillas', () => {
+    expect(relativeSpecifiers("const m = await import('../mod/index.js')")).toEqual([
+      '../mod/index.js',
+    ])
+    expect(relativeSpecifiers('import("../mod/index.js")')).toEqual(['../mod/index.js'])
+  })
+
+  it('ignora especificadores que no son relativos', () => {
+    expect(relativeSpecifiers("import { z } from 'zod'")).toEqual([])
   })
 })
