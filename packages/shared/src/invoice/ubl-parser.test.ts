@@ -468,6 +468,45 @@ describe('parseUblInvoice · CDATA', () => {
     )
     expect(parseOk(xml).issuerName).toBe('A & B &amp; C')
   })
+
+  /** Factura por defecto con la razón social del emisor reemplazada por `content` tal cual. */
+  const withIssuerName = (content: string): string =>
+    buildInvoiceXml().replace(
+      '<cbc:RegistrationName>PROVEEDOR EJEMPLO S.A.C.</cbc:RegistrationName>',
+      `<cbc:RegistrationName>${content}</cbc:RegistrationName>`,
+    )
+
+  it('conserva el orden del texto y del CDATA dentro del elemento', () => {
+    expect(parseOk(withIssuerName('A<![CDATA[B]]>C')).issuerName).toBe('ABC')
+  })
+
+  it('un CDATA al inicio seguido de texto con entidades se lee en orden y decodificado', () => {
+    const inv = parseOk(withIssuerName('<![CDATA[CONSTRUCTORA]]> PEÑA &amp; HIJOS'))
+    expect(inv.issuerName).toBe('CONSTRUCTORA PEÑA & HIJOS')
+  })
+
+  it('el contenido del CDATA es literal: ni sus entidades ni sus "<" se interpretan', () => {
+    expect(parseOk(withIssuerName('<![CDATA[A &amp; B]]>')).issuerName).toBe('A &amp; B')
+    expect(parseOk(withIssuerName('<![CDATA[x < y]]>')).issuerName).toBe('x < y')
+    expect(parseOk(withIssuerName('<![CDATA[&#65; > &lt;]]>')).issuerName).toBe('&#65; > &lt;')
+  })
+
+  it('un "]]>" partido en dos secciones CDATA se lee completo', () => {
+    const inv = parseOk(buildInvoiceXml({ cdataNames: true, issuerName: 'X ]]> & <Y>' }))
+    expect(inv.issuerName).toBe('X ]]> & <Y>')
+  })
+
+  it('un "<![CDATA[" dentro de un comentario, una instrucción o un atributo no abre una sección', () => {
+    const xml = buildInvoiceXml({ cdataNames: true })
+      .replace('<cac:AccountingSupplierParty>', '<cac:AccountingSupplierParty><!-- <![CDATA[ -->')
+      .replace('<cac:AccountingCustomerParty>', '<cac:AccountingCustomerParty><?nota <![CDATA[ ?>')
+      .replace('<cbc:ID schemeID="6">', '<cbc:ID schemeID="6" nota="<![CDATA[x]]>">')
+    const inv = parseOk(xml)
+    expect(inv.issuerRuc).toBe('20100070970')
+    expect(inv.issuerName).toBe('PROVEEDOR EJEMPLO S.A.C.')
+    expect(inv.recipientRuc).toBe('20131312955')
+    expect(inv.recipientName).toBe('SERVICIOS ENERGETICOS AMBIENTALES S.A.')
+  })
 })
 
 describe('parseUblInvoice · propiedad: nunca lanza', () => {

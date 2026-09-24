@@ -13,14 +13,13 @@ import { type Installment, type ParsedInvoice, parsedInvoiceSchema } from './par
 export type ParseResult = { ok: true; invoice: ParsedInvoice } | { ok: false; problem: Problem }
 
 const TEXT = '#text'
-const CDATA = '#cdata'
 
+// Sin `cdataPropName`: `inlineCdata` convierte cada sección CDATA en texto escapado antes de
+// `parse`, así el texto de un elemento llega entero y en orden a `decodeEntities`.
 const parser = new XMLParser({
   ignoreAttributes: false,
   attributeNamePrefix: '@',
   textNodeName: TEXT,
-  // El CDATA va aparte del texto: su contenido es literal y no pasa por `decodeEntities`.
-  cdataPropName: CDATA,
   removeNSPrefix: true,
   processEntities: false,
   parseTagValue: false,
@@ -74,24 +73,47 @@ function decodeEntities(value: string): string {
   })
 }
 
+const TEXT_ESCAPES: Readonly<Record<string, string>> = { '&': '&amp;', '<': '&lt;', '>': '&gt;' }
+
+/**
+ * Construcciones de marcado de XML, en el orden en que se prueban en cada `<`: sección CDATA (grupo
+ * 1, su contenido), comentario, instrucción de procesamiento y etiqueta con sus atributos entre
+ * comillas (un atributo puede traer `>` o `<![CDATA[`). Las tres primeras terminan en su primer
+ * cierre; las tres formas de la etiqueta empiezan con caracteres disjuntos, así que no retrocede.
+ */
+const MARKUP =
+  /<!\[CDATA\[([\s\S]*?)\]\]>|<!--[\s\S]*?-->|<\?[\s\S]*?\?>|<(?:[^>"']|"[^"]*"|'[^']*')*>/g
+
+/**
+ * Reemplaza cada sección `<![CDATA[…]]>` por su contenido escapado como texto XML (`&`, `<`, `>`).
+ * Así el texto de un elemento conserva su orden (`A<![CDATA[B]]>C` se lee `ABC`) y el contenido del
+ * CDATA sigue siendo literal tras la única pasada de `decodeEntities` (`<![CDATA[A &amp; B]]>` se
+ * lee `A &amp; B`). Recorre el XML construcción por construcción, no con una búsqueda suelta de
+ * `<![CDATA[`: un comentario, una instrucción de procesamiento o un atributo que contenga ese texto
+ * no abre una sección. Corre después de `XMLValidator.validate`, que ya garantizó que toda
+ * construcción está cerrada.
+ */
+function inlineCdata(xml: string): string {
+  return xml.replace(MARKUP, (markup, cdata: string | undefined) =>
+    cdata === undefined ? markup : cdata.replace(/[&<>]/g, (ch) => TEXT_ESCAPES[ch] ?? ch),
+  )
+}
+
 function asList<T>(value: T | T[] | undefined): T[] {
   if (value === undefined) return []
   return Array.isArray(value) ? value : [value]
 }
 
 /**
- * Texto de un elemento: el texto normal con sus entidades decodificadas, seguido del contenido de
- * sus secciones CDATA tal cual (literal por definición de XML).
+ * Texto de un elemento con sus entidades decodificadas. Las secciones CDATA ya llegan como texto
+ * escapado (`inlineCdata`), en su lugar dentro del elemento. Un elemento con atributos llega como
+ * objeto y su texto se recorta también después de decodificar, como antes de este cambio.
  */
 function text(node: unknown): string | undefined {
   if (typeof node === 'string') return decodeEntities(node)
   if (!node || typeof node !== 'object') return undefined
-  const record = node as Record<string, unknown>
-  const parts: string[] = []
-  const plain = record[TEXT]
-  if (typeof plain === 'string') parts.push(decodeEntities(plain))
-  for (const piece of asList(record[CDATA])) if (typeof piece === 'string') parts.push(piece)
-  return parts.length > 0 ? parts.join('').trim() : undefined
+  const plain = (node as Record<string, unknown>)[TEXT]
+  return typeof plain === 'string' ? decodeEntities(plain).trim() : undefined
 }
 
 function path(root: unknown, ...steps: string[]): unknown {
@@ -222,7 +244,7 @@ export function parseUblInvoice(rawXml: string, options: ParseOptions = {}): Par
 
   let document: Record<string, unknown>
   try {
-    document = parser.parse(xml) as Record<string, unknown>
+    document = parser.parse(inlineCdata(xml)) as Record<string, unknown>
   } catch {
     return fail(createProblem('UNREADABLE_XML'))
   }
