@@ -33,6 +33,7 @@
     "@biomejs/biome": "catalog:",
     "@commitlint/cli": "catalog:",
     "@commitlint/config-conventional": "catalog:",
+    "@types/node": "catalog:",
     "lefthook": "catalog:",
     "turbo": "catalog:",
     "typescript": "catalog:",

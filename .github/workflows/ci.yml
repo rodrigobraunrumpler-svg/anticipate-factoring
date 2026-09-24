@@ -5,9 +5,14 @@ on:
   push:
     branches: [main]
 
+# Solo lectura del repositorio: CI no publica, no comenta ni etiqueta.
+permissions:
+  contents: read
+
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  # En un PR, un push nuevo cancela la corrida anterior; en main cada commit se verifica completo.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   verify:
