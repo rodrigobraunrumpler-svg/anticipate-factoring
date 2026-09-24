@@ -10,8 +10,24 @@ const parsedAmountSchema = z
   .regex(/^\d{1,12}\.\d{2}$/)
   .transform((v) => v as Amount)
 
+/**
+ * Topes y formatos de lo que se lee del XML. Todo dato que viene de un archivo no confiable tiene
+ * tope de tamaño: un nombre de 200 000 caracteres o miles de cuotas se rechazan aquí, no en la base
+ * de datos ni en la interfaz.
+ */
+export const PARSED_INVOICE_LIMITS = {
+  /** Razón social del emisor o del receptor. */
+  maxNameLength: 1500,
+  maxInstallments: 100,
+} as const
+
+/** Serie de cuatro caracteres y correlativo de hasta ocho dígitos (`F001-123`, `E001-00000001`). */
+const SERIES_NUMBER = /^[A-Z0-9]{4}-\d{1,8}$/
+/** Solo dígitos: las reglas deciden después si es el RUC del pagador o del proveedor. */
+const RUC_DIGITS = /^\d{1,15}$/
+
 export const installmentSchema = z.object({
-  id: z.string().min(1),
+  id: z.string().regex(/^Cuota\d{1,8}$/i),
   amount: parsedAmountSchema,
   dueDate: isoDateSchema,
 })
@@ -19,20 +35,23 @@ export type Installment = z.infer<typeof installmentSchema>
 
 /** Lo que el lector extrae de un XML. Es la forma que viaja entre landing, API y admin. */
 export const parsedInvoiceSchema = z.object({
-  documentType: z.string().min(1),
-  seriesNumber: z.string().min(1),
+  /** Catálogo 01 de SUNAT: dos dígitos. */
+  documentType: z.string().regex(/^\d{2}$/),
+  /** Canónica: sin espacios y en mayúsculas. */
+  seriesNumber: z.string().trim().toUpperCase().regex(SERIES_NUMBER),
   issueDate: isoDateSchema,
-  currency: z.string().length(3),
-  issuerRuc: z.string().min(1),
-  issuerName: z.string(),
-  recipientRuc: z.string().min(1),
-  recipientName: z.string().nullable(),
+  /** Código ISO 4217 de tres letras. Qué monedas se aceptan lo decide la regla, no el lector. */
+  currency: z.string().regex(/^[A-Z]{3}$/),
+  issuerRuc: z.string().regex(RUC_DIGITS),
+  issuerName: z.string().max(PARSED_INVOICE_LIMITS.maxNameLength),
+  recipientRuc: z.string().regex(RUC_DIGITS),
+  recipientName: z.string().max(PARSED_INVOICE_LIMITS.maxNameLength).nullable(),
   /** Total a pagar del comprobante. Puede ser 0.00 en casos raros; por eso no usa amountSchema. */
   total: parsedAmountSchema,
   paymentTerms: z.enum(PAYMENT_TERMS).nullable(),
   /** Solo al crédito: monto neto pendiente de pago declarado en el XML (ya descuenta detracción o retención). */
   netPendingAmount: parsedAmountSchema.nullable(),
-  installments: z.array(installmentSchema),
+  installments: z.array(installmentSchema).max(PARSED_INVOICE_LIMITS.maxInstallments),
   detraction: z
     .object({ percent: z.number().min(0).max(100), amount: parsedAmountSchema })
     .nullable(),

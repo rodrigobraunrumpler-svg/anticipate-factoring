@@ -1,6 +1,11 @@
 import { XMLParser, XMLValidator } from 'fast-xml-parser'
 import { isIsoDate } from '../dates/index.js'
-import { createProblem, type Problem, VALIDATION_MESSAGES_ES } from '../errors/index.js'
+import {
+  createProblem,
+  formatMessage,
+  type Problem,
+  VALIDATION_MESSAGES_ES,
+} from '../errors/index.js'
 import { type Amount, normalizeAmount } from '../money/index.js'
 import type { PaymentTerms } from './codes.js'
 import { type Installment, type ParsedInvoice, parsedInvoiceSchema } from './parsed-invoice.js'
@@ -8,11 +13,14 @@ import { type Installment, type ParsedInvoice, parsedInvoiceSchema } from './par
 export type ParseResult = { ok: true; invoice: ParsedInvoice } | { ok: false; problem: Problem }
 
 const TEXT = '#text'
+const CDATA = '#cdata'
 
 const parser = new XMLParser({
   ignoreAttributes: false,
   attributeNamePrefix: '@',
   textNodeName: TEXT,
+  // El CDATA va aparte del texto: su contenido es literal y no pasa por `decodeEntities`.
+  cdataPropName: CDATA,
   removeNSPrefix: true,
   processEntities: false,
   parseTagValue: false,
@@ -36,6 +44,15 @@ const ENTITY_PATTERN = /&(?:amp|lt|gt|quot|apos|#\d+|#x[0-9a-fA-F]+);/g
 /** Un punto de código válido de Unicode va de 1 a 0x10FFFF; 0 y lo que excede el plano 16 no lo son. */
 const MAX_CODE_POINT = 0x10ffff
 
+/** Marca de orden de bytes (U+FEFF) al inicio de un texto. */
+const LEADING_BOM = /^\uFEFF/
+
+const FIELD_NAMES = VALIDATION_MESSAGES_ES.invoiceXml.fields
+const DOCUMENT_KINDS: Readonly<Record<string, string>> =
+  VALIDATION_MESSAGES_ES.invoiceXml.documentKinds
+
+type InvoiceField = keyof ParsedInvoice
+
 /**
  * Decodifica en una sola pasada (no recursiva) las cinco entidades predefinidas de XML y las
  * referencias numéricas de carácter (`&#209;`, `&#xD1;`). Deja intacto cualquier otro `&nombre;`:
@@ -57,18 +74,24 @@ function decodeEntities(value: string): string {
   })
 }
 
-function text(node: unknown): string | undefined {
-  if (typeof node === 'string') return decodeEntities(node)
-  if (node && typeof node === 'object' && TEXT in node) {
-    const t = (node as Record<string, unknown>)[TEXT]
-    return typeof t === 'string' ? decodeEntities(t) : undefined
-  }
-  return undefined
-}
-
 function asList<T>(value: T | T[] | undefined): T[] {
   if (value === undefined) return []
   return Array.isArray(value) ? value : [value]
+}
+
+/**
+ * Texto de un elemento: el texto normal con sus entidades decodificadas, seguido del contenido de
+ * sus secciones CDATA tal cual (literal por definición de XML).
+ */
+function text(node: unknown): string | undefined {
+  if (typeof node === 'string') return decodeEntities(node)
+  if (!node || typeof node !== 'object') return undefined
+  const record = node as Record<string, unknown>
+  const parts: string[] = []
+  const plain = record[TEXT]
+  if (typeof plain === 'string') parts.push(decodeEntities(plain))
+  for (const piece of asList(record[CDATA])) if (typeof piece === 'string') parts.push(piece)
+  return parts.length > 0 ? parts.join('').trim() : undefined
 }
 
 function path(root: unknown, ...steps: string[]): unknown {
@@ -80,29 +103,58 @@ function path(root: unknown, ...steps: string[]): unknown {
   return current
 }
 
-const FIELD_NAMES = VALIDATION_MESSAGES_ES.invoiceXml.fields
-const DOCUMENT_KINDS: Readonly<Record<string, string>> =
-  VALIDATION_MESSAGES_ES.invoiceXml.documentKinds
+function children(node: unknown, name: string): unknown[] {
+  if (!node || typeof node !== 'object') return []
+  return asList((node as Record<string, unknown>)[name])
+}
 
-/** Decodifica los bytes de un XML respetando su BOM o la codificación declarada en el prólogo. */
-export function decodeXml(bytes: Uint8Array): string {
-  const header = new TextDecoder('latin1').decode(bytes.subarray(0, 200))
-  const declared = /encoding=["']([\w-]+)["']/i.exec(header)?.[1]
-  const hasBom = bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf
-  const encoding = hasBom ? 'utf-8' : (declared ?? 'utf-8')
-  // `InstanceType<typeof TextDecoder>` en vez de `TextDecoder`: `shared` compila sin tipos de Node ni
-  // del DOM y `src/env.d.ts` solo declara `TextDecoder` como valor global, no como tipo.
-  let decoder: InstanceType<typeof TextDecoder>
+/** Codificación de respaldo para bytes que no son UTF-8 válido: la de los sistemas Windows en español. */
+const LEGACY_ENCODING = 'windows-1252'
+
+/** UTF-8 estricto (`fatal: true`); si los bytes no son UTF-8 válido, windows-1252. */
+function decodeUtf8OrLegacy(bytes: Uint8Array): string {
   try {
-    decoder = new TextDecoder(encoding)
+    return new TextDecoder('utf-8', { fatal: true }).decode(bytes)
   } catch {
-    decoder = new TextDecoder('utf-8')
+    return new TextDecoder(LEGACY_ENCODING).decode(bytes)
   }
-  return decoder.decode(bytes).replace(/^﻿/, '')
+}
+
+/**
+ * Decodifica los bytes de un XML. El BOM UTF-8 manda sobre cualquier declaración; si no hay BOM, se
+ * respeta la codificación declarada en el prólogo cuando no es UTF-8 y el entorno la conoce. En
+ * cualquier otro caso se decodifica como UTF-8 estricto y, si los bytes no lo son (un sistema que
+ * declara UTF-8 pero escribe en windows-1252), como windows-1252: nunca con caracteres de reemplazo.
+ */
+export function decodeXml(bytes: Uint8Array): string {
+  const hasBom = bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf
+  if (hasBom) return decodeUtf8OrLegacy(bytes.subarray(3))
+  const header = new TextDecoder(LEGACY_ENCODING).decode(bytes.subarray(0, 200))
+  const declared = /encoding\s*=\s*["']([A-Za-z0-9._:-]+)["']/.exec(header)?.[1]
+  if (declared !== undefined && !/^utf-?8$/i.test(declared)) {
+    // `InstanceType<typeof TextDecoder>` en vez de `TextDecoder`: `shared` compila sin tipos de Node
+    // ni del DOM y `src/env.d.ts` solo declara `TextDecoder` como valor global, no como tipo.
+    let decoder: InstanceType<typeof TextDecoder> | null
+    try {
+      decoder = new TextDecoder(declared)
+    } catch {
+      decoder = null // etiqueta desconocida para el entorno: se sigue como UTF-8
+    }
+    if (decoder !== null) return decoder.decode(bytes)
+  }
+  return decodeUtf8OrLegacy(bytes)
 }
 
 function fail(problem: Problem): ParseResult {
   return { ok: false, problem }
+}
+
+function missing(key: InvoiceField, name: string): ParseResult {
+  return fail(createProblem('XML_MISSING_REQUIRED_FIELD', { field: key, data: { field: name } }))
+}
+
+function invalid(key: InvoiceField, name: string): ParseResult {
+  return fail(createProblem('XML_INVALID_FIELD', { field: key, data: { field: name } }))
 }
 
 /** Ruta vigente (PartyIdentification/ID) con fallback a la legada (PartyTaxScheme/CompanyID). */
@@ -120,18 +172,50 @@ function nameOf(inv: Record<string, unknown>, role: string): string | undefined 
   )
 }
 
+/**
+ * Firmada si algún `ext:UBLExtension` (no solo el primero: varios sistemas ponen antes otra
+ * extensión) contiene un `ds:Signature`, o si hay un `cac:Signature` de primer nivel, que es la
+ * referencia a la firma que exige SUNAT.
+ */
+function isSigned(inv: Record<string, unknown>): boolean {
+  const extensions = children(path(inv, 'UBLExtensions'), 'UBLExtension')
+  const inExtension = extensions.some(
+    (extension) => path(extension, 'ExtensionContent', 'Signature') !== undefined,
+  )
+  return inExtension || inv.Signature !== undefined
+}
+
+/**
+ * Nombre en español del dato al que apunta un issue de `parsedInvoiceSchema`. El monto y la fecha de
+ * cada cuota ya se validaron en el recorrido de `PaymentTerms` (con el nombre de la cuota); lo que
+ * queda de `installments` (cantidad de cuotas, identificador) se informa como "cuotas".
+ */
+function fieldOfIssue(issuePath: readonly PropertyKey[]): { key: InvoiceField; name: string } {
+  const [first, second] = issuePath
+  if (first === 'detraction') {
+    return {
+      key: 'detraction',
+      name: second === 'percent' ? FIELD_NAMES.detractionPercent : FIELD_NAMES.detractionAmount,
+    }
+  }
+  const key = String(first) as InvoiceField
+  const names: Readonly<Record<string, string>> = FIELD_NAMES
+  return { key, name: Object.hasOwn(names, key) ? (names[key] ?? key) : key }
+}
+
 export type ParseOptions = {
   /** Tope de caracteres del XML. La API lo toma de su configuración (STACK §8: 1 MB por XML). Sin tope si se omite. */
   maxLength?: number
 }
 
 export function parseUblInvoice(rawXml: string, options: ParseOptions = {}): ParseResult {
-  const xml = rawXml.replace(/^﻿/, '')
+  const xml = rawXml.replace(LEADING_BOM, '')
   if (options.maxLength !== undefined && xml.length > options.maxLength) {
     return fail(createProblem('XML_TOO_LARGE'))
   }
   // Una factura de SUNAT nunca trae DOCTYPE; rechazarlo cierra de raíz la expansión de entidades.
-  if (/<!DOCTYPE/i.test(xml)) return fail(createProblem('XML_DOCTYPE_NOT_ALLOWED'))
+  // `\s*` cubre también a un parser tolerante que acepte espacios entre `<!` y `DOCTYPE`.
+  if (/<!\s*DOCTYPE/i.test(xml)) return fail(createProblem('XML_DOCTYPE_NOT_ALLOWED'))
   if (!xml.trimStart().startsWith('<') || XMLValidator.validate(xml) !== true) {
     return fail(createProblem('UNREADABLE_XML'))
   }
@@ -154,7 +238,9 @@ export function parseUblInvoice(rawXml: string, options: ParseOptions = {}): Par
 }
 
 function extractInvoice(document: Record<string, unknown>): ParseResult {
-  const rootName = Object.keys(document).find((k) => k !== '?xml')
+  // Las claves que empiezan con "?" son el prólogo (`?xml`) y las instrucciones de procesamiento
+  // (`?xml-stylesheet`); la primera que no lo es, es el elemento raíz.
+  const rootName = Object.keys(document).find((k) => !k.startsWith('?'))
   if (rootName !== 'Invoice') {
     // Object.hasOwn, no `DOCUMENT_KINDS[rootName]` directo: rootName viene de un XML no confiable y
     // podría coincidir con una propiedad heredada de Object.prototype (p. ej. "isPrototypeOf").
@@ -166,58 +252,72 @@ function extractInvoice(document: Record<string, unknown>): ParseResult {
   }
   const inv = document.Invoice as Record<string, unknown>
 
-  const required = (name: string, value: string | undefined): string | ParseResult =>
-    value && value.length > 0
-      ? value
-      : fail(createProblem('XML_MISSING_REQUIRED_FIELD', { data: { field: name } }))
-
-  const seriesNumber = required(FIELD_NAMES.seriesNumber, text(inv.ID))
-  if (typeof seriesNumber !== 'string') return seriesNumber
-  const issueDate = required(FIELD_NAMES.issueDate, text(inv.IssueDate))
-  if (typeof issueDate !== 'string') return issueDate
-  const documentType = required(FIELD_NAMES.documentType, text(inv.InvoiceTypeCode))
-  if (typeof documentType !== 'string') return documentType
-  const currency = required(FIELD_NAMES.currency, text(inv.DocumentCurrencyCode))
-  if (typeof currency !== 'string') return currency
-  const issuerRuc = required(FIELD_NAMES.issuerRuc, rucOf(inv, 'AccountingSupplierParty'))
-  if (typeof issuerRuc !== 'string') return issuerRuc
-  const recipientRuc = required(FIELD_NAMES.recipientRuc, rucOf(inv, 'AccountingCustomerParty'))
-  if (typeof recipientRuc !== 'string') return recipientRuc
-  const rawTotal = required(
-    FIELD_NAMES.total,
-    text(path(inv, 'LegalMonetaryTotal', 'PayableAmount')),
-  )
-  if (typeof rawTotal !== 'string') return rawTotal
+  const seriesNumber = text(inv.ID)
+  if (!seriesNumber) return missing('seriesNumber', FIELD_NAMES.seriesNumber)
+  const issueDate = text(inv.IssueDate)
+  if (!issueDate) return missing('issueDate', FIELD_NAMES.issueDate)
+  const documentType = text(inv.InvoiceTypeCode)
+  if (!documentType) return missing('documentType', FIELD_NAMES.documentType)
+  const currency = text(inv.DocumentCurrencyCode)
+  if (!currency) return missing('currency', FIELD_NAMES.currency)
+  const issuerRuc = rucOf(inv, 'AccountingSupplierParty')
+  if (!issuerRuc) return missing('issuerRuc', FIELD_NAMES.issuerRuc)
+  const recipientRuc = rucOf(inv, 'AccountingCustomerParty')
+  if (!recipientRuc) return missing('recipientRuc', FIELD_NAMES.recipientRuc)
+  const rawTotal = text(path(inv, 'LegalMonetaryTotal', 'PayableAmount'))
+  if (!rawTotal) return missing('total', FIELD_NAMES.total)
   const total = normalizeAmount(rawTotal)
-  if (total === null)
-    return fail(createProblem('XML_MISSING_REQUIRED_FIELD', { data: { field: FIELD_NAMES.total } }))
-  if (!isIsoDate(issueDate)) {
-    return fail(
-      createProblem('XML_MISSING_REQUIRED_FIELD', { data: { field: FIELD_NAMES.issueDate } }),
-    )
-  }
+  if (total === null) return invalid('total', FIELD_NAMES.total)
+  if (!isIsoDate(issueDate)) return invalid('issueDate', FIELD_NAMES.issueDate)
 
   let paymentTerms: PaymentTerms | null = null
   let netPendingAmount: Amount | null = null
   const installments: Installment[] = []
   let detraction: ParsedInvoice['detraction'] = null
 
+  // Un bloque reconocido (Credito, CuotaNNN, Detraccion) con un dato mal formado es un problema de la
+  // factura, nunca se descarta en silencio: descartar una cuota vencida o una detracción cambiaría el
+  // resultado de las reglas sin que nadie lo note.
   for (const term of asList(inv.PaymentTerms as Node | Node[])) {
     const id = text(path(term, 'ID'))
     const means = text(path(term, 'PaymentMeansID')) ?? ''
-    const amount = normalizeAmount(text(path(term, 'Amount')) ?? '')
+    const rawAmount = text(path(term, 'Amount'))
     if (id === 'FormaPago') {
       if (means === 'Contado') paymentTerms = 'CASH'
       else if (means === 'Credito') {
         paymentTerms = 'CREDIT'
-        netPendingAmount = amount
+        if (rawAmount !== undefined) {
+          netPendingAmount = normalizeAmount(rawAmount)
+          if (netPendingAmount === null) {
+            return invalid('netPendingAmount', FIELD_NAMES.netPendingAmount)
+          }
+        }
       } else if (/^Cuota\d+$/i.test(means)) {
+        const amount = normalizeAmount(rawAmount ?? '')
+        if (amount === null) {
+          return invalid(
+            'installments',
+            formatMessage(FIELD_NAMES.installmentAmount, { installment: means }),
+          )
+        }
         const dueDate = text(path(term, 'PaymentDueDate')) ?? ''
-        if (amount !== null && isIsoDate(dueDate)) installments.push({ id: means, amount, dueDate })
+        if (!isIsoDate(dueDate)) {
+          return invalid(
+            'installments',
+            formatMessage(FIELD_NAMES.installmentDueDate, { installment: means }),
+          )
+        }
+        installments.push({ id: means, amount, dueDate })
       }
     } else if (id === 'Detraccion') {
-      const percent = Number(text(path(term, 'PaymentPercent')) ?? Number.NaN)
-      if (amount !== null && Number.isFinite(percent)) detraction = { percent, amount }
+      // Un porcentaje vacío (`<PaymentPercent/>`) nunca vale 0: `Number('')` lo haría.
+      const rawPercent = text(path(term, 'PaymentPercent')) ?? ''
+      if (!/^\d{1,3}(?:\.\d{1,4})?$/.test(rawPercent)) {
+        return invalid('detraction', FIELD_NAMES.detractionPercent)
+      }
+      const amount = normalizeAmount(rawAmount ?? '')
+      if (amount === null) return invalid('detraction', FIELD_NAMES.detractionAmount)
+      detraction = { percent: Number(rawPercent), amount }
     }
   }
 
@@ -235,12 +335,13 @@ function extractInvoice(document: Record<string, unknown>): ParseResult {
     netPendingAmount,
     installments,
     detraction,
-    signed:
-      path(inv, 'UBLExtensions', 'UBLExtension', 'ExtensionContent', 'Signature') !== undefined,
+    signed: isSigned(inv),
   }
 
+  // El esquema es la única fuente de formatos y topes; cada violación se informa con el dato en
+  // español, nunca como XML ilegible.
   const validated = parsedInvoiceSchema.safeParse(invoice)
-  return validated.success
-    ? { ok: true, invoice: validated.data }
-    : fail(createProblem('UNREADABLE_XML'))
+  if (validated.success) return { ok: true, invoice: validated.data }
+  const { key, name } = fieldOfIssue(validated.error.issues[0]?.path ?? [])
+  return invalid(key, name)
 }

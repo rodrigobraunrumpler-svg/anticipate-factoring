@@ -22,6 +22,12 @@ export type TestXmlOptions = {
   installments?: TestInstallment[]
   detraction?: { percent: string; amount: string } | null
   signed?: boolean
+  /** Agrega un `ext:UBLExtension` sin firma antes del que lleva la firma (como varios sistemas reales). */
+  extensionBeforeSignature?: boolean
+  /** Agrega el `cac:Signature` de primer nivel que referencia a la firma (como las facturas de SUNAT). */
+  signatoryReference?: boolean
+  /** Emite las razones sociales dentro de `<![CDATA[…]]>`. */
+  cdataNames?: boolean
   /** Emite el RUC por la ruta legada PartyTaxScheme/CompanyID en vez de PartyIdentification/ID. */
   legacyRucPath?: boolean
   bom?: boolean
@@ -48,6 +54,9 @@ export const DEFAULT_TEST_XML = {
   installments: [{ id: 'Cuota001', amount: '10620.00', dueDate: '2026-11-30' }],
   detraction: { percent: '10', amount: '1180.00' },
   signed: true,
+  extensionBeforeSignature: false,
+  signatoryReference: false,
+  cdataNames: false,
   legacyRucPath: false,
   bom: false,
   declaredEncoding: 'UTF-8',
@@ -64,10 +73,12 @@ export function buildInvoiceXml(options: TestXmlOptions = {}): string {
   const omitted = (name: (typeof o.omit)[number]) => o.omit.includes(name)
   const money = (name: string, value: string) => el(cbc(name), value, ` currencyID="${o.currency}"`)
 
+  const name = (value: string) => (o.cdataNames ? `<![CDATA[${value}]]>` : value)
+
   const party = (
     role: 'AccountingSupplierParty' | 'AccountingCustomerParty',
     ruc: string,
-    name: string | null,
+    legalName: string | null,
   ) =>
     el(
       cac(role),
@@ -76,11 +87,13 @@ export function buildInvoiceXml(options: TestXmlOptions = {}): string {
         o.legacyRucPath
           ? el(
               cac('PartyTaxScheme'),
-              (name === null ? '' : el(cbc('RegistrationName'), name)) +
+              (legalName === null ? '' : el(cbc('RegistrationName'), name(legalName))) +
                 el(cbc('CompanyID'), ruc, ' schemeID="6"'),
             )
           : el(cac('PartyIdentification'), el(cbc('ID'), ruc, ' schemeID="6"')) +
-              (name === null ? '' : el(cac('PartyLegalEntity'), el(cbc('RegistrationName'), name))),
+              (legalName === null
+                ? ''
+                : el(cac('PartyLegalEntity'), el(cbc('RegistrationName'), name(legalName)))),
       ),
     )
 
@@ -120,16 +133,41 @@ export function buildInvoiceXml(options: TestXmlOptions = {}): string {
     )
   }
 
-  const signature = o.signed
-    ? el(
-        'ext:UBLExtensions',
+  const extensions: string[] = []
+  if (o.extensionBeforeSignature) {
+    extensions.push(
+      el(
+        'ext:UBLExtension',
+        el('ext:ExtensionContent', el('ext:AdditionalInformation', el('ext:Note', 'SIN FIRMA'))),
+      ),
+    )
+  }
+  if (o.signed) {
+    extensions.push(
+      el(
+        'ext:UBLExtension',
         el(
-          'ext:UBLExtension',
-          el(
-            'ext:ExtensionContent',
-            el('ds:Signature', el('ds:SignatureValue', 'ZmlybWE='), ' Id="SignSUNAT"'),
-          ),
+          'ext:ExtensionContent',
+          el('ds:Signature', el('ds:SignatureValue', 'ZmlybWE='), ' Id="SignSUNAT"'),
         ),
+      ),
+    )
+  }
+  const signature = extensions.length > 0 ? el('ext:UBLExtensions', extensions.join('')) : ''
+
+  const signatoryReference = o.signatoryReference
+    ? el(
+        cac('Signature'),
+        el(cbc('ID'), 'IDSignSP') +
+          el(
+            cac('SignatoryParty'),
+            el(cac('PartyIdentification'), el(cbc('ID'), o.issuerRuc)) +
+              el(cac('PartyName'), el(cbc('Name'), name(o.issuerName))),
+          ) +
+          el(
+            cac('DigitalSignatureAttachment'),
+            el(cac('ExternalReference'), el(cbc('URI'), '#SignatureSP')),
+          ),
       )
     : ''
 
@@ -142,6 +180,7 @@ export function buildInvoiceXml(options: TestXmlOptions = {}): string {
     omitted('IssueDate') ? '' : el(cbc('IssueDate'), o.issueDate),
     omitted('InvoiceTypeCode') ? '' : el(cbc(typeTag), o.documentType, ' listID="0101"'),
     omitted('DocumentCurrencyCode') ? '' : el(cbc('DocumentCurrencyCode'), o.currency),
+    signatoryReference,
     party('AccountingSupplierParty', o.issuerRuc, o.issuerName),
     party('AccountingCustomerParty', o.recipientRuc, o.recipientName),
     ...paymentTermsBlocks,
@@ -150,7 +189,9 @@ export function buildInvoiceXml(options: TestXmlOptions = {}): string {
       money('TaxInclusiveAmount', o.total) +
         (omitted('PayableAmount') ? '' : money('PayableAmount', o.total)),
     ),
-  ].join('\n  ')
+  ]
+    .filter((part) => part !== '')
+    .join('\n  ')
 
   const namespaces = [
     `xmlns="urn:oasis:names:specification:ubl:schema:xsd:${o.root}-2"`,
@@ -165,7 +206,7 @@ export function buildInvoiceXml(options: TestXmlOptions = {}): string {
 
   let xml = `<?xml version="1.0" encoding="${o.declaredEncoding}"?>\n<${o.root} ${namespaces.join(' ')}>\n  ${body}\n</${o.root}>\n`
   if (o.windowsLineEndings) xml = xml.replace(/\n/g, '\r\n')
-  if (o.bom) xml = `﻿${xml}`
+  if (o.bom) xml = `\uFEFF${xml}`
   return xml
 }
 

@@ -146,7 +146,9 @@ describe('parseUblInvoice · variantes', () => {
 
 describe('parseUblInvoice · robustez de formato', () => {
   it('tolera BOM y finales de línea de Windows', () => {
-    const inv = parseOk(buildInvoiceXml({ bom: true, windowsLineEndings: true }))
+    const xml = buildInvoiceXml({ bom: true, windowsLineEndings: true })
+    expect(xml.startsWith('\uFEFF')).toBe(true)
+    const inv = parseOk(xml)
     expect(inv.seriesNumber).toBe('F001-123')
   })
 
@@ -218,6 +220,25 @@ describe('parseUblInvoice · errores', () => {
     expect(parseError(xml).code).toBe('XML_DOCTYPE_NOT_ALLOWED')
   })
 
+  it('rechaza un DOCTYPE en minúsculas y precedido de espacios', () => {
+    const body = buildInvoiceXml().replace('<?xml version="1.0" encoding="UTF-8"?>\n', '')
+    expect(parseError(`  \n\t<!doctype Invoice>\n${body}`).code).toBe('XML_DOCTYPE_NOT_ALLOWED')
+    expect(
+      parseError(buildInvoiceXml().replace('?>', '?>\n   <!doctype x [<!ENTITY a "b">]>')).code,
+    ).toBe('XML_DOCTYPE_NOT_ALLOWED')
+    expect(parseError(buildInvoiceXml().replace('?>', '?><! DOCTYPE x>')).code).toBe(
+      'XML_DOCTYPE_NOT_ALLOWED',
+    )
+  })
+
+  it('ignora una instrucción de procesamiento antes de la raíz', () => {
+    const xml = buildInvoiceXml().replace(
+      '?>',
+      '?>\n<?xml-stylesheet type="text/xsl" href="factura.xsl"?>',
+    )
+    expect(parseOk(xml).seriesNumber).toBe('F001-123')
+  })
+
   it('rechaza un XML mayor al tope recibido por parámetro', () => {
     const xml = buildInvoiceXml()
     expect(parseError(xml, { maxLength: 100 }).code).toBe('XML_TOO_LARGE')
@@ -225,15 +246,217 @@ describe('parseUblInvoice · errores', () => {
   })
 })
 
+/** Bytes ISO-8859-1 / windows-1252 de un texto con caracteres hasta U+00FF. */
+const latin1Bytes = (text: string) => Uint8Array.from(text, (ch) => ch.charCodeAt(0))
+
 describe('decodeXml', () => {
-  it('decodifica UTF-8 con BOM', () => {
-    const bytes = new TextEncoder().encode('﻿<?xml version="1.0" encoding="UTF-8"?><a>Ñ</a>')
-    expect(decodeXml(bytes)).toContain('<a>Ñ</a>')
+  it('el BOM UTF-8 manda sobre una codificación declarada distinta', () => {
+    // Si se ignorara el BOM, la declaración ISO-8859-1 convertiría "Ñ" (C3 91) en "Ã" + U+0091.
+    const bytes = new TextEncoder().encode(
+      '\uFEFF<?xml version="1.0" encoding="ISO-8859-1"?><a>Ñ</a>',
+    )
+    const text = decodeXml(bytes)
+    expect(text).toContain('<a>Ñ</a>')
+    expect(text.startsWith('\uFEFF')).toBe(false)
   })
 
   it('respeta la codificación declarada (ISO-8859-1)', () => {
-    const text = '<?xml version="1.0" encoding="ISO-8859-1"?><a>Ñ</a>'
-    const bytes = Uint8Array.from(text, (ch) => ch.charCodeAt(0))
+    const bytes = latin1Bytes('<?xml version="1.0" encoding="ISO-8859-1"?><a>Ñ</a>')
     expect(decodeXml(bytes)).toContain('<a>Ñ</a>')
+  })
+
+  it('decodifica UTF-8 en modo estricto y, si los bytes no son UTF-8, vuelve a windows-1252', () => {
+    const declaredUtf8 = latin1Bytes('<?xml version="1.0" encoding="UTF-8"?><a>PEÑA</a>')
+    expect(decodeXml(declaredUtf8)).toContain('<a>PEÑA</a>')
+    const undeclared = latin1Bytes('<a>PEÑA</a>')
+    expect(decodeXml(undeclared)).toBe('<a>PEÑA</a>')
+  })
+
+  it('una codificación declarada desconocida se lee como UTF-8', () => {
+    const bytes = new TextEncoder().encode('<?xml version="1.0" encoding="NO-EXISTE"?><a>Ñ</a>')
+    expect(decodeXml(bytes)).toContain('<a>Ñ</a>')
+  })
+
+  it('UTF-8 válido sin declaración se lee como UTF-8', () => {
+    expect(decodeXml(new TextEncoder().encode('<a>Ñ €</a>'))).toBe('<a>Ñ €</a>')
+  })
+})
+
+describe('parseUblInvoice · datos con formato inválido (XML_INVALID_FIELD)', () => {
+  const cuotas = (n: number) =>
+    Array.from({ length: n }, (_, i) => ({
+      id: `Cuota${String(i + 1).padStart(3, '0')}`,
+      amount: '100.00',
+      dueDate: '2026-11-30',
+    }))
+
+  it.each([
+    [
+      'serie y número de 5000 caracteres',
+      { seriesNumber: `F001-${'1'.repeat(4995)}` },
+      'seriesNumber',
+      'serie y número',
+    ],
+    ['serie sin guion', { seriesNumber: 'F001123' }, 'seriesNumber', 'serie y número'],
+    [
+      'razón social del emisor de 200000 caracteres',
+      { issuerName: 'A'.repeat(200_000) },
+      'issuerName',
+      'razón social del emisor',
+    ],
+    [
+      'razón social del receptor de 1501 caracteres',
+      { recipientName: 'B'.repeat(1501) },
+      'recipientName',
+      'razón social del receptor',
+    ],
+    ['101 cuotas', { installments: cuotas(101) }, 'installments', 'cuotas'],
+    [
+      'RUC del emisor que no es un número',
+      { issuerRuc: 'no-es-un-ruc' },
+      'issuerRuc',
+      'RUC del emisor',
+    ],
+    [
+      'RUC del receptor de 16 dígitos',
+      { recipientRuc: '1'.repeat(16) },
+      'recipientRuc',
+      'RUC del receptor',
+    ],
+    ['moneda SOLES', { currency: 'SOLES' }, 'currency', 'moneda'],
+    ['moneda en minúsculas', { currency: 'pen' }, 'currency', 'moneda'],
+    [
+      'tipo de comprobante de tres dígitos',
+      { documentType: '001' },
+      'documentType',
+      'tipo de comprobante',
+    ],
+    ['total que no es un monto', { total: 'mucho' }, 'total', 'total'],
+    [
+      'fecha de emisión que no es ISO',
+      { issueDate: '01/09/2026' },
+      'issueDate',
+      'fecha de emisión',
+    ],
+  ] as const)('%s', (_, options, key, field) => {
+    const p = parseError(buildInvoiceXml(options))
+    expect(p.code).toBe('XML_INVALID_FIELD')
+    expect(p.field).toBe(key)
+    expect(p.params).toEqual({ field })
+    expect(p.message).toBe(`El dato "${field}" del XML no tiene un formato válido.`)
+  })
+
+  it('acepta los topes exactos: nombres de 1500 caracteres, 100 cuotas y RUC de 15 dígitos', () => {
+    const inv = parseOk(
+      buildInvoiceXml({
+        issuerName: 'A'.repeat(1500),
+        recipientName: 'B'.repeat(1500),
+        installments: cuotas(100),
+        recipientRuc: '1'.repeat(15),
+        seriesNumber: 'FA01-12345678',
+      }),
+    )
+    expect(inv.installments).toHaveLength(100)
+    expect(inv.issuerName).toHaveLength(1500)
+  })
+
+  it('normaliza la serie y número a mayúsculas', () => {
+    expect(parseOk(buildInvoiceXml({ seriesNumber: 'f001-123' })).seriesNumber).toBe('F001-123')
+  })
+})
+
+describe('parseUblInvoice · cuotas y detracción mal formadas', () => {
+  const invalidField = (xml: string) => {
+    const p = parseError(xml)
+    expect(p.code).toBe('XML_INVALID_FIELD')
+    return p.params?.field
+  }
+
+  it('Cuota002 con fecha 30/08/2026', () => {
+    const xml = buildInvoiceXml({
+      installments: [
+        { id: 'Cuota001', amount: '5000.00', dueDate: '2026-10-30' },
+        { id: 'Cuota002', amount: '5620.00', dueDate: '30/08/2026' },
+      ],
+    })
+    expect(invalidField(xml)).toBe('fecha de vencimiento de Cuota002')
+  })
+
+  it('Cuota001 con monto abc', () => {
+    const xml = buildInvoiceXml({
+      installments: [{ id: 'Cuota001', amount: 'abc', dueDate: '2026-11-30' }],
+    })
+    expect(invalidField(xml)).toBe('monto de Cuota001')
+  })
+
+  it('cuota con un identificador desmedido', () => {
+    const xml = buildInvoiceXml({
+      installments: [{ id: 'Cuota123456789', amount: '10620.00', dueDate: '2026-11-30' }],
+    })
+    expect(invalidField(xml)).toBe('cuotas')
+  })
+
+  it('cuota sin fecha de vencimiento', () => {
+    const xml = buildInvoiceXml().replace('<cbc:PaymentDueDate>2026-11-30</cbc:PaymentDueDate>', '')
+    expect(invalidField(xml)).toBe('fecha de vencimiento de Cuota001')
+  })
+
+  it('detracción con <PaymentPercent/> vacío: nunca vale 0', () => {
+    const xml = buildInvoiceXml().replace(
+      '<cbc:PaymentPercent>10</cbc:PaymentPercent>',
+      '<cbc:PaymentPercent/>',
+    )
+    expect(invalidField(xml)).toBe('porcentaje de detracción')
+  })
+
+  it.each([
+    ['porcentaje no numérico', { percent: 'diez', amount: '1180.00' }, 'porcentaje de detracción'],
+    ['porcentaje mayor que 100', { percent: '120', amount: '1180.00' }, 'porcentaje de detracción'],
+    ['monto inválido', { percent: '10', amount: '-5' }, 'monto de detracción'],
+  ] as const)('detracción con %s', (_, detraction, field) => {
+    expect(invalidField(buildInvoiceXml({ detraction }))).toBe(field)
+  })
+
+  it('lee un porcentaje de detracción con decimales', () => {
+    const inv = parseOk(buildInvoiceXml({ detraction: { percent: '12.00', amount: '1416.00' } }))
+    expect(inv.detraction).toEqual({ percent: 12, amount: '1416.00' })
+  })
+
+  it('un monto neto pendiente presente pero inválido no se descarta en silencio', () => {
+    expect(invalidField(buildInvoiceXml({ netPendingAmount: 'abc' }))).toBe('monto neto pendiente')
+  })
+})
+
+describe('parseUblInvoice · firma digital', () => {
+  it('encuentra la firma en el segundo UBLExtension', () => {
+    const inv = parseOk(buildInvoiceXml({ extensionBeforeSignature: true }))
+    expect(inv.signed).toBe(true)
+  })
+
+  it('reconoce la firma por el cac:Signature de primer nivel', () => {
+    const inv = parseOk(buildInvoiceXml({ signed: false, signatoryReference: true }))
+    expect(inv.signed).toBe(true)
+  })
+
+  it('una extensión sin firma no cuenta como firmada', () => {
+    const inv = parseOk(buildInvoiceXml({ signed: false, extensionBeforeSignature: true }))
+    expect(inv.signed).toBe(false)
+  })
+})
+
+describe('parseUblInvoice · CDATA', () => {
+  it('lee el nombre dentro de CDATA sin decodificar entidades', () => {
+    const xml = buildInvoiceXml({ cdataNames: true, issuerName: 'M &amp; M <S.A.C.>' })
+    const inv = parseOk(xml)
+    expect(inv.issuerName).toBe('M &amp; M <S.A.C.>')
+    expect(inv.recipientName).toBe('SERVICIOS ENERGETICOS AMBIENTALES S.A.')
+  })
+
+  it('une texto y CDATA del mismo elemento: el texto se decodifica, el CDATA no', () => {
+    const xml = buildInvoiceXml().replace(
+      '<cbc:RegistrationName>PROVEEDOR EJEMPLO S.A.C.</cbc:RegistrationName>',
+      '<cbc:RegistrationName>A &amp;<![CDATA[ B &amp; C]]></cbc:RegistrationName>',
+    )
+    expect(parseOk(xml).issuerName).toBe('A & B &amp; C')
   })
 })

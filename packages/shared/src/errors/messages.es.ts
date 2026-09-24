@@ -10,6 +10,7 @@ export const MESSAGES_ES: Readonly<Record<ProblemCode, string>> = {
     'El archivo XML contiene una declaración DOCTYPE, que no está permitida.',
   XML_NOT_AN_INVOICE: 'El archivo no es una factura electrónica ({kind}).',
   XML_MISSING_REQUIRED_FIELD: 'El XML no contiene el dato "{field}".',
+  XML_INVALID_FIELD: 'El dato "{field}" del XML no tiene un formato válido.',
   DOCUMENT_TYPE_NOT_ALLOWED:
     'Solo aceptamos facturas electrónicas (tipo 01). Este comprobante es de tipo {kind}.',
   RECIPIENT_IS_NOT_PAYER: 'La factura no está emitida a {payer}.',
