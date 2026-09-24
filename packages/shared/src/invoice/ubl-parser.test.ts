@@ -52,6 +52,33 @@ describe('parseUblInvoice · factura al crédito', () => {
   })
 })
 
+describe('parseUblInvoice · referencias de carácter en texto', () => {
+  it('decodifica &amp; en nombres', () => {
+    const inv = parseOk(buildInvoiceXml({ issuerName: 'M &amp; M S.A.C.' }))
+    expect(inv.issuerName).toBe('M & M S.A.C.')
+  })
+
+  it('decodifica referencias numéricas decimales', () => {
+    const inv = parseOk(buildInvoiceXml({ issuerName: 'CASTA&#209;EDA S.A.C.' }))
+    expect(inv.issuerName).toBe('CASTAÑEDA S.A.C.')
+  })
+
+  it('decodifica referencias numéricas hexadecimales', () => {
+    const inv = parseOk(buildInvoiceXml({ issuerName: 'CASTA&#xD1;EDA' }))
+    expect(inv.issuerName).toBe('CASTAÑEDA')
+  })
+
+  it('decodifica en una sola pasada: &amp;lt; no se convierte en <', () => {
+    const inv = parseOk(buildInvoiceXml({ issuerName: 'A &amp;lt; B' }))
+    expect(inv.issuerName).toBe('A &lt; B')
+  })
+
+  it('deja intacta una referencia con nombre desconocido', () => {
+    const inv = parseOk(buildInvoiceXml({ issuerName: 'A &foo; B' }))
+    expect(inv.issuerName).toBe('A &foo; B')
+  })
+})
+
 describe('parseUblInvoice · variantes', () => {
   it('factura al contado: sin neto pendiente ni cuotas', () => {
     const inv = parseOk(
@@ -139,6 +166,13 @@ describe('parseUblInvoice · errores', () => {
     const p = parseError(buildInvoiceXml({ root: 'CreditNote' }))
     expect(p.code).toBe('XML_NOT_AN_INVOICE')
     expect(p.message).toContain('nota de crédito')
+  })
+
+  it('una raíz que coincide con una propiedad heredada del objeto no expone su valor', () => {
+    const p = parseError('<?xml version="1.0" encoding="UTF-8"?><isPrototypeOf/>')
+    expect(p.code).toBe('XML_NOT_AN_INVOICE')
+    expect(p.message).toContain('isPrototypeOf')
+    expect(p.message).not.toContain('native code')
   })
 
   it.each([

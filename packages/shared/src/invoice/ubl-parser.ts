@@ -22,11 +22,36 @@ const parser = new XMLParser({
 
 type Node = string | { [key: string]: unknown } | undefined
 
+/** Las cinco entidades predefinidas de XML. `processEntities: false` deja todo lo demás sin tocar. */
+const NAMED_ENTITIES: Record<string, string> = {
+  amp: '&',
+  lt: '<',
+  gt: '>',
+  quot: '"',
+  apos: "'",
+}
+
+const ENTITY_PATTERN = /&(?:amp|lt|gt|quot|apos|#\d+|#x[0-9a-fA-F]+);/g
+
+/**
+ * Decodifica en una sola pasada (no recursiva) las cinco entidades predefinidas de XML y las
+ * referencias numéricas de carácter (`&#209;`, `&#xD1;`). Deja intacto cualquier otro `&nombre;`:
+ * con `processEntities: false` el parser nunca las tocó, así que no son entidades declaradas.
+ */
+function decodeEntities(value: string): string {
+  return value.replace(ENTITY_PATTERN, (match) => {
+    if (match.startsWith('&#x'))
+      return String.fromCodePoint(Number.parseInt(match.slice(3, -1), 16))
+    if (match.startsWith('&#')) return String.fromCodePoint(Number.parseInt(match.slice(2, -1), 10))
+    return NAMED_ENTITIES[match.slice(1, -1)] ?? match
+  })
+}
+
 function text(node: unknown): string | undefined {
-  if (typeof node === 'string') return node
+  if (typeof node === 'string') return decodeEntities(node)
   if (node && typeof node === 'object' && TEXT in node) {
     const t = (node as Record<string, unknown>)[TEXT]
-    return typeof t === 'string' ? t : undefined
+    return typeof t === 'string' ? decodeEntities(t) : undefined
   }
   return undefined
 }
@@ -115,7 +140,12 @@ export function parseUblInvoice(rawXml: string, options: ParseOptions = {}): Par
 
   const rootName = Object.keys(document).find((k) => k !== '?xml')
   if (rootName !== 'Invoice') {
-    const kind = (rootName && ROOT_KINDS[rootName]) ?? rootName ?? 'desconocido'
+    // Object.hasOwn, no `ROOT_KINDS[rootName]` directo: rootName viene de un XML no confiable y
+    // podría coincidir con una propiedad heredada de Object.prototype (p. ej. "isPrototypeOf").
+    const kind =
+      rootName !== undefined && Object.hasOwn(ROOT_KINDS, rootName)
+        ? (ROOT_KINDS[rootName] ?? rootName)
+        : (rootName ?? 'desconocido')
     return fail(createProblem('XML_NOT_AN_INVOICE', { data: { kind } }))
   }
   const inv = document.Invoice as Record<string, unknown>

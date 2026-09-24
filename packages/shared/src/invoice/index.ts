@@ -9,6 +9,7 @@ export {
   DOCUMENT_TYPE,
   DOCUMENT_TYPE_NAMES,
   type DocumentType,
+  documentTypeName,
   PAYMENT_TERMS,
   type PaymentTerms,
 } from './codes.js'

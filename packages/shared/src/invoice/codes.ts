@@ -17,3 +17,13 @@ export const DOCUMENT_TYPE_NAMES: Record<string, string> = {
 
 export const PAYMENT_TERMS = ['CASH', 'CREDIT'] as const
 export type PaymentTerms = (typeof PAYMENT_TERMS)[number]
+
+/**
+ * Nombre en español de un tipo de comprobante, para mensajes al usuario. Usa `Object.hasOwn` en vez
+ * de indexar directamente: `code` puede venir de un XML no confiable y coincidir con una propiedad
+ * heredada de `Object.prototype` (por ejemplo `constructor`).
+ */
+export function documentTypeName(code: string): string {
+  if (!Object.hasOwn(DOCUMENT_TYPE_NAMES, code)) return code
+  return DOCUMENT_TYPE_NAMES[code] ?? code
+}
