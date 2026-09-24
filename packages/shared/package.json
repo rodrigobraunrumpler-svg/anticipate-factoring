@@ -59,6 +59,7 @@
   "dependencies": {
     "@date-fns/tz": "catalog:",
     "date-fns": "catalog:",
+    "decimal.js": "catalog:",
     "fast-xml-parser": "catalog:",
     "zod": "catalog:"
   },

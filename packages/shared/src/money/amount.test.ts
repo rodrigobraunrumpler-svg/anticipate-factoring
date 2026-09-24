@@ -1,13 +1,16 @@
+import Decimal from 'decimal.js'
 import fc from 'fast-check'
 import { describe, expect, it } from 'vitest'
 import {
   amountSchema,
   compareAmounts,
   fromCents,
+  fromDecimal,
   normalizeAmount,
   percentOf,
   sumAmounts,
   toCents,
+  toDecimal,
 } from './amount.js'
 
 describe('normalizeAmount', () => {
@@ -106,5 +109,64 @@ describe('amountSchema', () => {
 
   it('rechaza un monto que no cabe en Decimal(14, 2)', () => {
     expect(amountSchema.safeParse('1000000000000.00').success).toBe(false)
+  })
+})
+
+describe('puente con decimal.js', () => {
+  it('toDecimal y fromDecimal conservan el monto', () => {
+    expect(fromDecimal(toDecimal('25000.00'), 'down')).toBe('25000.00')
+    expect(toDecimal('0.10').plus(toDecimal('0.20')).toFixed(2)).toBe('0.30')
+  })
+
+  it('fromDecimal redondea según el modo declarado', () => {
+    expect(fromDecimal('10.005', 'half-up')).toBe('10.01')
+    expect(fromDecimal('10.005', 'down')).toBe('10.00')
+    expect(fromDecimal('10.009', 'down')).toBe('10.00')
+    expect(fromDecimal('10.004', 'half-up')).toBe('10.00')
+  })
+
+  it('fromDecimal rechaza negativos, no finitos y montos fuera de Decimal(14, 2)', () => {
+    expect(() => fromDecimal('-0.01', 'down')).toThrow(RangeError)
+    expect(() => fromDecimal(Number.NaN, 'down')).toThrow(RangeError)
+    expect(() => fromDecimal(Number.POSITIVE_INFINITY, 'down')).toThrow(RangeError)
+    expect(() => fromDecimal('1000000000000.00', 'down')).toThrow(RangeError)
+    expect(fromDecimal('999999999999.994', 'down')).toBe('999999999999.99')
+    expect(() => fromDecimal('999999999999.995', 'half-up')).toThrow(RangeError)
+  })
+
+  it('la configuración global de decimal.js no afecta al dominio', () => {
+    const previous = Decimal.rounding
+    Decimal.set({ rounding: Decimal.ROUND_UP })
+    try {
+      expect(percentOf('0.01', 50)).toBe('0.00')
+      expect(percentOf('100.00', 33.333)).toBe('33.33')
+    } finally {
+      Decimal.set({ rounding: previous })
+    }
+  })
+
+  it('percentOf usa el porcentaje decimal exacto', () => {
+    expect(percentOf('100.00', 33.33)).toBe('33.33')
+    expect(percentOf('1000.00', 0.1)).toBe('1.00')
+    expect(percentOf('999999999999.99', 100)).toBe('999999999999.99')
+  })
+})
+
+describe('propiedades del puente', () => {
+  const cents = fc.bigInt({ min: 0n, max: 10n ** 14n - 1n })
+
+  it('fromDecimal(toDecimal(x)) === x', () => {
+    fc.assert(
+      fc.property(cents, (c) => fromDecimal(toDecimal(fromCents(c)), 'down') === fromCents(c)),
+    )
+  })
+
+  it('sumar con decimal.js equivale a sumar céntimos', () => {
+    fc.assert(
+      fc.property(cents, cents, (a, b) => {
+        fc.pre(a + b <= 10n ** 14n - 1n)
+        return sumAmounts(fromCents(a), fromCents(b)) === fromCents(a + b)
+      }),
+    )
   })
 })

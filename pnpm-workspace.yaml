@@ -28,6 +28,7 @@ catalog:
   publint: ^0.3.24
   "@arethetypeswrong/cli": ^0.18.5
   tsx: ^4.23.15
+  decimal.js: ^10.6.0
 allowBuilds:
   esbuild: true
   lefthook: true
