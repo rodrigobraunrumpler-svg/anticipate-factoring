@@ -56,6 +56,23 @@ describe('domainEventSchema', () => {
     ).toBe(false)
   })
 
+  it('el slug del pagador y el código público usan los esquemas del dominio', () => {
+    for (const payerSlug of ['SEA', 'sea x', '-sea', 'a'.repeat(61)]) {
+      expect(
+        domainEventSchema.safeParse({ ...created, payload: { ...created.payload, payerSlug } })
+          .success,
+        payerSlug,
+      ).toBe(false)
+    }
+    for (const publicCode of ['x', 'ANT-26-1', 'ANT-2026-12']) {
+      expect(
+        domainEventSchema.safeParse({ ...created, payload: { ...created.payload, publicCode } })
+          .success,
+        publicCode,
+      ).toBe(false)
+    }
+  })
+
   it('EVENT_TYPES cubre exactamente los tipos de la unión', () => {
     expect([...EVENT_TYPES].sort()).toEqual([
       'advance-request.created',

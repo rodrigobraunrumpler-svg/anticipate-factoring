@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { VALIDATION_MESSAGES_ES } from '../errors/index.js'
 import type { IsoDate } from './iso-date.js'
 import {
   addDaysIso,
@@ -55,8 +56,10 @@ describe('isoDateSchema', () => {
   it('rechaza con mensaje en español', () => {
     const r = isoDateSchema.safeParse('23/09/2026')
     expect(r.success).toBe(false)
-    if (!r.success)
+    if (!r.success) {
       expect(r.error.issues[0]?.message).toBe('La fecha debe tener el formato AAAA-MM-DD.')
+      expect(r.error.issues[0]?.message).toBe(VALIDATION_MESSAGES_ES.dates.isoDate)
+    }
   })
 })
 

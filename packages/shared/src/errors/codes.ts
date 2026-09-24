@@ -27,6 +27,13 @@ export const PROBLEM_CODES = [
   // monto solicitado
   'INVALID_AMOUNT',
   'AMOUNT_EXCEEDS_MAXIMUM',
+  // cambio de estado de una solicitud
+  'TRANSITION_NOT_ALLOWED',
+  'INSUFFICIENT_ROLE',
+  'CLOSE_REASON_REQUIRED',
+  'CLOSE_REASON_NOT_VALID',
+  'CLOSE_REASON_NOT_APPLICABLE',
+  'CLOSE_REASON_DETAIL_REQUIRED',
 ] as const
 
 export type ProblemCode = (typeof PROBLEM_CODES)[number]

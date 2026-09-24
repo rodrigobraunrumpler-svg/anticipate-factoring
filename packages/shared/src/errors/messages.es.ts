@@ -1,7 +1,7 @@
 import type { ProblemCode } from './codes.js'
 
 /** Mensajes para el usuario final. Los marcadores `{nombre}` se reemplazan con `data`. */
-export const MESSAGES_ES: Record<ProblemCode, string> = {
+export const MESSAGES_ES: Readonly<Record<ProblemCode, string>> = {
   INVALID_RUC: 'El RUC no es válido.',
   INVALID_DNI: 'El DNI debe tener 8 dígitos.',
   UNREADABLE_XML: 'No pudimos leer el archivo XML. Verifica que sea el XML original de la factura.',
@@ -27,4 +27,10 @@ export const MESSAGES_ES: Record<ProblemCode, string> = {
   DUPLICATE_INVOICE: 'La factura {invoice} está repetida en esta solicitud.',
   INVALID_AMOUNT: 'El monto debe ser un número mayor que cero con dos decimales.',
   AMOUNT_EXCEEDS_MAXIMUM: 'El monto solicitado supera el máximo de {max} {currency}.',
+  TRANSITION_NOT_ALLOWED: 'Este cambio de estado no está permitido desde el estado actual.',
+  INSUFFICIENT_ROLE: 'Tu rol no permite hacer este cambio de estado.',
+  CLOSE_REASON_REQUIRED: 'Indica el motivo del cierre.',
+  CLOSE_REASON_NOT_VALID: 'El motivo elegido no corresponde a este cierre.',
+  CLOSE_REASON_NOT_APPLICABLE: 'Solo el rechazo y el desistimiento llevan motivo de cierre.',
+  CLOSE_REASON_DETAIL_REQUIRED: 'Describe el motivo cuando eliges «Otro motivo».',
 }

@@ -1,6 +1,9 @@
 {
   "parsed": {
     "code": "XML_NOT_AN_INVOICE",
-    "message": "El archivo no es una factura electrónica (constancia de recepción (CDR))."
+    "message": "El archivo no es una factura electrónica (constancia de recepción (CDR)).",
+    "params": {
+      "kind": "constancia de recepción (CDR)"
+    }
   }
 }

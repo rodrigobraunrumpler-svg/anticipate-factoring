@@ -16,4 +16,7 @@ export function isValidRuc(value: string): boolean {
   return checkDigit === Number(value[10])
 }
 
-export const rucSchema = z.string().trim().refine(isValidRuc, { message: MESSAGES_ES.INVALID_RUC })
+export const rucSchema = z
+  .string({ error: MESSAGES_ES.INVALID_RUC })
+  .trim()
+  .refine(isValidRuc, { error: MESSAGES_ES.INVALID_RUC })

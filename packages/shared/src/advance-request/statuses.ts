@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { VALIDATION_MESSAGES_ES } from '../errors/index.js'
 
 export const ADVANCE_REQUEST_STATUSES = [
   'NEW',
@@ -13,7 +14,9 @@ export const ADVANCE_REQUEST_STATUSES = [
   'WITHDRAWN',
 ] as const
 export type AdvanceRequestStatus = (typeof ADVANCE_REQUEST_STATUSES)[number]
-export const advanceRequestStatusSchema = z.enum(ADVANCE_REQUEST_STATUSES)
+export const advanceRequestStatusSchema = z.enum(ADVANCE_REQUEST_STATUSES, {
+  error: VALIDATION_MESSAGES_ES.advanceRequest.status,
+})
 
 export const INITIAL_STATUS = 'NEW' satisfies AdvanceRequestStatus
 

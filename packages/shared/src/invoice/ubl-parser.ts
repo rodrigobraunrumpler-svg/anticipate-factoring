@@ -1,6 +1,6 @@
 import { XMLParser, XMLValidator } from 'fast-xml-parser'
 import { isIsoDate } from '../dates/index.js'
-import { createProblem, type Problem } from '../errors/index.js'
+import { createProblem, type Problem, VALIDATION_MESSAGES_ES } from '../errors/index.js'
 import { type Amount, normalizeAmount } from '../money/index.js'
 import type { PaymentTerms } from './codes.js'
 import { type Installment, type ParsedInvoice, parsedInvoiceSchema } from './parsed-invoice.js'
@@ -80,14 +80,9 @@ function path(root: unknown, ...steps: string[]): unknown {
   return current
 }
 
-/** Nombres en español para el mensaje XML_NOT_AN_INVOICE. */
-const ROOT_KINDS: Record<string, string> = {
-  ApplicationResponse: 'constancia de recepción (CDR)',
-  CreditNote: 'nota de crédito',
-  DebitNote: 'nota de débito',
-  SummaryDocuments: 'resumen diario',
-  VoidedDocuments: 'comunicación de baja',
-}
+const FIELD_NAMES = VALIDATION_MESSAGES_ES.invoiceXml.fields
+const DOCUMENT_KINDS: Readonly<Record<string, string>> =
+  VALIDATION_MESSAGES_ES.invoiceXml.documentKinds
 
 /** Decodifica los bytes de un XML respetando su BOM o la codificación declarada en el prólogo. */
 export function decodeXml(bytes: Uint8Array): string {
@@ -161,12 +156,12 @@ export function parseUblInvoice(rawXml: string, options: ParseOptions = {}): Par
 function extractInvoice(document: Record<string, unknown>): ParseResult {
   const rootName = Object.keys(document).find((k) => k !== '?xml')
   if (rootName !== 'Invoice') {
-    // Object.hasOwn, no `ROOT_KINDS[rootName]` directo: rootName viene de un XML no confiable y
+    // Object.hasOwn, no `DOCUMENT_KINDS[rootName]` directo: rootName viene de un XML no confiable y
     // podría coincidir con una propiedad heredada de Object.prototype (p. ej. "isPrototypeOf").
     const kind =
-      rootName !== undefined && Object.hasOwn(ROOT_KINDS, rootName)
-        ? (ROOT_KINDS[rootName] ?? rootName)
-        : (rootName ?? 'desconocido')
+      rootName !== undefined && Object.hasOwn(DOCUMENT_KINDS, rootName)
+        ? (DOCUMENT_KINDS[rootName] ?? rootName)
+        : (rootName ?? VALIDATION_MESSAGES_ES.invoiceXml.unknownDocumentKind)
     return fail(createProblem('XML_NOT_AN_INVOICE', { data: { kind } }))
   }
   const inv = document.Invoice as Record<string, unknown>
@@ -176,26 +171,29 @@ function extractInvoice(document: Record<string, unknown>): ParseResult {
       ? value
       : fail(createProblem('XML_MISSING_REQUIRED_FIELD', { data: { field: name } }))
 
-  const seriesNumber = required('serie y número', text(inv.ID))
+  const seriesNumber = required(FIELD_NAMES.seriesNumber, text(inv.ID))
   if (typeof seriesNumber !== 'string') return seriesNumber
-  const issueDate = required('fecha de emisión', text(inv.IssueDate))
+  const issueDate = required(FIELD_NAMES.issueDate, text(inv.IssueDate))
   if (typeof issueDate !== 'string') return issueDate
-  const documentType = required('tipo de comprobante', text(inv.InvoiceTypeCode))
+  const documentType = required(FIELD_NAMES.documentType, text(inv.InvoiceTypeCode))
   if (typeof documentType !== 'string') return documentType
-  const currency = required('moneda', text(inv.DocumentCurrencyCode))
+  const currency = required(FIELD_NAMES.currency, text(inv.DocumentCurrencyCode))
   if (typeof currency !== 'string') return currency
-  const issuerRuc = required('RUC del emisor', rucOf(inv, 'AccountingSupplierParty'))
+  const issuerRuc = required(FIELD_NAMES.issuerRuc, rucOf(inv, 'AccountingSupplierParty'))
   if (typeof issuerRuc !== 'string') return issuerRuc
-  const recipientRuc = required('RUC del receptor', rucOf(inv, 'AccountingCustomerParty'))
+  const recipientRuc = required(FIELD_NAMES.recipientRuc, rucOf(inv, 'AccountingCustomerParty'))
   if (typeof recipientRuc !== 'string') return recipientRuc
-  const rawTotal = required('total', text(path(inv, 'LegalMonetaryTotal', 'PayableAmount')))
+  const rawTotal = required(
+    FIELD_NAMES.total,
+    text(path(inv, 'LegalMonetaryTotal', 'PayableAmount')),
+  )
   if (typeof rawTotal !== 'string') return rawTotal
   const total = normalizeAmount(rawTotal)
   if (total === null)
-    return fail(createProblem('XML_MISSING_REQUIRED_FIELD', { data: { field: 'total' } }))
+    return fail(createProblem('XML_MISSING_REQUIRED_FIELD', { data: { field: FIELD_NAMES.total } }))
   if (!isIsoDate(issueDate)) {
     return fail(
-      createProblem('XML_MISSING_REQUIRED_FIELD', { data: { field: 'fecha de emisión' } }),
+      createProblem('XML_MISSING_REQUIRED_FIELD', { data: { field: FIELD_NAMES.issueDate } }),
     )
   }
 

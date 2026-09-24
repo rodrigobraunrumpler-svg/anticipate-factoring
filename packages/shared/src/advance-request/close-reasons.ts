@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { VALIDATION_MESSAGES_ES } from '../errors/index.js'
 
 export const CLOSE_REASONS = [
   'NO_RESPONSE',
@@ -10,7 +11,9 @@ export const CLOSE_REASONS = [
   'OTHER',
 ] as const
 export type CloseReason = (typeof CLOSE_REASONS)[number]
-export const closeReasonSchema = z.enum(CLOSE_REASONS)
+export const closeReasonSchema = z.enum(CLOSE_REASONS, {
+  error: VALIDATION_MESSAGES_ES.advanceRequest.closeReason,
+})
 
 export const CLOSE_REASON_LABELS: Record<CloseReason, string> = {
   NO_RESPONSE: 'El proveedor no respondió',

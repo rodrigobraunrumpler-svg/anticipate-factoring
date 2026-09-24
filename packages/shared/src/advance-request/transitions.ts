@@ -1,4 +1,10 @@
 import { z } from 'zod'
+import {
+  createProblem,
+  MESSAGES_ES,
+  type Problem,
+  VALIDATION_MESSAGES_ES,
+} from '../errors/index.js'
 import { hasRoleAtLeast, type Role } from '../user/index.js'
 import { CLOSE_REASONS_BY_STATUS, type CloseReason, closeReasonSchema } from './close-reasons.js'
 import { type AdvanceRequestStatus, advanceRequestStatusSchema } from './statuses.js'
@@ -56,41 +62,81 @@ export type StatusChange = {
   to: AdvanceRequestStatus
   role: Role
   closeReason?: CloseReason
+  /** Texto libre del motivo. Obligatorio cuando `closeReason` es `OTHER`. */
+  closeReasonDetail?: string
 }
 
 export type StatusChangeResult =
   | { ok: true; guard: Guard | null; requiresReason: boolean }
-  | {
-      ok: false
-      reason:
-        | 'TRANSITION_NOT_ALLOWED'
-        | 'INSUFFICIENT_ROLE'
-        | 'REASON_REQUIRED'
-        | 'REASON_NOT_VALID'
-    }
+  | { ok: false; problem: Problem }
 
-/** Evaluación pura. Si devuelve `guard`, la API debe comprobarla contra la base de datos antes de aplicar el cambio. */
+const reject = (
+  code:
+    | 'TRANSITION_NOT_ALLOWED'
+    | 'INSUFFICIENT_ROLE'
+    | 'CLOSE_REASON_REQUIRED'
+    | 'CLOSE_REASON_NOT_VALID'
+    | 'CLOSE_REASON_NOT_APPLICABLE'
+    | 'CLOSE_REASON_DETAIL_REQUIRED',
+  field?: 'closeReason' | 'closeReasonDetail',
+): StatusChangeResult => ({
+  ok: false,
+  problem: createProblem(code, field === undefined ? {} : { field }),
+})
+
+const hasText = (value: string | undefined): boolean => (value?.trim() ?? '') !== ''
+
+/**
+ * Evaluación pura. Si devuelve `guard`, la API debe comprobarla contra la base de datos antes de
+ * aplicar el cambio. Si falla, devuelve un `Problem` con código estable y mensaje en español.
+ */
 export function evaluateStatusChange(change: StatusChange): StatusChangeResult {
   const t = TRANSITIONS.find((x) => x.from === change.from && x.to === change.to)
-  if (!t) return { ok: false, reason: 'TRANSITION_NOT_ALLOWED' }
-  if (!hasRoleAtLeast(change.role, t.minRole ?? 'AGENT'))
-    return { ok: false, reason: 'INSUFFICIENT_ROLE' }
+  if (!t) return reject('TRANSITION_NOT_ALLOWED')
+  if (!hasRoleAtLeast(change.role, t.minRole ?? 'AGENT')) return reject('INSUFFICIENT_ROLE')
   const requiresReason = t.requiresReason === true
-  if (requiresReason) {
-    if (!change.closeReason) return { ok: false, reason: 'REASON_REQUIRED' }
-    const allowed = CLOSE_REASONS_BY_STATUS[
-      t.to as keyof typeof CLOSE_REASONS_BY_STATUS
-    ] as readonly CloseReason[]
-    if (!allowed.includes(change.closeReason)) return { ok: false, reason: 'REASON_NOT_VALID' }
+  if (!requiresReason) {
+    if (change.closeReason !== undefined || hasText(change.closeReasonDetail)) {
+      return reject('CLOSE_REASON_NOT_APPLICABLE', 'closeReason')
+    }
+    return { ok: true, guard: t.guard ?? null, requiresReason }
+  }
+  if (!change.closeReason) return reject('CLOSE_REASON_REQUIRED', 'closeReason')
+  const allowed = CLOSE_REASONS_BY_STATUS[
+    t.to as keyof typeof CLOSE_REASONS_BY_STATUS
+  ] as readonly CloseReason[]
+  if (!allowed.includes(change.closeReason)) return reject('CLOSE_REASON_NOT_VALID', 'closeReason')
+  if (change.closeReason === 'OTHER' && !hasText(change.closeReasonDetail)) {
+    return reject('CLOSE_REASON_DETAIL_REQUIRED', 'closeReasonDetail')
   }
   return { ok: true, guard: t.guard ?? null, requiresReason }
 }
 
-/** Cuerpo de `PATCH /admin/advance-requests/:id/status`. `version` sostiene el bloqueo optimista (D28). */
-export const statusChangeSchema = z.object({
-  to: advanceRequestStatusSchema,
-  version: z.number().int().nonnegative(),
-  closeReason: closeReasonSchema.optional(),
-  closeReasonDetail: z.string().trim().max(500).optional(),
-})
+/**
+ * Cuerpo de `PATCH /admin/advance-requests/:id/status`. `version` sostiene el bloqueo optimista (D28).
+ * Aplica la misma regla de detalle que `evaluateStatusChange`: `OTHER` exige `closeReasonDetail`.
+ */
+export const statusChangeSchema = z
+  .object({
+    to: advanceRequestStatusSchema,
+    version: z
+      .number({ error: VALIDATION_MESSAGES_ES.advanceRequest.version })
+      .int({ error: VALIDATION_MESSAGES_ES.advanceRequest.version })
+      .nonnegative({ error: VALIDATION_MESSAGES_ES.advanceRequest.version }),
+    closeReason: closeReasonSchema.optional(),
+    closeReasonDetail: z
+      .string({ error: VALIDATION_MESSAGES_ES.advanceRequest.closeReasonDetailMax })
+      .trim()
+      .max(500, { error: VALIDATION_MESSAGES_ES.advanceRequest.closeReasonDetailMax })
+      .optional(),
+  })
+  .superRefine((body, ctx) => {
+    if (body.closeReason === 'OTHER' && !hasText(body.closeReasonDetail)) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['closeReasonDetail'],
+        message: MESSAGES_ES.CLOSE_REASON_DETAIL_REQUIRED,
+      })
+    }
+  })
 export type StatusChangeDto = z.infer<typeof statusChangeSchema>

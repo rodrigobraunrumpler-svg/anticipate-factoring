@@ -29,6 +29,9 @@
       {
         "code": "RECIPIENT_IS_NOT_PAYER",
         "message": "La factura no está emitida a SEA.",
+        "params": {
+          "payer": "SEA"
+        },
         "invoice": "F001-123",
         "rule": "recipient-is-payer"
       }

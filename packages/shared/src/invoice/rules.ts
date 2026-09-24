@@ -1,5 +1,5 @@
 import { daysBetween, type IsoDate } from '../dates/index.js'
-import { createProblem, type Problem } from '../errors/index.js'
+import { createProblem, type Problem, VALIDATION_MESSAGES_ES } from '../errors/index.js'
 import {
   type Amount,
   compareAmounts,
@@ -137,7 +137,7 @@ export const installmentsDueInFutureRule: InvoiceRule = {
           'installments-due-in-future',
           inv,
           createProblem('XML_MISSING_REQUIRED_FIELD', {
-            data: { field: 'fechas de vencimiento (cuotas)' },
+            data: { field: VALIDATION_MESSAGES_ES.invoiceXml.fields.installmentDueDates },
           }),
         ),
       ]

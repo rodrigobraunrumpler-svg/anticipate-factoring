@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest'
+import { MESSAGES_ES, VALIDATION_MESSAGES_ES } from '../errors/index.js'
 import { advanceRequestFormSchema, FORM_MESSAGES } from './form.js'
+
+/** Todo texto de validación en español que puede devolver el formulario. */
+const spanishMessages = (value: unknown): string[] =>
+  typeof value === 'string'
+    ? [value]
+    : Object.values(value as Record<string, unknown>).flatMap((v) => spanishMessages(v))
 
 const valid = {
   contact: {
@@ -110,6 +117,13 @@ describe('advanceRequestFormSchema', () => {
     if (!r.success) {
       expect(r.error.issues.some((issue) => issue.message === FORM_MESSAGES.utmTooMany)).toBe(true)
     }
+    // El tope del código coincide con el que anuncia el mensaje ("máximo 10").
+    expect(FORM_MESSAGES.utmTooMany).toContain('máximo 10')
+    const ten = Object.fromEntries(Object.entries(utm).slice(0, 10))
+    expect(
+      advanceRequestFormSchema.safeParse({ ...valid, source: { ...valid.source, utm: ten } })
+        .success,
+    ).toBe(true)
   })
 
   it('rechaza una clave utm de más de 40 caracteres', () => {
@@ -129,7 +143,7 @@ describe('advanceRequestFormSchema', () => {
         dni: '46728673',
         mobile: '123456789',
         email: `${'a'.repeat(250)}@x.co`,
-        isLegalRepresentative: false,
+        isLegalRepresentative: 'sí',
         contactTimeSlot: 'NOON',
       },
       company: { ruc: '20100070970', legalName: 'X' },
@@ -146,11 +160,18 @@ describe('advanceRequestFormSchema', () => {
     const r = advanceRequestFormSchema.safeParse(invalid)
     expect(r.success).toBe(false)
     if (!r.success) {
-      const allowedMessages = new Set<string>(Object.values(FORM_MESSAGES))
+      const allowedMessages = new Set<string>([
+        ...spanishMessages(VALIDATION_MESSAGES_ES),
+        ...Object.values(MESSAGES_ES),
+      ])
       expect(r.error.issues.length).toBeGreaterThan(1)
       for (const issue of r.error.issues) {
         expect(allowedMessages.has(issue.message), issue.message).toBe(true)
       }
     }
+  })
+
+  it('FORM_MESSAGES es el grupo del formulario de los mensajes de errors', () => {
+    expect(FORM_MESSAGES).toBe(VALIDATION_MESSAGES_ES.advanceRequestForm)
   })
 })

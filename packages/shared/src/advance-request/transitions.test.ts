@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { MESSAGES_ES, VALIDATION_MESSAGES_ES } from '../errors/index.js'
 import { CLOSE_REASONS_BY_STATUS } from './close-reasons.js'
 import {
   ADVANCE_REQUEST_STATUSES,
@@ -9,10 +10,13 @@ import {
 import {
   availableTransitions,
   evaluateStatusChange,
+  type StatusChangeResult,
   statusChangeSchema,
   TRANSITIONS,
   transitionsFrom,
 } from './transitions.js'
+
+const problemCode = (r: StatusChangeResult) => (r.ok ? null : r.problem.code)
 
 const exits = (status: string) => TRANSITIONS.filter((t) => t.from === status).map((t) => t.to)
 
@@ -122,29 +126,34 @@ describe('evaluateStatusChange', () => {
     expect(r).toEqual({ ok: true, guard: 'quoteAccepted', requiresReason: false })
   })
 
-  it('rechaza una transición que no existe', () => {
+  it('rechaza una transición que no existe con un Problem en español', () => {
     const r = evaluateStatusChange({ from: 'NEW', to: 'DISBURSED', role: 'ADMIN' })
-    expect(r).toEqual({ ok: false, reason: 'TRANSITION_NOT_ALLOWED' })
+    expect(r.ok).toBe(false)
+    if (!r.ok) {
+      expect(r.problem.code).toBe('TRANSITION_NOT_ALLOWED')
+      expect(r.problem.message).toBe(MESSAGES_ES.TRANSITION_NOT_ALLOWED)
+    }
   })
 
   it('rechaza por rol insuficiente', () => {
     const r = evaluateStatusChange({ from: 'APPROVED', to: 'DISBURSED', role: 'AGENT' })
-    expect(r).toEqual({ ok: false, reason: 'INSUFFICIENT_ROLE' })
+    expect(problemCode(r)).toBe('INSUFFICIENT_ROLE')
   })
 
   it('exige motivo en los cierres y que sea válido para ese estado', () => {
-    expect(evaluateStatusChange({ from: 'NEW', to: 'WITHDRAWN', role: 'AGENT' })).toEqual({
-      ok: false,
-      reason: 'REASON_REQUIRED',
-    })
+    const missing = evaluateStatusChange({ from: 'NEW', to: 'WITHDRAWN', role: 'AGENT' })
+    expect(problemCode(missing)).toBe('CLOSE_REASON_REQUIRED')
+    expect(!missing.ok && missing.problem.field).toBe('closeReason')
     expect(
-      evaluateStatusChange({
-        from: 'NEW',
-        to: 'WITHDRAWN',
-        role: 'AGENT',
-        closeReason: 'INVALID_DOCUMENTS',
-      }),
-    ).toEqual({ ok: false, reason: 'REASON_NOT_VALID' })
+      problemCode(
+        evaluateStatusChange({
+          from: 'NEW',
+          to: 'WITHDRAWN',
+          role: 'AGENT',
+          closeReason: 'INVALID_DOCUMENTS',
+        }),
+      ),
+    ).toBe('CLOSE_REASON_NOT_VALID')
     expect(
       evaluateStatusChange({
         from: 'NEW',
@@ -153,6 +162,47 @@ describe('evaluateStatusChange', () => {
         closeReason: 'SPAM_OR_INVALID',
       }),
     ).toEqual({ ok: true, guard: null, requiresReason: true })
+  })
+
+  it('rechaza un motivo o un detalle en una transición que no es de cierre', () => {
+    expect(
+      problemCode(
+        evaluateStatusChange({
+          from: 'NEW',
+          to: 'CONTACTED',
+          role: 'AGENT',
+          closeReason: 'NO_RESPONSE',
+        }),
+      ),
+    ).toBe('CLOSE_REASON_NOT_APPLICABLE')
+    expect(
+      problemCode(
+        evaluateStatusChange({
+          from: 'NEW',
+          to: 'CONTACTED',
+          role: 'AGENT',
+          closeReasonDetail: 'Llamó dos veces',
+        }),
+      ),
+    ).toBe('CLOSE_REASON_NOT_APPLICABLE')
+    expect(
+      evaluateStatusChange({ from: 'NEW', to: 'CONTACTED', role: 'AGENT', closeReasonDetail: ' ' }),
+    ).toEqual({ ok: true, guard: null, requiresReason: false })
+  })
+
+  it('el motivo OTHER exige un detalle con texto', () => {
+    const base = { from: 'NEW', to: 'WITHDRAWN', role: 'AGENT', closeReason: 'OTHER' } as const
+    const r = evaluateStatusChange(base)
+    expect(problemCode(r)).toBe('CLOSE_REASON_DETAIL_REQUIRED')
+    expect(!r.ok && r.problem.field).toBe('closeReasonDetail')
+    expect(problemCode(evaluateStatusChange({ ...base, closeReasonDetail: '   ' }))).toBe(
+      'CLOSE_REASON_DETAIL_REQUIRED',
+    )
+    expect(evaluateStatusChange({ ...base, closeReasonDetail: 'Cambió de proveedor' })).toEqual({
+      ok: true,
+      guard: null,
+      requiresReason: true,
+    })
   })
 })
 
@@ -169,8 +219,58 @@ describe('statusChangeSchema (cuerpo del PATCH de la API)', () => {
     ).toBe(true)
   })
 
-  it('rechaza estados desconocidos y versiones no enteras', () => {
-    expect(statusChangeSchema.safeParse({ to: 'CLOSED', version: 1 }).success).toBe(false)
-    expect(statusChangeSchema.safeParse({ to: 'CONTACTED', version: 1.5 }).success).toBe(false)
+  it('rechaza estados desconocidos y versiones no enteras, con mensajes en español', () => {
+    const unknown = statusChangeSchema.safeParse({ to: 'CLOSED', version: 1 })
+    expect(unknown.success).toBe(false)
+    if (!unknown.success) {
+      expect(unknown.error.issues[0]?.message).toBe(VALIDATION_MESSAGES_ES.advanceRequest.status)
+    }
+    const fractional = statusChangeSchema.safeParse({ to: 'CONTACTED', version: 1.5 })
+    expect(fractional.success).toBe(false)
+    if (!fractional.success) {
+      expect(fractional.error.issues[0]?.message).toBe(
+        VALIDATION_MESSAGES_ES.advanceRequest.version,
+      )
+    }
+  })
+
+  it('el motivo OTHER exige detalle también en el cuerpo del PATCH', () => {
+    const r = statusChangeSchema.safeParse({ to: 'WITHDRAWN', version: 1, closeReason: 'OTHER' })
+    expect(r.success).toBe(false)
+    if (!r.success) {
+      expect(r.error.issues[0]?.path).toEqual(['closeReasonDetail'])
+      expect(r.error.issues[0]?.message).toBe(MESSAGES_ES.CLOSE_REASON_DETAIL_REQUIRED)
+    }
+    expect(
+      statusChangeSchema.safeParse({
+        to: 'WITHDRAWN',
+        version: 1,
+        closeReason: 'OTHER',
+        closeReasonDetail: '  ',
+      }).success,
+    ).toBe(false)
+    expect(
+      statusChangeSchema.safeParse({
+        to: 'WITHDRAWN',
+        version: 1,
+        closeReason: 'OTHER',
+        closeReasonDetail: 'Cambió de proveedor',
+      }).success,
+    ).toBe(true)
+  })
+
+  it('rechaza un detalle de más de 500 caracteres con mensaje en español', () => {
+    const r = statusChangeSchema.safeParse({
+      to: 'WITHDRAWN',
+      version: 1,
+      closeReason: 'NO_RESPONSE',
+      closeReasonDetail: 'x'.repeat(501),
+    })
+    expect(r.success).toBe(false)
+    if (!r.success) {
+      expect(r.error.issues[0]?.message).toBe(
+        VALIDATION_MESSAGES_ES.advanceRequest.closeReasonDetailMax,
+      )
+    }
   })
 })

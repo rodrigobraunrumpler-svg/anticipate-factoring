@@ -1,7 +1,9 @@
 import { z } from 'zod'
 import { rucSchema } from '../identity/index.js'
 import { amountSchema, currencySchema } from '../money/index.js'
+import { slugSchema } from '../payer/index.js'
 import { closeReasonSchema } from './close-reasons.js'
+import { publicCodeSchema } from './public-code.js'
 import { advanceRequestStatusSchema } from './statuses.js'
 
 export const EVENT_TYPES = ['advance-request.created', 'advance-request.status-changed'] as const
@@ -18,8 +20,8 @@ export const advanceRequestCreatedEventSchema = baseEventSchema.extend({
   type: z.literal('advance-request.created'),
   payload: z.object({
     advanceRequestId: z.uuid(),
-    publicCode: z.string().min(1),
-    payerSlug: z.string().min(1),
+    publicCode: publicCodeSchema,
+    payerSlug: slugSchema,
     supplierRuc: rucSchema,
     currency: currencySchema,
     requestedAmount: amountSchema,
@@ -33,11 +35,14 @@ export const statusChangedEventSchema = baseEventSchema.extend({
   type: z.literal('advance-request.status-changed'),
   payload: z.object({
     advanceRequestId: z.uuid(),
-    publicCode: z.string().min(1),
+    publicCode: publicCodeSchema,
     from: advanceRequestStatusSchema,
     to: advanceRequestStatusSchema,
     closeReason: closeReasonSchema.nullable(),
-    /** null cuando el cambio lo hace el sistema (por ejemplo, la creación desde la landing). */
+    /**
+     * null cuando el cambio lo hace el sistema (por ejemplo, un cierre automático). La creación de la
+     * solicitud no emite este evento con `from` nulo: emite `advance-request.created`.
+     */
     changedByUserId: z.uuid().nullable(),
   }),
 })

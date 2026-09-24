@@ -29,6 +29,9 @@
       {
         "code": "DOCUMENT_TYPE_NOT_ALLOWED",
         "message": "Solo aceptamos facturas electrónicas (tipo 01). Este comprobante es de tipo boleta de venta.",
+        "params": {
+          "kind": "boleta de venta"
+        },
         "invoice": "F001-123",
         "rule": "document-type"
       }

@@ -5,17 +5,21 @@ import { describe, expect, it } from 'vitest'
 
 const SRC = fileURLToPath(new URL('.', import.meta.url))
 
-/** Qué dominios puede importar cada dominio. Agregar un dominio = agregar su fila; el test falla si falta. */
+/**
+ * Qué dominios puede importar cada dominio. Agregar un dominio = agregar su fila; el test falla si
+ * falta. `errors` es la capa base (códigos, `Problem` y todo el texto en español) y cualquier dominio
+ * puede importarla; ella no importa a nadie, así que no crea ciclos.
+ */
 const ALLOWED: Record<string, readonly string[]> = {
   errors: [],
   identity: ['errors'],
   money: ['errors'],
-  dates: [],
-  user: [],
+  dates: ['errors'],
+  user: ['errors'],
   invoice: ['errors', 'money', 'dates'],
-  'advance-request': ['identity', 'money', 'dates', 'user'],
-  'supplier-document': ['dates'],
-  payer: ['identity', 'money'],
+  'advance-request': ['errors', 'identity', 'money', 'dates', 'user', 'payer'],
+  'supplier-document': ['errors', 'dates'],
+  payer: ['errors', 'identity', 'money'],
 }
 
 type Edge = { file: string; domain: string; target: string; specifier: string; resolved: string }

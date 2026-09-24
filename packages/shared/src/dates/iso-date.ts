@@ -1,6 +1,7 @@
 import { TZDate } from '@date-fns/tz'
 import { addDays, differenceInCalendarDays, format, formatISO, isValid, parseISO } from 'date-fns'
 import { z } from 'zod'
+import { VALIDATION_MESSAGES_ES } from '../errors/index.js'
 
 /**
  * Fecha de calendario sin hora ni zona: "2026-09-23". Tipo de plantilla anclado (rechaza un
@@ -50,7 +51,7 @@ export function todayIn(timeZone: string, now: Date): IsoDate {
 
 /** Su salida ya es `IsoDate`. */
 export const isoDateSchema = z
-  .string()
+  .string({ error: VALIDATION_MESSAGES_ES.dates.isoDate })
   .trim()
-  .refine(isIsoDate, { error: 'La fecha debe tener el formato AAAA-MM-DD.' })
+  .refine(isIsoDate, { error: VALIDATION_MESSAGES_ES.dates.isoDate })
   .transform((v) => v as IsoDate)

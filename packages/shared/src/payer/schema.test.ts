@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { MESSAGES_ES, VALIDATION_MESSAGES_ES } from '../errors/index.js'
 import { isHexColor, publicPayerSchema } from './schema.js'
 
 type StandardIssue = { message: string; issues?: readonly StandardIssue[] }
@@ -102,5 +103,44 @@ describe('publicPayerSchema', () => {
     }
 
     expect(publicPayerSchema.safeParse(sea).success).toBe(true)
+  })
+
+  it('cada restricción responde con un mensaje en español, nunca con el inglés de Zod', () => {
+    const allowed = new Set<string>([
+      ...Object.values(VALIDATION_MESSAGES_ES.payer),
+      MESSAGES_ES.INVALID_RUC,
+    ])
+    const collectMessages = (issues: readonly StandardIssue[]): string[] =>
+      issues.flatMap((issue) => [issue.message, ...collectMessages(issue.issues ?? [])])
+    const variants: Array<[string, Record<string, unknown>]> = [
+      ['slug largo', { slug: 'a'.repeat(61) }],
+      ['slug no texto', { slug: 7 }],
+      ['razón social corta', { legalName: 'ab' }],
+      ['razón social larga', { legalName: 'a'.repeat(201) }],
+      ['nombre corto corto', { shortName: 'a' }],
+      ['nombre corto largo', { shortName: 'a'.repeat(41) }],
+      ['porcentaje cero', { advancePercent: 0 }],
+      ['porcentaje mayor a 100', { advancePercent: 101 }],
+      ['porcentaje con tres decimales', { advancePercent: 33.333 }],
+      ['porcentaje como texto', { advancePercent: '80' }],
+      ['plazo negativo', { minTermDays: -1 }],
+      ['plazo no entero', { minTermDays: 1.5 }],
+      ['máximo de facturas cero', { maxInvoices: 0 }],
+      ['máximo de facturas no entero', { maxInvoices: 1.5 }],
+      ['sin monedas', { allowedCurrencies: [] }],
+      ['moneda desconocida', { allowedCurrencies: ['EUR'] }],
+      ['color no hexadecimal', { accentColor: 'azul' }],
+      ['logo que no es URL', { logoUrl: 'no-es-url' }],
+      ['textos que no son objeto', { texts: 'hola' }],
+    ]
+    for (const [name, patch] of variants) {
+      const r = publicPayerSchema.safeParse({ ...sea, ...patch })
+      expect(r.success, name).toBe(false)
+      if (!r.success) {
+        for (const message of collectMessages(r.error.issues)) {
+          expect(allowed.has(message), `${name}: ${message}`).toBe(true)
+        }
+      }
+    }
   })
 })

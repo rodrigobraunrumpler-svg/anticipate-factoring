@@ -21,8 +21,14 @@ export {
   CAVALI_REGISTRATION,
   CONTACT_TIME_SLOT_LABELS,
   CONTACT_TIME_SLOTS,
+  FORM_MESSAGES,
 } from './form.js'
-export { formatPublicCode, type PublicCode, parsePublicCode } from './public-code.js'
+export {
+  formatPublicCode,
+  type PublicCode,
+  parsePublicCode,
+  publicCodeSchema,
+} from './public-code.js'
 export {
   ADVANCE_REQUEST_STATUSES,
   type AdvanceRequestStatus,
