@@ -1,0 +1,26 @@
+# dependencias y builds
+node_modules/
+dist/
+.next/
+.astro/
+.open-next/
+.turbo/
+coverage/
+*.tsbuildinfo
+
+# entorno y secretos
+.env
+.env.*
+!.env.example
+
+# prisma
+apps/api/prisma/*.db
+
+# sistema y editores
+.DS_Store
+.vscode/*
+!.vscode/extensions.json
+.idea/
+
+# cloudflare
+.wrangler/
