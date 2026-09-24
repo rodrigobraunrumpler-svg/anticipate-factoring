@@ -63,6 +63,14 @@ describe('estructura de la máquina de estados', () => {
     expect(CLOSE_REASONS_BY_STATUS.REJECTED.length).toBeGreaterThan(0)
     expect(CLOSE_REASONS_BY_STATUS.WITHDRAWN.length).toBeGreaterThan(0)
   })
+
+  it('todo estado no terminal puede cerrarse directamente', () => {
+    for (const s of ADVANCE_REQUEST_STATUSES) {
+      if (isTerminalStatus(s)) continue
+      const canClose = exits(s).some((next) => next === 'REJECTED' || next === 'WITHDRAWN')
+      expect(canClose, `${s} no tiene cierre directo`).toBe(true)
+    }
+  })
 })
 
 describe('transitionsFrom', () => {
@@ -89,6 +97,13 @@ describe('availableTransitions', () => {
       availableTransitions('DOCUMENTS_PENDING', 'AGENT', { documentsValid: true }).map((t) => t.to),
     ).toEqual(['UNDER_REVIEW', 'REJECTED', 'WITHDRAWN'])
   })
+
+  it('oculta la aprobación hasta que la proforma esté aceptada', () => {
+    expect(availableTransitions('QUOTE_SENT', 'AGENT', {}).map((t) => t.to)).toEqual(['WITHDRAWN'])
+    expect(
+      availableTransitions('QUOTE_SENT', 'AGENT', { quoteAccepted: true }).map((t) => t.to),
+    ).toEqual(['APPROVED', 'WITHDRAWN'])
+  })
 })
 
 describe('evaluateStatusChange', () => {
@@ -100,6 +115,11 @@ describe('evaluateStatusChange', () => {
   it('devuelve la guarda que la API debe comprobar', () => {
     const r = evaluateStatusChange({ from: 'DOCUMENTS_PENDING', to: 'UNDER_REVIEW', role: 'AGENT' })
     expect(r).toEqual({ ok: true, guard: 'documentsValid', requiresReason: false })
+  })
+
+  it('devuelve la guarda de proforma aceptada para aprobar', () => {
+    const r = evaluateStatusChange({ from: 'QUOTE_SENT', to: 'APPROVED', role: 'AGENT' })
+    expect(r).toEqual({ ok: true, guard: 'quoteAccepted', requiresReason: false })
   })
 
   it('rechaza una transición que no existe', () => {

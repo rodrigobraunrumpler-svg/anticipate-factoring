@@ -4,7 +4,7 @@ import { CLOSE_REASONS_BY_STATUS, type CloseReason, closeReasonSchema } from './
 import { type AdvanceRequestStatus, advanceRequestStatusSchema } from './statuses.js'
 
 /** Nombres de guardas. La API las implementa (necesitan base de datos); shared solo las nombra. */
-export const GUARDS = ['documentsValid'] as const
+export const GUARDS = ['documentsValid', 'quoteAccepted'] as const
 export type Guard = (typeof GUARDS)[number]
 
 export type Transition = {
@@ -29,7 +29,7 @@ export const TRANSITIONS: readonly Transition[] = [
   { from: 'DOCUMENTS_PENDING', to: 'WITHDRAWN', requiresReason: true },
   { from: 'UNDER_REVIEW', to: 'QUOTE_SENT' },
   { from: 'UNDER_REVIEW', to: 'REJECTED', requiresReason: true },
-  { from: 'QUOTE_SENT', to: 'APPROVED' },
+  { from: 'QUOTE_SENT', to: 'APPROVED', guard: 'quoteAccepted' },
   { from: 'QUOTE_SENT', to: 'WITHDRAWN', requiresReason: true },
   { from: 'APPROVED', to: 'DISBURSED', minRole: 'ADMIN' },
   { from: 'APPROVED', to: 'WITHDRAWN', requiresReason: true },
