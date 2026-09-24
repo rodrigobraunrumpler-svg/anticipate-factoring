@@ -24,3 +24,6 @@ apps/api/prisma/*.db
 
 # cloudflare
 .wrangler/
+
+# XML reales sin anonimizar de la suite dorada
+packages/shared/test/golden/private/

@@ -54,7 +54,7 @@
     "dev": "tsdown --watch",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --coverage",
-    "check:package": "publint && attw --pack ."
+    "check:package": "publint && attw --pack . --profile esm-only"
   },
   "dependencies": {
     "@date-fns/tz": "catalog:",

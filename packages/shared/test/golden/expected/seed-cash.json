@@ -1,0 +1,35 @@
+{
+  "parsed": {
+    "documentType": "01",
+    "seriesNumber": "F001-123",
+    "issueDate": "2026-09-01",
+    "currency": "PEN",
+    "issuerRuc": "20100070970",
+    "issuerName": "PROVEEDOR EJEMPLO S.A.C.",
+    "recipientRuc": "20131312955",
+    "recipientName": "SERVICIOS ENERGETICOS AMBIENTALES S.A.",
+    "total": "11800.00",
+    "paymentTerms": "CASH",
+    "netPendingAmount": null,
+    "installments": [],
+    "detraction": {
+      "percent": 10,
+      "amount": "1180.00"
+    },
+    "signed": true
+  },
+  "validation": {
+    "problems": [
+      {
+        "code": "CASH_INVOICE",
+        "message": "La factura es al contado; solo podemos adelantar facturas al crédito.",
+        "invoice": "F001-123",
+        "rule": "credit-with-pending-amount"
+      }
+    ],
+    "validInvoices": [],
+    "currency": null,
+    "totalNetPending": "0.00",
+    "maxAmount": "0.00"
+  }
+}
