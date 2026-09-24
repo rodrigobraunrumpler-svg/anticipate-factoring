@@ -16,6 +16,14 @@ export {
   statusChangedEventSchema,
 } from './events.js'
 export {
+  type AdvanceRequestForm,
+  advanceRequestFormSchema,
+  CAVALI_REGISTRATION,
+  CONTACT_TIME_SLOT_LABELS,
+  CONTACT_TIME_SLOTS,
+} from './form.js'
+export { formatPublicCode, type PublicCode, parsePublicCode } from './public-code.js'
+export {
   ADVANCE_REQUEST_STATUSES,
   type AdvanceRequestStatus,
   advanceRequestStatusSchema,
