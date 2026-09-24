@@ -507,6 +507,34 @@ describe('parseUblInvoice · CDATA', () => {
     expect(inv.recipientRuc).toBe('20131312955')
     expect(inv.recipientName).toBe('SERVICIOS ENERGETICOS AMBIENTALES S.A.')
   })
+
+  it('un CDATA fuera del elemento raíz es XML ilegible, como el texto fuera de la raíz', () => {
+    const xml = buildInvoiceXml()
+    const [prolog = '', rest = ''] = xml.split(/(?<=\?>)/, 2)
+    for (const malformed of [
+      `${prolog}<![CDATA[x]]>${rest}`,
+      `${prolog}\n<!-- nota -->\n<![CDATA[x]]>${rest}`,
+      `${xml}<![CDATA[x]]>`,
+      '<Invoice/><![CDATA[x]]>',
+      `${prolog}<Invoice><cbc:Vacio/><cbc:Vacio nota="/>" /></Invoice><![CDATA[x]]>`,
+    ]) {
+      expect(parseError(malformed).code, malformed.slice(0, 80)).toBe('UNREADABLE_XML')
+    }
+    // Lo que sí puede ir fuera de la raíz se sigue aceptando: espacios, comentarios e instrucciones.
+    expect(parseOk(`${xml}\n<!-- fin <![CDATA[ -->\n<?nota x?>\n`).seriesNumber).toBe('F001-123')
+  })
+
+  it('un "<!" que no abre un comentario ni un CDATA es XML ilegible', () => {
+    // El validador los deja pasar y el parser tomaría `<![CDATX[` como CDATA y `<!X>` como elemento.
+    for (const content of [
+      'A<![CDATX[B &amp; C]]>D',
+      'A<![INCLUDE[B]]>C',
+      'A<!X>B',
+      '<!ELEMENT x>',
+    ]) {
+      expect(parseError(withIssuerName(content)).code, content).toBe('UNREADABLE_XML')
+    }
+  })
 })
 
 describe('parseUblInvoice · propiedad: nunca lanza', () => {

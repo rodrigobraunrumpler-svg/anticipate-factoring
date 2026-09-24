@@ -77,12 +77,13 @@ const TEXT_ESCAPES: Readonly<Record<string, string>> = { '&': '&amp;', '<': '&lt
 
 /**
  * Construcciones de marcado de XML, en el orden en que se prueban en cada `<`: sección CDATA (grupo
- * 1, su contenido), comentario, instrucción de procesamiento y etiqueta con sus atributos entre
- * comillas (un atributo puede traer `>` o `<![CDATA[`). Las tres primeras terminan en su primer
- * cierre; las tres formas de la etiqueta empiezan con caracteres disjuntos, así que no retrocede.
+ * 1, su contenido), comentario o instrucción de procesamiento (grupo 2) y etiqueta con sus
+ * atributos entre comillas (un atributo puede traer `>` o `<![CDATA[`). Las tres primeras terminan
+ * en su primer cierre; las tres formas de la etiqueta empiezan con caracteres disjuntos, así que
+ * no retrocede.
  */
 const MARKUP =
-  /<!\[CDATA\[([\s\S]*?)\]\]>|<!--[\s\S]*?-->|<\?[\s\S]*?\?>|<(?:[^>"']|"[^"]*"|'[^']*')*>/g
+  /<!\[CDATA\[([\s\S]*?)\]\]>|(<!--[\s\S]*?-->|<\?[\s\S]*?\?>)|<(?:[^>"']|"[^"]*"|'[^']*')*>/g
 
 /**
  * Reemplaza cada sección `<![CDATA[…]]>` por su contenido escapado como texto XML (`&`, `<`, `>`).
@@ -92,11 +93,35 @@ const MARKUP =
  * `<![CDATA[`: un comentario, una instrucción de procesamiento o un atributo que contenga ese texto
  * no abre una sección. Corre después de `XMLValidator.validate`, que ya garantizó que toda
  * construcción está cerrada.
+ *
+ * Devuelve null, y el XML se rechaza como ilegible, ante dos formas mal formadas que el validador
+ * deja pasar:
+ * - Un CDATA fuera del elemento raíz. El texto fuera de la raíz sí lo rechaza el validador; el
+ *   CDATA, vuelto texto, el parser lo descartaría en silencio. Para saberlo se lleva la
+ *   profundidad: una etiqueta de apertura suma, una de cierre resta, y una vacía (`<x/>`), un
+ *   comentario o una instrucción no cambian nada.
+ * - Un `<!` que no abre un comentario ni un CDATA (el DOCTYPE ya se rechazó antes). El parser toma
+ *   cualquier `<![` como CDATA sin mirar la palabra (`<![CDATX[…]]>`) y un `<!X>` como elemento:
+ *   por ahí volvería el contenido sin escapar que esta función existe para evitar.
  */
-function inlineCdata(xml: string): string {
-  return xml.replace(MARKUP, (markup, cdata: string | undefined) =>
-    cdata === undefined ? markup : cdata.replace(/[&<>]/g, (ch) => TEXT_ESCAPES[ch] ?? ch),
+function inlineCdata(xml: string): string | null {
+  let depth = 0
+  let malformed = false
+  const inlined = xml.replace(
+    MARKUP,
+    (markup, cdata: string | undefined, commentOrInstruction: string | undefined) => {
+      if (cdata !== undefined) {
+        if (depth === 0) malformed = true
+        return cdata.replace(/[&<>]/g, (ch) => TEXT_ESCAPES[ch] ?? ch)
+      }
+      if (commentOrInstruction !== undefined) return markup
+      if (markup.startsWith('<!') || markup.startsWith('<?')) malformed = true
+      else if (markup.startsWith('</')) depth -= 1
+      else if (!markup.endsWith('/>')) depth += 1
+      return markup
+    },
   )
+  return malformed ? null : inlined
 }
 
 function asList<T>(value: T | T[] | undefined): T[] {
@@ -242,9 +267,12 @@ export function parseUblInvoice(rawXml: string, options: ParseOptions = {}): Par
     return fail(createProblem('UNREADABLE_XML'))
   }
 
+  const inlined = inlineCdata(xml)
+  if (inlined === null) return fail(createProblem('UNREADABLE_XML'))
+
   let document: Record<string, unknown>
   try {
-    document = parser.parse(inlineCdata(xml)) as Record<string, unknown>
+    document = parser.parse(inlined) as Record<string, unknown>
   } catch {
     return fail(createProblem('UNREADABLE_XML'))
   }
