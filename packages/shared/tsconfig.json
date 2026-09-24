@@ -1,5 +1,6 @@
 {
   "extends": "@anticipate/config/tsconfig.library.json",
-  "compilerOptions": { "types": ["node"], "noEmit": true },
-  "include": ["src"]
+  "compilerOptions": { "types": [], "noEmit": true },
+  "include": ["src/**/*.ts"],
+  "exclude": ["src/**/*.test.ts"]
 }

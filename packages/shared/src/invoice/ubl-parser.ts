@@ -90,8 +90,8 @@ export function decodeXml(bytes: Uint8Array): string {
   const declared = /encoding=["']([\w-]+)["']/i.exec(header)?.[1]
   const hasBom = bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf
   const encoding = hasBom ? 'utf-8' : (declared ?? 'utf-8')
-  // `InstanceType<typeof TextDecoder>` en vez de `TextDecoder`: con lib "ES2022" (sin DOM), @types/node
-  // solo declara `TextDecoder` como valor global, no como tipo.
+  // `InstanceType<typeof TextDecoder>` en vez de `TextDecoder`: `shared` compila sin tipos de Node ni
+  // del DOM y `src/env.d.ts` solo declara `TextDecoder` como valor global, no como tipo.
   let decoder: InstanceType<typeof TextDecoder>
   try {
     decoder = new TextDecoder(encoding)

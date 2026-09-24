@@ -22,7 +22,27 @@ const ALLOWED: Record<string, readonly string[]> = {
   payer: ['errors', 'identity', 'money'],
 }
 
+/**
+ * Paquetes de npm que puede importar cada dominio, además de `zod` (permitido en todos). `shared` es
+ * isomorfo (landing, admin y API): ningún dominio importa módulos de Node (`node:…`) ni paquetes que
+ * no estén en `dependencies` de package.json. Agregar una dependencia = declararla aquí en su dominio.
+ */
+const PACKAGES_FOR_ALL = ['zod'] as const
+const ALLOWED_PACKAGES: Record<string, readonly string[]> = {
+  money: ['decimal.js'],
+  dates: ['date-fns', '@date-fns/tz'],
+  invoice: ['fast-xml-parser'],
+}
+
+const packageJson = JSON.parse(
+  readFileSync(new URL('../package.json', import.meta.url), 'utf8'),
+) as {
+  dependencies?: Record<string, string>
+}
+const DEPENDENCIES = new Set(Object.keys(packageJson.dependencies ?? {}))
+
 type Edge = { file: string; domain: string; target: string; specifier: string; resolved: string }
+type PackageImport = { file: string; domain: string; specifier: string; packageName: string }
 
 function sourceFiles(): string[] {
   return readdirSync(SRC, { recursive: true, withFileTypes: true })
@@ -36,20 +56,35 @@ function sourceFiles(): string[] {
  * (`import '../x/index.js'`) y dinámico (`import('../x/index.js')`). Ignora los especificadores de
  * paquete (`'zod'`): esos nunca cruzan un dominio de `shared`.
  */
-function relativeSpecifiers(source: string): string[] {
+function allSpecifiers(source: string): string[] {
   const patterns = [
     /from\s+(['"])([^'"]+)\1/g,
     /import\s+(['"])([^'"]+)\1/g,
     /import\s*\(\s*(['"])([^'"]+)\1\s*\)/g,
+    /require\s*\(\s*(['"])([^'"]+)\1\s*\)/g,
   ]
   const specifiers: string[] = []
   for (const pattern of patterns) {
-    for (const m of source.matchAll(pattern)) {
-      const specifier = m[2] as string
-      if (specifier.startsWith('./') || specifier.startsWith('../')) specifiers.push(specifier)
-    }
+    for (const m of source.matchAll(pattern)) specifiers.push(m[2] as string)
   }
   return specifiers
+}
+
+const isRelative = (specifier: string) => specifier.startsWith('./') || specifier.startsWith('../')
+
+function relativeSpecifiers(source: string): string[] {
+  return allSpecifiers(source).filter(isRelative)
+}
+
+/** Especificadores de paquete (`'zod'`, `'@date-fns/tz'`, `'node:fs'`, `'fs'`): todo lo que no es relativo. */
+function packageSpecifiers(source: string): string[] {
+  return allSpecifiers(source).filter((specifier) => !isRelative(specifier))
+}
+
+/** Nombre del paquete de un especificador: `@scope/name` o el primer segmento (`date-fns/locale` → `date-fns`). */
+function packageNameOf(specifier: string): string {
+  const parts = specifier.split('/')
+  return specifier.startsWith('@') ? parts.slice(0, 2).join('/') : (parts[0] as string)
 }
 
 function crossDomainImports(): Edge[] {
@@ -70,8 +105,21 @@ function crossDomainImports(): Edge[] {
   return edges
 }
 
+function packageImports(): PackageImport[] {
+  const imports: PackageImport[] = []
+  for (const file of sourceFiles()) {
+    const fileRelative = relative(SRC, file)
+    const domain = fileRelative.split(sep).length < 2 ? '' : (fileRelative.split(sep)[0] as string)
+    for (const specifier of packageSpecifiers(readFileSync(file, 'utf8'))) {
+      imports.push({ file: fileRelative, domain, specifier, packageName: packageNameOf(specifier) })
+    }
+  }
+  return imports
+}
+
 describe('arquitectura de shared', () => {
   const edges = crossDomainImports()
+  const packages = packageImports()
 
   it('todo dominio está declarado en la tabla de dependencias', () => {
     const domains = readdirSync(SRC, { withFileTypes: true })
@@ -91,6 +139,31 @@ describe('arquitectura de shared', () => {
   it('cada dominio solo importa lo que la tabla permite', () => {
     const bad = edges.filter((e) => !(ALLOWED[e.domain] ?? []).includes(e.target))
     expect(bad, JSON.stringify(bad, null, 2)).toEqual([])
+  })
+
+  it('ningún archivo de código importa módulos de Node (`node:…`)', () => {
+    const bad = packages.filter((p) => p.specifier.startsWith('node:'))
+    expect(bad, JSON.stringify(bad, null, 2)).toEqual([])
+  })
+
+  it('todo paquete importado está en `dependencies` de package.json', () => {
+    const bad = packages.filter((p) => !DEPENDENCIES.has(p.packageName))
+    expect(bad, JSON.stringify(bad, null, 2)).toEqual([])
+  })
+
+  it('cada dominio solo importa los paquetes que tiene permitidos', () => {
+    const bad = packages.filter(
+      (p) =>
+        !(PACKAGES_FOR_ALL as readonly string[]).includes(p.packageName) &&
+        !(ALLOWED_PACKAGES[p.domain] ?? []).includes(p.packageName),
+    )
+    expect(bad, JSON.stringify(bad, null, 2)).toEqual([])
+  })
+
+  it('toda dependencia de runtime está asignada a algún dominio', () => {
+    const assigned = new Set([...PACKAGES_FOR_ALL, ...Object.values(ALLOWED_PACKAGES).flat()])
+    expect([...DEPENDENCIES].filter((d) => !assigned.has(d))).toEqual([])
+    expect(Object.keys(ALLOWED_PACKAGES).every((d) => Object.hasOwn(ALLOWED, d))).toBe(true)
   })
 
   it('la tabla no tiene ciclos', () => {
@@ -125,5 +198,21 @@ describe('relativeSpecifiers', () => {
 
   it('ignora especificadores que no son relativos', () => {
     expect(relativeSpecifiers("import { z } from 'zod'")).toEqual([])
+  })
+})
+
+describe('packageSpecifiers y packageNameOf', () => {
+  it('detecta paquetes, módulos de Node y require', () => {
+    expect(
+      packageSpecifiers(
+        "import { z } from 'zod'\nimport fs from 'node:fs'\nconst p = require('path')\nimport '../x/index.js'",
+      ),
+    ).toEqual(['zod', 'node:fs', 'path'])
+  })
+
+  it('obtiene el nombre del paquete con y sin scope', () => {
+    expect(packageNameOf('@date-fns/tz')).toBe('@date-fns/tz')
+    expect(packageNameOf('date-fns/locale')).toBe('date-fns')
+    expect(packageNameOf('node:fs')).toBe('node:fs')
   })
 })
