@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { advanceRequestFormSchema } from './form.js'
+import { advanceRequestFormSchema, FORM_MESSAGES } from './form.js'
 
 const valid = {
   contact: {
@@ -70,5 +70,87 @@ describe('advanceRequestFormSchema', () => {
     expect(advanceRequestFormSchema.safeParse(withoutSource).success).toBe(true)
     const r = advanceRequestFormSchema.safeParse({ ...valid, source: { utm: { password: 'x' } } })
     expect(r.success).toBe(false)
+  })
+
+  it('rechaza un correo de más de 254 caracteres con el mensaje en español', () => {
+    const longEmail = `${'a'.repeat(250)}@x.co` // 255 caracteres
+    const r = advanceRequestFormSchema.safeParse({
+      ...valid,
+      contact: { ...valid.contact, email: longEmail },
+    })
+    expect(r.success).toBe(false)
+    if (!r.success) expect(r.error.issues[0]?.message).toBe(FORM_MESSAGES.emailMax)
+  })
+
+  it('rechaza una versión de términos o de privacidad de más de 20 caracteres', () => {
+    const longVersion = 'v'.repeat(21)
+    const terms = advanceRequestFormSchema.safeParse({
+      ...valid,
+      consents: { ...valid.consents, termsVersion: longVersion },
+    })
+    expect(terms.success).toBe(false)
+    if (!terms.success) expect(terms.error.issues[0]?.message).toBe(FORM_MESSAGES.termsVersionMax)
+
+    const privacy = advanceRequestFormSchema.safeParse({
+      ...valid,
+      consents: { ...valid.consents, privacyVersion: longVersion },
+    })
+    expect(privacy.success).toBe(false)
+    if (!privacy.success) {
+      expect(privacy.error.issues[0]?.message).toBe(FORM_MESSAGES.privacyVersionMax)
+    }
+  })
+
+  it('rechaza más de 10 parámetros utm', () => {
+    const utm = Object.fromEntries(
+      Array.from({ length: 11 }, (_, i) => [`utm_key${String.fromCharCode(97 + i)}`, 'v']),
+    )
+    const r = advanceRequestFormSchema.safeParse({ ...valid, source: { ...valid.source, utm } })
+    expect(r.success).toBe(false)
+    if (!r.success) {
+      expect(r.error.issues.some((issue) => issue.message === FORM_MESSAGES.utmTooMany)).toBe(true)
+    }
+  })
+
+  it('rechaza una clave utm de más de 40 caracteres', () => {
+    const longKey = `utm_${'a'.repeat(37)}` // 41 caracteres
+    const r = advanceRequestFormSchema.safeParse({
+      ...valid,
+      source: { ...valid.source, utm: { [longKey]: 'x' } },
+    })
+    expect(r.success).toBe(false)
+    if (!r.success) expect(r.error.issues[0]?.message).toBe(FORM_MESSAGES.utmKey)
+  })
+
+  it('nunca deja pasar un mensaje en inglés por defecto de Zod', () => {
+    const invalid = {
+      contact: {
+        fullName: 'A',
+        dni: '46728673',
+        mobile: '123456789',
+        email: `${'a'.repeat(250)}@x.co`,
+        isLegalRepresentative: false,
+        contactTimeSlot: 'NOON',
+      },
+      company: { ruc: '20100070970', legalName: 'X' },
+      financing: { requestedAmount: '8000.00', purpose: 'p'.repeat(501) },
+      cavaliRegistration: 'MAYBE',
+      consents: {
+        terms: false,
+        personalData: false,
+        termsVersion: '',
+        privacyVersion: 'v'.repeat(21),
+      },
+      source: { utm: { password: 'x' }, referrer: 'not-a-url' },
+    }
+    const r = advanceRequestFormSchema.safeParse(invalid)
+    expect(r.success).toBe(false)
+    if (!r.success) {
+      const allowedMessages = new Set<string>(Object.values(FORM_MESSAGES))
+      expect(r.error.issues.length).toBeGreaterThan(1)
+      for (const issue of r.error.issues) {
+        expect(allowedMessages.has(issue.message), issue.message).toBe(true)
+      }
+    }
   })
 })
