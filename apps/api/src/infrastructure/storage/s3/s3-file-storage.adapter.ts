@@ -202,8 +202,12 @@ export class S3FileStorageAdapter implements FileStoragePort {
     }
   }
 
-  downloadUrl(key: string, downloadName: string): Promise<string> {
-    return getSignedUrl(
+  /**
+   * `async` a propósito: cualquier falla, también al armar la cabecera antes de firmar, llega como
+   * promesa rechazada y nunca como excepción síncrona que un `.catch()` encadenado no ve.
+   */
+  async downloadUrl(key: string, downloadName: string): Promise<string> {
+    return await getSignedUrl(
       this.client,
       new GetObjectCommand({
         Bucket: this.bucket,
@@ -284,28 +288,44 @@ function checkedLimits(limits: S3RequestLimits): S3RequestLimits {
 }
 
 /**
+ * Lo que nunca va en un nombre de descarga: controles C0, DEL y C1 (`\p{Cc}`), comillas, barras y
+ * surrogates UTF-16 sueltos (`\p{Cs}`). Con la bandera `u` la expresión recorre puntos de código: un
+ * par bien formado es un solo carácter fuera del plano básico y no coincide con `\p{Cs}`.
+ */
+const UNSAFE_DOWNLOAD_NAME_CHARS = /[\p{Cc}\p{Cs}"\\/]/gu
+
+/**
  * `Content-Disposition` de descarga (RFC 6266): `filename` en ASCII para cualquier navegador y
- * `filename*` en UTF-8 cuando el nombre tiene tildes. Quita comillas, barras y caracteres de
- * control, así que un nombre nunca inyecta otra cabecera ni una ruta.
+ * `filename*` en UTF-8 cuando el nombre tiene tildes. Acepta cualquier texto y nunca lanza: cambia
+ * por `_` las comillas, las barras, los caracteres de control y los surrogates sueltos (con los que
+ * `encodeURIComponent` lanzaría `URIError`), así que un nombre nunca inyecta otra cabecera ni una ruta.
  */
 export function buildContentDisposition(downloadName: string): string {
   const name = sanitizeDownloadName(downloadName)
-  const ascii = name
-    .normalize('NFD')
-    .replace(/\p{M}/gu, '')
-    .replace(/[^\x20-\x7e]/g, '_')
+  const ascii = asciiDownloadName(name)
   if (ascii === name) return `attachment; filename="${ascii}"`
   return `attachment; filename="${ascii}"; filename*=UTF-8''${encodeRfc5987(name)}`
 }
 
+/** En NFC, sin caracteres inseguros, recortado a `MAX_DOWNLOAD_NAME_LENGTH` caracteres y nunca vacío. */
 function sanitizeDownloadName(downloadName: string): string {
-  const chars = [...downloadName.normalize('NFC')].map((char) => {
-    const code = char.codePointAt(0) ?? 0
-    const unsafe = code < 0x20 || code === 0x7f || char === '"' || char === '\\' || char === '/'
-    return unsafe ? '_' : char
-  })
-  const name = chars.slice(0, MAX_DOWNLOAD_NAME_LENGTH).join('').trim()
+  const safe = downloadName.normalize('NFC').replace(UNSAFE_DOWNLOAD_NAME_CHARS, '_')
+  // El recorte cuenta puntos de código: nunca parte un par de surrogates.
+  const name = [...safe].slice(0, MAX_DOWNLOAD_NAME_LENGTH).join('').trim()
   return name === '' ? FALLBACK_DOWNLOAD_NAME : name
+}
+
+/**
+ * Versión ASCII del nombre ya saneado: sin tildes y con un `_` por cada carácter que no sea ASCII
+ * imprimible. Si no queda nada (un nombre hecho solo de marcas combinantes), `archivo`.
+ */
+function asciiDownloadName(name: string): string {
+  const ascii = name
+    .normalize('NFD')
+    .replace(/\p{M}/gu, '')
+    .replace(/[^\x20-\x7e]/gu, '_')
+    .trim()
+  return ascii === '' ? FALLBACK_DOWNLOAD_NAME : ascii
 }
 
 function encodeRfc5987(value: string): string {

@@ -362,23 +362,50 @@ describe('S3FileStorageAdapter: plazo por operación', () => {
 })
 
 describe('S3FileStorageAdapter.downloadUrl', () => {
-  it('firma por 300 segundos con el nombre de descarga y sin contactar al proveedor', async () => {
+  /** Firma con un cliente real: firmar no contacta al proveedor, el endpoint puede no existir. */
+  async function signedUrl(key: string, downloadName: string): Promise<URL> {
     const client = new S3Client({
       endpoint: 'http://127.0.0.1:9',
       region: 'us-east-1',
       forcePathStyle: true,
       credentials: { accessKeyId: 'local', secretAccessKey: 'local' },
     })
-    const storage = new S3FileStorageAdapter(client, { bucket: 'anticipate-local' })
+    try {
+      const storage = new S3FileStorageAdapter(client, { bucket: 'anticipate-local' })
+      return new URL(await storage.downloadUrl(key, downloadName))
+    } finally {
+      client.destroy()
+    }
+  }
 
-    const url = new URL(await storage.downloadUrl('payers/p/a.pdf', 'ANT-2026-000001 F001-1.pdf'))
-    client.destroy()
+  it('firma por 300 segundos con el nombre de descarga y sin contactar al proveedor', async () => {
+    const url = await signedUrl('payers/p/a.pdf', 'ANT-2026-000001 F001-1.pdf')
 
     expect(url.pathname).toBe('/anticipate-local/payers/p/a.pdf')
     expect(url.searchParams.get('X-Amz-Expires')).toBe('300')
     expect(url.searchParams.get('response-content-disposition')).toBe(
       'attachment; filename="ANT-2026-000001 F001-1.pdf"',
     )
+  })
+
+  it('firma aunque el nombre traiga un surrogate UTF-16 suelto', async () => {
+    const url = await signedUrl('payers/p/a.pdf', 'x\uD800.pdf')
+
+    expect(url.searchParams.get('response-content-disposition')).toBe(
+      'attachment; filename="x_.pdf"',
+    )
+  })
+
+  it('nunca lanza de forma síncrona: cualquier falla llega como promesa rechazada', async () => {
+    const storage = adapterWith(new FakeS3Client())
+    // Un nombre que no es texto hace fallar el armado de la cabecera, antes de firmar: quien encadena
+    // `.catch()` igual tiene que ver el error.
+    let result: Promise<string> | undefined
+    expect(() => {
+      result = storage.downloadUrl('payers/p/a.pdf', undefined as unknown as string)
+    }).not.toThrow()
+
+    await expect(result).rejects.toBeInstanceOf(TypeError)
   })
 })
 
@@ -407,4 +434,108 @@ describe('buildContentDisposition', () => {
     )
     expect(buildContentDisposition('   ')).toBe('attachment; filename="archivo"')
   })
+
+  it('cambia por "_" los surrogates UTF-16 sueltos en vez de lanzar URIError', () => {
+    expect(buildContentDisposition('x\uD800.pdf')).toBe('attachment; filename="x_.pdf"')
+    expect(buildContentDisposition('x\uDC00\uD83D.pdf')).toBe('attachment; filename="x__.pdf"')
+    expect(buildContentDisposition('Fáctura \uDFFF.pdf')).toBe(
+      `attachment; filename="Factura _.pdf"; filename*=UTF-8''F%C3%A1ctura%20_.pdf`,
+    )
+  })
+
+  it('neutraliza también los controles C1 (U+0080 a U+009F)', () => {
+    expect(buildContentDisposition('a\u0085b\u009f.pdf')).toBe('attachment; filename="a_b_.pdf"')
+  })
+
+  it('un carácter fuera del plano básico vale un "_" en la versión ASCII y va entero en filename*', () => {
+    expect(buildContentDisposition('Factura 😀.pdf')).toBe(
+      `attachment; filename="Factura _.pdf"; filename*=UTF-8''Factura%20%F0%9F%98%80.pdf`,
+    )
+    // El recorte cuenta caracteres, no unidades UTF-16: nunca parte un par de surrogates.
+    expect(buildContentDisposition(`${'a'.repeat(149)}😀😀`)).toBe(
+      `attachment; filename="${'a'.repeat(149)}_"; filename*=UTF-8''${'a'.repeat(149)}%F0%9F%98%80`,
+    )
+  })
+
+  it('usa "archivo" en la versión ASCII si sin tildes no queda nada', () => {
+    expect(buildContentDisposition('́́')).toBe(
+      `attachment; filename="archivo"; filename*=UTF-8''%CC%81%CC%81`,
+    )
+  })
+
+  it('nunca lanza y siempre devuelve una cabecera segura, con cualquier secuencia UTF-16', () => {
+    const random = seededRandom(0x5eed)
+    const names = [
+      '',
+      '\uD800',
+      '\uDBFF\uDBFF',
+      '\uDC00',
+      '\uDC00\uD800',
+      '😀',
+      `${'a'.repeat(149)}😀`,
+      `${'a'.repeat(150)}\uD83D`,
+      `${'a'.repeat(149)}\uD83D`,
+      ' ́ ',
+      '"\\/\u0000\u007f\u0085',
+      ...Array.from({ length: 3_000 }, () => randomUtf16(random)),
+    ]
+
+    const failures: string[] = []
+    for (const name of names) {
+      try {
+        const header = buildContentDisposition(name)
+        const encoded = /; filename\*=UTF-8''(.*)$/.exec(header)?.[1]
+        // decodeURIComponent lanza si filename* no es UTF-8 válido.
+        const decoded = encoded === undefined ? '' : decodeURIComponent(encoded)
+        if (!SAFE_CONTENT_DISPOSITION.test(header) || UNSAFE_IN_FILE_NAME.test(decoded)) {
+          failures.push(`${JSON.stringify(name)} → ${header}`)
+        }
+      } catch (error) {
+        failures.push(`${JSON.stringify(name)} → ${String(error)}`)
+      }
+    }
+    expect(failures).toEqual([])
+  })
 })
+
+/**
+ * `filename` no vacío en ASCII imprimible sin comillas ni barra invertida y, si va, `filename*` solo
+ * con caracteres de RFC 5987 o escapes `%XX`: nada que corte la cabecera ni el parámetro.
+ */
+const SAFE_CONTENT_DISPOSITION =
+  /^attachment; filename="[\x20\x21\x23-\x5b\x5d-\x7e]+"(?:; filename\*=UTF-8''(?:[A-Za-z0-9!\-._~]|%[0-9A-F]{2})+)?$/
+const UNSAFE_IN_FILE_NAME = /[\p{Cc}\p{Cs}"\\/]/u
+
+/** mulberry32: números pseudoaleatorios reproducibles entre 0 y 1. */
+function seededRandom(seed: number): () => number {
+  let state = seed >>> 0
+  return () => {
+    state = (state + 0x6d2b79f5) >>> 0
+    let t = state
+    t = Math.imul(t ^ (t >>> 15), t | 1)
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61)
+    return ((t ^ (t >>> 14)) >>> 0) / 4_294_967_296
+  }
+}
+
+/** Unidades UTF-16 sueltas de rangos elegidos para que abunden los casos raros. */
+const CODE_UNIT_RANGES: ReadonlyArray<readonly [number, number]> = [
+  [0x20, 0x7e], // ASCII imprimible
+  [0x00, 0x1f], // controles C0
+  [0x7f, 0x9f], // DEL y controles C1
+  [0xa0, 0x17f], // latín con tildes
+  [0x300, 0x36f], // marcas combinantes
+  [0xd800, 0xdbff], // surrogates altos
+  [0xdc00, 0xdfff], // surrogates bajos
+  [0xe000, 0xffff], // resto del plano básico
+]
+
+function randomUtf16(random: () => number): string {
+  const length = Math.floor(random() * 200)
+  let text = ''
+  for (let i = 0; i < length; i += 1) {
+    const [from, to] = CODE_UNIT_RANGES[Math.floor(random() * CODE_UNIT_RANGES.length)] ?? [0, 0]
+    text += String.fromCharCode(from + Math.floor(random() * (to - from + 1)))
+  }
+  return text
+}

@@ -34,7 +34,8 @@ export interface FileStoragePort {
   /**
    * Enlace de descarga firmado por `DOWNLOAD_URL_TTL_SECONDS`. Firmar no contacta al proveedor, así
    * que no comprueba que el objeto exista. `downloadName` es el nombre con el que el navegador
-   * guarda el archivo: la clave interna nunca llega a la persona.
+   * guarda el archivo: la clave interna nunca llega a la persona. Acepta cualquier texto (lo sanea y
+   * nunca falla por él) y nunca lanza de forma síncrona: toda falla llega como promesa rechazada.
    */
   downloadUrl(key: string, downloadName: string): Promise<string>
 }
