@@ -15,6 +15,7 @@ import {
   type StoredObject,
 } from '#/common/storage/index.js'
 import { ConcurrencyLimiter, forEachConcurrently } from './concurrency.js'
+import { withDeadline } from './deadline.js'
 import { S3_CLIENT_TUNING } from './s3-client.factory.js'
 
 /** Cuánto le pide el adaptador al proveedor a la vez y cuánto espera cada operación. */
@@ -32,8 +33,9 @@ export type S3RequestLimits = {
   readonly maxConcurrentRequestsPerCall: number
   /**
    * Plazo de una operación desde que obtiene su cupo: todos los intentos, las esperas entre ellos y
-   * la lectura de la respuesta. Corta lo que el SDK deja colgado, como una respuesta que manda las
-   * cabeceras y no termina el cuerpo.
+   * la lectura de la respuesta. Al vencer, la operación rechaza y libera el cupo en ese momento,
+   * aunque el SDK esté esperando para reintentar; corta también lo que el SDK deja colgado, como una
+   * respuesta que manda las cabeceras y no termina el cuerpo.
    */
   readonly operationTimeoutMs: number
 }
@@ -64,6 +66,65 @@ export class StorageOperationTimeoutError extends Error {
   constructor(operation: string, timeoutMs: number, options?: ErrorOptions) {
     super(`${operation} no terminó en ${timeoutMs} ms.`, options)
     this.name = 'TimeoutError'
+  }
+}
+
+/** Una clave que el adaptador no manda al proveedor. El mensaje dice por qué, sin repetir la clave. */
+export class InvalidObjectKeyError extends Error {
+  constructor(problem: string) {
+    super(`Clave de objeto inválida: ${problem}.`)
+    this.name = 'InvalidObjectKeyError'
+  }
+}
+
+/** Largo máximo de una clave en S3 y en R2, en bytes UTF-8. */
+const MAX_OBJECT_KEY_BYTES = 1_024
+
+/**
+ * Controles C0, DEL y C1 (`\p{Cc}`) y surrogates UTF-16 sueltos (`\p{Cs}`): con la bandera `u` un par
+ * bien formado es un solo carácter y no coincide.
+ */
+const FORBIDDEN_OBJECT_KEY_CHARS = /[\p{Cc}\p{Cs}]/u
+
+/**
+ * Por qué `key` no sirve como clave de objeto, o `undefined` si sirve. Las reglas son las de
+ * `FileStoragePort`: con una clave vacía el SDK arma la ruta del bucket y la operación deja de ser
+ * sobre un objeto (`DeleteObject` pasa a borrar el bucket, `HeadObject` a consultarlo y un `GetObject`
+ * firmado a listar todas sus claves); los segmentos vacíos, `.` y `..` son rutas que un proxy o el
+ * proveedor pueden normalizar hacia otra clave o hacia el bucket. Nunca lanza, reciba lo que reciba.
+ */
+export function objectKeyProblem(key: string): string | undefined {
+  if (typeof key !== 'string') return 'no es texto'
+  if (key === '') return 'está vacía'
+  if (FORBIDDEN_OBJECT_KEY_CHARS.test(key)) {
+    return 'tiene caracteres de control o surrogates UTF-16 sueltos'
+  }
+  if (Buffer.byteLength(key, 'utf8') > MAX_OBJECT_KEY_BYTES) {
+    return `pasa de ${MAX_OBJECT_KEY_BYTES} bytes en UTF-8`
+  }
+  if (key.startsWith('/')) return 'empieza con "/"'
+  for (const segment of key.split('/')) {
+    if (segment === '') return 'tiene un segmento vacío ("//" o "/" al final)'
+    if (segment === '.' || segment === '..') return 'tiene un segmento "." o ".."'
+  }
+  return undefined
+}
+
+function assertObjectKey(key: string): void {
+  const problem = objectKeyProblem(key)
+  if (problem !== undefined) throw new InvalidObjectKeyError(problem)
+}
+
+/**
+ * Cada clave válida y ninguna repetida: dos entradas con la misma clave serían un objeto con dos
+ * contenidos y dos resultados que se contradicen.
+ */
+function assertUploadKeys(inputs: readonly PutFileInput[]): void {
+  const seen = new Set<string>()
+  for (const { key } of inputs) {
+    assertObjectKey(key)
+    if (seen.has(key)) throw new InvalidObjectKeyError('está repetida en la misma subida')
+    seen.add(key)
   }
 }
 
@@ -98,7 +159,12 @@ export class S3FileStorageAdapter implements FileStoragePort {
   }
 
   async putAll(inputs: readonly PutFileInput[]): Promise<StoredObject[]> {
+    // Antes de subir nada: una entrada inválida rechaza sin que llegue ninguna al proveedor.
+    assertUploadKeys(inputs)
     const stored: Array<StoredObject | undefined> = inputs.map(() => undefined)
+    // Las claves que se mandaron, hayan terminado bien o no: una subida que venció o se cortó pudo
+    // quedar guardada igual. Las claves son nuevas, así que borrarlas nunca pisa otro archivo.
+    const attempted: string[] = []
     let firstFailure: { readonly error: unknown } | undefined
     let failed = 0
     // Todas las subidas terminan antes de decidir qué borrar: un objeto que llegara después de la
@@ -110,7 +176,10 @@ export class S3FileStorageAdapter implements FileStoragePort {
         try {
           const result = await this.request(
             'PutObject',
-            (abortSignal) => this.put(input, abortSignal),
+            (abortSignal) => {
+              attempted.push(input.key)
+              return this.put(input, abortSignal)
+            },
             {
               wanted: () => firstFailure === undefined,
               // Antes de liberar el cupo: la subida que lo recibe ya no se manda.
@@ -129,16 +198,16 @@ export class S3FileStorageAdapter implements FileStoragePort {
     const uploaded = stored.filter((object): object is StoredObject => object !== undefined)
     if (firstFailure === undefined) return uploaded
 
-    const notDeleted = await this.deleteQuietly(uploaded.map((object) => object.key))
+    const notDeleted = await this.deleteQuietly(attempted)
     this.logger.warn(
       {
         failed,
         uploaded: uploaded.length,
-        notStarted: inputs.length - uploaded.length - failed,
+        notStarted: inputs.length - attempted.length,
         notDeleted: notDeleted.length,
         error: describeError(firstFailure.error),
       },
-      'Falló una subida; se intentó borrar las que sí llegaron.',
+      'Falló una subida; se intentó borrar todas las que se mandaron.',
     )
     throw firstFailure.error
   }
@@ -146,11 +215,25 @@ export class S3FileStorageAdapter implements FileStoragePort {
   async deleteQuietly(keys: readonly string[]): Promise<string[]> {
     const unique = [...new Set(keys)]
     const notDeleted = new Set<string>()
+    const valid: string[] = []
+    for (const key of unique) {
+      const problem = objectKeyProblem(key)
+      if (problem === undefined) {
+        valid.push(key)
+        continue
+      }
+      // Nunca llega al proveedor: queda pendiente y a la vista en el log hasta que alguien la corrija.
+      notDeleted.add(key)
+      this.logger.warn(
+        { key, problem },
+        'Clave de objeto inválida: no se manda al almacenamiento y queda pendiente.',
+      )
+    }
     // Si el proveedor deja de responder, cada borrado esperaría su plazo entero: no se mandan más y
     // lo que falta queda pendiente para la próxima pasada.
     let unresponsive = false
     let skipped = 0
-    await forEachConcurrently(unique, this.limits.maxConcurrentRequestsPerCall, async (key) => {
+    await forEachConcurrently(valid, this.limits.maxConcurrentRequestsPerCall, async (key) => {
       try {
         const result = await this.request(
           'DeleteObject',
@@ -189,6 +272,7 @@ export class S3FileStorageAdapter implements FileStoragePort {
   }
 
   async exists(key: string): Promise<boolean> {
+    assertObjectKey(key)
     try {
       await this.request('HeadObject', (abortSignal) =>
         this.client.send(new HeadObjectCommand({ Bucket: this.bucket, Key: key }), {
@@ -203,10 +287,13 @@ export class S3FileStorageAdapter implements FileStoragePort {
   }
 
   /**
-   * `async` a propósito: cualquier falla, también al armar la cabecera antes de firmar, llega como
-   * promesa rechazada y nunca como excepción síncrona que un `.catch()` encadenado no ve.
+   * `async` a propósito: cualquier falla, también una clave inválida o el armado de la cabecera antes
+   * de firmar, llega como promesa rechazada y nunca como excepción síncrona que un `.catch()`
+   * encadenado no ve.
    */
   async downloadUrl(key: string, downloadName: string): Promise<string> {
+    // Con una clave vacía, el enlace firmado listaría todas las claves del bucket.
+    assertObjectKey(key)
     return await getSignedUrl(
       this.client,
       new GetObjectCommand({
@@ -219,10 +306,12 @@ export class S3FileStorageAdapter implements FileStoragePort {
   }
 
   /**
-   * Una petición al proveedor: espera un cupo del tope global y la corta si no termina en
-   * `operationTimeoutMs`, contado desde que obtuvo el cupo. Si al obtenerlo `wanted` dice que ya no
-   * hace falta, no la manda y resuelve `SKIPPED`. `onFailure` corre antes de liberar el cupo: la
-   * petición que lo recibe ya ve el fallo en su `wanted`.
+   * Una petición al proveedor: espera un cupo del tope global y rechaza con
+   * `StorageOperationTimeoutError` si no termina en `operationTimeoutMs`, contado desde que obtuvo el
+   * cupo. Al vencer, rechaza y libera el cupo en ese mismo momento, aunque el SDK esté esperando para
+   * reintentar; la señal ya cancelada hace que el SDK no mande otro intento. Si al obtener el cupo
+   * `wanted` dice que ya no hace falta, no la manda y resuelve `SKIPPED`. `onFailure` corre antes de
+   * liberar el cupo: la petición que lo recibe ya ve el fallo en su `wanted`.
    */
   private request<T>(
     operation: string,
@@ -232,20 +321,15 @@ export class S3FileStorageAdapter implements FileStoragePort {
     return this.requests.run(async () => {
       if (control.wanted?.() === false) return SKIPPED
       const { operationTimeoutMs } = this.limits
-      // Un temporizador propio y no AbortSignal.timeout: se limpia al terminar en vez de quedar
-      // pendiente hasta vencer o hasta que el recolector libere la señal.
-      const deadline = new AbortController()
-      const timer = setTimeout(() => deadline.abort(), operationTimeoutMs)
       try {
-        return await send(deadline.signal)
-      } catch (sendError) {
-        const error = deadline.signal.aborted
-          ? new StorageOperationTimeoutError(operation, operationTimeoutMs, { cause: sendError })
-          : sendError
+        return await withDeadline(
+          operationTimeoutMs,
+          send,
+          () => new StorageOperationTimeoutError(operation, operationTimeoutMs),
+        )
+      } catch (error) {
         control.onFailure?.(error)
         throw error
-      } finally {
-        clearTimeout(timer)
       }
     })
   }
@@ -288,17 +372,21 @@ function checkedLimits(limits: S3RequestLimits): S3RequestLimits {
 }
 
 /**
- * Lo que nunca va en un nombre de descarga: controles C0, DEL y C1 (`\p{Cc}`), comillas, barras y
- * surrogates UTF-16 sueltos (`\p{Cs}`). Con la bandera `u` la expresión recorre puntos de código: un
- * par bien formado es un solo carácter fuera del plano básico y no coincide con `\p{Cs}`.
+ * Lo que nunca va en un nombre de descarga: controles C0, DEL y C1 (`\p{Cc}`), caracteres de formato
+ * (`\p{Cf}`: U+202E y demás controles de dirección, que harían ver `factura\u202Efdp.exe` como
+ * `facturaexe.pdf`, y los de ancho cero), separadores de línea y de párrafo (`\p{Zl}`, `\p{Zp}`),
+ * comillas, barras y surrogates UTF-16 sueltos (`\p{Cs}`). Con la bandera `u` la expresión recorre
+ * puntos de código: un par bien formado es un solo carácter fuera del plano básico y no coincide con
+ * `\p{Cs}`.
  */
-const UNSAFE_DOWNLOAD_NAME_CHARS = /[\p{Cc}\p{Cs}"\\/]/gu
+const UNSAFE_DOWNLOAD_NAME_CHARS = /[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}"\\/]/gu
 
 /**
  * `Content-Disposition` de descarga (RFC 6266): `filename` en ASCII para cualquier navegador y
  * `filename*` en UTF-8 cuando el nombre tiene tildes. Acepta cualquier texto y nunca lanza: cambia
- * por `_` las comillas, las barras, los caracteres de control y los surrogates sueltos (con los que
- * `encodeURIComponent` lanzaría `URIError`), así que un nombre nunca inyecta otra cabecera ni una ruta.
+ * por `_` las comillas, las barras, los caracteres de control y de formato, los separadores de línea
+ * y de párrafo y los surrogates sueltos (con los que `encodeURIComponent` lanzaría `URIError`), así
+ * que un nombre nunca inyecta otra cabecera ni una ruta, ni disfraza su extensión.
  */
 export function buildContentDisposition(downloadName: string): string {
   const name = sanitizeDownloadName(downloadName)

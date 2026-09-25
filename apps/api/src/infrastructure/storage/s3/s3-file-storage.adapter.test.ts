@@ -6,9 +6,11 @@ import {
   S3Client,
   S3ServiceException,
 } from '@aws-sdk/client-s3'
-import { describe, expect, it } from 'vitest'
+import { afterAll, describe, expect, it } from 'vitest'
 import {
   buildContentDisposition,
+  InvalidObjectKeyError,
+  objectKeyProblem,
   S3_REQUEST_LIMITS,
   S3FileStorageAdapter,
   type S3RequestLimits,
@@ -89,6 +91,9 @@ const hangUntilAborted: Reply = ({ abortSignal }) =>
     )
   })
 
+/** Nunca responde ni mira la señal: como el SDK mientras espera entre dos intentos. */
+const ignoresAbort: Reply = () => new Promise(() => {})
+
 const files = (prefix: string, count: number) =>
   Array.from({ length: count }, (_, index) => ({
     key: `${prefix}${index}.xml`,
@@ -127,7 +132,7 @@ describe('S3FileStorageAdapter.putAll', () => {
     expect(fake.sent).toEqual([])
   })
 
-  it('si una falla, espera las subidas en curso, borra las que llegaron y relanza el error', async () => {
+  it('si una falla, espera las subidas en curso, borra todas las que mandó y relanza el error', async () => {
     const slow = deferred()
     const rejected = new Error('subida rechazada')
     const fake = new FakeS3Client()
@@ -146,11 +151,25 @@ describe('S3FileStorageAdapter.putAll', () => {
 
     slow.resolve({})
     await expect(result).rejects.toBe(rejected)
+    // También la que falló: el proveedor pudo guardarla aunque la respuesta dijera otra cosa.
     expect(fake.names()).toEqual([
       `${PutObjectCommand.name}:k/a.xml`,
       `${PutObjectCommand.name}:k/a.pdf`,
       `${DeleteObjectCommand.name}:k/a.xml`,
+      `${DeleteObjectCommand.name}:k/a.pdf`,
     ])
+  })
+
+  it('rechaza claves repetidas antes de subir nada: un objeto no puede tener dos contenidos', async () => {
+    const fake = new FakeS3Client()
+
+    await expect(
+      adapterWith(fake).putAll([xml, pdf, { ...pdf, key: xml.key }]),
+    ).rejects.toMatchObject({
+      name: 'InvalidObjectKeyError',
+      message: 'Clave de objeto inválida: está repetida en la misma subida.',
+    })
+    expect(fake.sent).toEqual([])
   })
 
   it('relanza el error de la subida aunque la limpieza también falle', async () => {
@@ -203,6 +222,131 @@ describe('S3FileStorageAdapter.exists', () => {
       Promise.reject(denied),
     )
     await expect(adapterWith(fake).exists('k/a.xml')).rejects.toBe(denied)
+  })
+})
+
+/** Lo que informa el validador por cada regla. */
+const EMPTY = 'está vacía'
+const LEADING_SLASH = 'empieza con "/"'
+const EMPTY_SEGMENT = 'tiene un segmento vacío ("//" o "/" al final)'
+const DOT_SEGMENT = 'tiene un segmento "." o ".."'
+const CONTROL = 'tiene caracteres de control o surrogates UTF-16 sueltos'
+const TOO_LONG = 'pasa de 1024 bytes en UTF-8'
+
+/** Una clave inválida por regla, con el problema que informa el validador. */
+const INVALID_KEYS: ReadonlyArray<readonly [label: string, key: string, problem: string]> = [
+  ['vacía', '', EMPTY],
+  ['que empieza con "/"', '/payers/p/a.pdf', LEADING_SLASH],
+  ['que es solo "/"', '/', LEADING_SLASH],
+  ['con "//"', 'payers//a.pdf', EMPTY_SEGMENT],
+  ['que termina en "/"', 'payers/p/', EMPTY_SEGMENT],
+  ['"."', '.', DOT_SEGMENT],
+  ['".."', '..', DOT_SEGMENT],
+  ['con un segmento "."', 'payers/./a.pdf', DOT_SEGMENT],
+  ['con un segmento ".."', 'payers/../a.pdf', DOT_SEGMENT],
+  ['que termina en "/.."', 'payers/..', DOT_SEGMENT],
+  ['con un control C0', 'payers/a\u0000.pdf', CONTROL],
+  ['con un salto de línea', 'payers/a\n.pdf', CONTROL],
+  ['con DEL', 'payers/a\u007f.pdf', CONTROL],
+  ['con un control C1', 'payers/a\u0085.pdf', CONTROL],
+  ['con un surrogate alto suelto', 'payers/a\uD800.pdf', CONTROL],
+  ['con un surrogate bajo suelto', 'payers/\uDC00a.pdf', CONTROL],
+  ['de 1025 bytes', 'a'.repeat(1_025), TOO_LONG],
+  ['de 1026 bytes en 513 caracteres', 'ñ'.repeat(513), TOO_LONG],
+]
+
+describe('objectKeyProblem', () => {
+  it.each([
+    'payers/p/a.pdf',
+    'a',
+    '...',
+    'payers/.../a.pdf',
+    '.oculto/a..b/c.',
+    'payers/p/Factura 😀 (1)%2F?#.pdf',
+    'x'.repeat(1_024),
+    'ñ'.repeat(512),
+  ])('acepta %j', (key) => {
+    expect(objectKeyProblem(key)).toBeUndefined()
+  })
+
+  it.each(INVALID_KEYS)('rechaza una clave %s', (_label, key, problem) => {
+    expect(objectKeyProblem(key)).toBe(problem)
+  })
+
+  it('rechaza lo que no es texto', () => {
+    for (const key of [undefined, null, 42, {}]) {
+      expect(objectKeyProblem(key as unknown as string)).toBe('no es texto')
+    }
+  })
+})
+
+describe('S3FileStorageAdapter: una clave inválida nunca llega al proveedor', () => {
+  // Con una clave vacía el SDK arma la ruta del bucket: DELETE borraría el bucket, HEAD diría que
+  // existe y un GET firmado listaría todas sus claves.
+  const signer = new S3Client({
+    endpoint: 'http://127.0.0.1:9',
+    region: 'us-east-1',
+    forcePathStyle: true,
+    credentials: { accessKeyId: 'local', secretAccessKey: 'local' },
+  })
+  afterAll(() => signer.destroy())
+
+  it.each(INVALID_KEYS)(
+    'putAll rechaza una clave %s antes de subir nada, como promesa rechazada',
+    async (_label, key, problem) => {
+      const fake = new FakeS3Client()
+      let result: Promise<unknown> | undefined
+      expect(() => {
+        result = adapterWith(fake).putAll([xml, { ...pdf, key }])
+      }).not.toThrow()
+
+      await expect(result).rejects.toThrow(new InvalidObjectKeyError(problem))
+      await expect(result).rejects.toBeInstanceOf(InvalidObjectKeyError)
+      expect(fake.sent).toEqual([])
+    },
+  )
+
+  it.each(INVALID_KEYS)('exists rechaza una clave %s sin consultar', async (_label, key) => {
+    const fake = new FakeS3Client()
+    let result: Promise<unknown> | undefined
+    expect(() => {
+      result = adapterWith(fake).exists(key)
+    }).not.toThrow()
+
+    await expect(result).rejects.toBeInstanceOf(InvalidObjectKeyError)
+    expect(fake.sent).toEqual([])
+  })
+
+  it.each(INVALID_KEYS)('downloadUrl rechaza una clave %s sin firmar', async (_label, key) => {
+    const storage = new S3FileStorageAdapter(signer, { bucket: 'anticipate-local' })
+    let result: Promise<unknown> | undefined
+    expect(() => {
+      result = storage.downloadUrl(key, 'a.pdf')
+    }).not.toThrow()
+
+    await expect(result).rejects.toBeInstanceOf(InvalidObjectKeyError)
+  })
+
+  it.each(INVALID_KEYS)(
+    'deleteQuietly devuelve como no borrada una clave %s sin mandarla',
+    async (_label, key) => {
+      const fake = new FakeS3Client()
+
+      await expect(adapterWith(fake).deleteQuietly([key])).resolves.toEqual([key])
+      expect(fake.sent).toEqual([])
+    },
+  )
+
+  it('deleteQuietly borra las válidas y devuelve las inválidas, en el orden de entrada', async () => {
+    const fake = new FakeS3Client()
+
+    await expect(
+      adapterWith(fake).deleteQuietly(['k/a', '', 'k/b', '/k/c', 'k/a', '']),
+    ).resolves.toEqual(['', '/k/c'])
+    expect(fake.names()).toEqual([
+      `${DeleteObjectCommand.name}:k/a`,
+      `${DeleteObjectCommand.name}:k/b`,
+    ])
   })
 })
 
@@ -271,7 +415,11 @@ describe('S3FileStorageAdapter: peticiones en curso', () => {
     const storage = adapterWith(fake, { maxConcurrentRequestsPerCall: 1 })
 
     await expect(storage.putAll(files('u/', 3))).rejects.toBe(rejected)
-    expect(fake.names()).toEqual([`${PutObjectCommand.name}:u/0.xml`])
+    // Solo se borra la que se mandó: las que no empezaron nunca llegaron al proveedor.
+    expect(fake.names()).toEqual([
+      `${PutObjectCommand.name}:u/0.xml`,
+      `${DeleteObjectCommand.name}:u/0.xml`,
+    ])
   })
 
   it('una subida que esperaba cupo cuando otra falló ya no se manda', async () => {
@@ -282,7 +430,10 @@ describe('S3FileStorageAdapter: peticiones en curso', () => {
     const storage = adapterWith(fake, { maxConcurrentRequests: 1, maxConcurrentRequestsPerCall: 2 })
 
     await expect(storage.putAll([xml, pdf])).rejects.toBe(rejected)
-    expect(fake.names()).toEqual([`${PutObjectCommand.name}:k/a.xml`])
+    expect(fake.names()).toEqual([
+      `${PutObjectCommand.name}:k/a.xml`,
+      `${DeleteObjectCommand.name}:k/a.xml`,
+    ])
   })
 
   it('rechaza límites que no son enteros positivos', () => {
@@ -300,7 +451,7 @@ describe('S3FileStorageAdapter: peticiones en curso', () => {
 })
 
 describe('S3FileStorageAdapter: plazo por operación', () => {
-  it('putAll corta con TimeoutError una subida que no termina y borra las que llegaron', async () => {
+  it('putAll corta con TimeoutError una subida que no termina y borra todas las que mandó', async () => {
     const fake = new FakeS3Client().on(PutObjectCommand.name, 'k/a.pdf', hangUntilAborted)
 
     const startedAt = Date.now()
@@ -311,7 +462,12 @@ describe('S3FileStorageAdapter: plazo por operación', () => {
       }),
     )
     expect(Date.now() - startedAt).toBeLessThan(1_000)
-    expect(fake.names()).toContain(`${DeleteObjectCommand.name}:k/a.xml`)
+    expect(fake.names()).toEqual(
+      expect.arrayContaining([
+        `${DeleteObjectCommand.name}:k/a.xml`,
+        `${DeleteObjectCommand.name}:k/a.pdf`,
+      ]),
+    )
   })
 
   it('deleteQuietly deja pendiente lo que no terminó y no manda más borrados tras un corte', async () => {
@@ -345,6 +501,45 @@ describe('S3FileStorageAdapter: plazo por operación', () => {
 
     await expect(adapterWith(fake, { operationTimeoutMs: 50 }).exists('k/a.xml')).rejects.toThrow(
       expect.objectContaining({ name: 'TimeoutError', message: 'HeadObject no terminó en 50 ms.' }),
+    )
+  })
+
+  it('rechaza al vencer el plazo aunque el proveedor no atienda la cancelación, y libera el cupo', async () => {
+    const fake = new FakeS3Client().on(HeadObjectCommand.name, 'k/cuelga.xml', ignoresAbort)
+    const storage = adapterWith(fake, {
+      maxConcurrentRequests: 1,
+      maxConcurrentRequestsPerCall: 1,
+      operationTimeoutMs: 50,
+    })
+
+    const startedAt = Date.now()
+    // La segunda espera el único cupo: lo recibe apenas vence el plazo de la primera.
+    const [hung, next] = await Promise.allSettled([
+      storage.exists('k/cuelga.xml'),
+      storage.exists('k/a.xml'),
+    ])
+
+    expect(hung).toMatchObject({
+      status: 'rejected',
+      reason: { name: 'TimeoutError', message: 'HeadObject no terminó en 50 ms.' },
+    })
+    expect(next).toEqual({ status: 'fulfilled', value: true })
+    expect(Date.now() - startedAt).toBeLessThan(1_000)
+  })
+
+  it('putAll rechaza al vencer el plazo aunque el proveedor no atienda la cancelación, y borra esa clave', async () => {
+    const fake = new FakeS3Client().on(PutObjectCommand.name, 'k/a.pdf', ignoresAbort)
+
+    const startedAt = Date.now()
+    await expect(adapterWith(fake, { operationTimeoutMs: 50 }).putAll([xml, pdf])).rejects.toThrow(
+      expect.objectContaining({ name: 'TimeoutError', message: 'PutObject no terminó en 50 ms.' }),
+    )
+    expect(Date.now() - startedAt).toBeLessThan(1_000)
+    expect(fake.names()).toEqual(
+      expect.arrayContaining([
+        `${DeleteObjectCommand.name}:k/a.xml`,
+        `${DeleteObjectCommand.name}:k/a.pdf`,
+      ]),
     )
   })
 
@@ -457,6 +652,18 @@ describe('buildContentDisposition', () => {
     )
   })
 
+  it('neutraliza los caracteres de formato y los separadores de línea y de párrafo', () => {
+    // U+202E (RLO) invierte lo que sigue: 'factura\u202Efdp.exe' se ve como 'facturaexe.pdf'.
+    expect(buildContentDisposition('factura\u202Efdp.exe')).toBe(
+      'attachment; filename="factura_fdp.exe"',
+    )
+    expect(buildContentDisposition('a\u2028b\u2029.pdf')).toBe('attachment; filename="a_b_.pdf"')
+    // Espacio de ancho cero, marca de izquierda a derecha y BOM, junto a una tilde que sí queda.
+    expect(buildContentDisposition('Fáctura\u200B\u200E\uFEFF.pdf')).toBe(
+      `attachment; filename="Factura___.pdf"; filename*=UTF-8''F%C3%A1ctura___.pdf`,
+    )
+  })
+
   it('usa "archivo" en la versión ASCII si sin tildes no queda nada', () => {
     expect(buildContentDisposition('́́')).toBe(
       `attachment; filename="archivo"; filename*=UTF-8''%CC%81%CC%81`,
@@ -477,6 +684,9 @@ describe('buildContentDisposition', () => {
       `${'a'.repeat(149)}\uD83D`,
       ' ́ ',
       '"\\/\u0000\u007f\u0085',
+      '\u202E',
+      'a\u2028\u2029',
+      '\uFEFF\u200B\u2066',
       ...Array.from({ length: 3_000 }, () => randomUtf16(random)),
     ]
 
@@ -504,7 +714,7 @@ describe('buildContentDisposition', () => {
  */
 const SAFE_CONTENT_DISPOSITION =
   /^attachment; filename="[\x20\x21\x23-\x5b\x5d-\x7e]+"(?:; filename\*=UTF-8''(?:[A-Za-z0-9!\-._~]|%[0-9A-F]{2})+)?$/
-const UNSAFE_IN_FILE_NAME = /[\p{Cc}\p{Cs}"\\/]/u
+const UNSAFE_IN_FILE_NAME = /[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}"\\/]/u
 
 /** mulberry32: números pseudoaleatorios reproducibles entre 0 y 1. */
 function seededRandom(seed: number): () => number {
@@ -525,6 +735,7 @@ const CODE_UNIT_RANGES: ReadonlyArray<readonly [number, number]> = [
   [0x7f, 0x9f], // DEL y controles C1
   [0xa0, 0x17f], // latín con tildes
   [0x300, 0x36f], // marcas combinantes
+  [0x2000, 0x206f], // puntuación general: formato (RLO, LRM, ancho cero) y separadores U+2028/9
   [0xd800, 0xdbff], // surrogates altos
   [0xdc00, 0xdfff], // surrogates bajos
   [0xe000, 0xffff], // resto del plano básico

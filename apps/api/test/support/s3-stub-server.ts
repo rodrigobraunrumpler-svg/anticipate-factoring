@@ -37,6 +37,8 @@ export type S3StubServer = {
   readonly url: string
   /** Máximo de peticiones en curso a la vez que vio el servidor, por método HTTP. */
   maxInFlight(method?: string): number
+  /** Peticiones que llegaron al servidor, por método HTTP: `0` prueba que el cliente no mandó nada. */
+  requests(method?: string): number
   /** Cierra las conexiones abiertas, aunque tengan una respuesta a medias, y el servidor. */
   readonly stop: () => Promise<void>
 }
@@ -52,11 +54,13 @@ export async function startS3StubServer(
 ): Promise<S3StubServer> {
   const current = new Map<string, number>()
   const peak = new Map<string, number>()
+  const total = new Map<string, number>()
   const count = (method: string, delta: number) => {
     for (const key of [method, '*']) {
       const value = (current.get(key) ?? 0) + delta
       current.set(key, value)
       peak.set(key, Math.max(peak.get(key) ?? 0, value))
+      if (delta > 0) total.set(key, (total.get(key) ?? 0) + delta)
     }
   }
   const listener = (req: IncomingMessage, res: ServerResponse) => {
@@ -74,6 +78,7 @@ export async function startS3StubServer(
   return {
     url: `${options.tls ? 'https' : 'http'}://127.0.0.1:${address.port}`,
     maxInFlight: (method = '*') => peak.get(method) ?? 0,
+    requests: (method = '*') => total.get(method) ?? 0,
     stop: () =>
       new Promise<void>((resolve) => {
         server.closeAllConnections()
@@ -104,4 +109,24 @@ export function replyEmptyList(res: ServerResponse): void {
 export function replyStored(res: ServerResponse): void {
   res.writeHead(200, { ETag: '"stub"' })
   res.end()
+}
+
+/** Respuesta de `DeleteObject` exitosa (también si el objeto no existía). */
+export function replyDeleted(res: ServerResponse): void {
+  res.writeHead(204)
+  res.end()
+}
+
+/**
+ * `503 SlowDown` con `Retry-After`: el SDK trata el error como reintentable y espera ese tiempo antes
+ * del intento siguiente, sin mirar la señal de cancelación mientras espera.
+ */
+export function replySlowDown(res: ServerResponse, retryAfterSeconds: number): void {
+  res.writeHead(503, {
+    'Content-Type': 'application/xml',
+    'Retry-After': String(retryAfterSeconds),
+  })
+  res.end(
+    '<?xml version="1.0" encoding="UTF-8"?><Error><Code>SlowDown</Code><Message>Please reduce your request rate.</Message></Error>',
+  )
 }

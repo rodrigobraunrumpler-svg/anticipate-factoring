@@ -69,6 +69,19 @@ describe('S3ReadinessIndicator', () => {
     expect(Date.now() - startedAt).toBeLessThan(1_000)
   })
 
+  it('está abajo a tiempo y con el mensaje fijo aunque el cliente no atienda la cancelación', async () => {
+    // Como el SDK entre dos intentos: la señal no interrumpe la espera y la consulta no termina.
+    const { indicator } = indicatorWith(() => new Promise(() => {}), { timeoutMs: 50 })
+
+    const startedAt = Date.now()
+    const result = await indicator.check('storage')
+
+    expect(result.storage).toMatchObject({ status: 'down', message: storageTimeoutMessage(50) })
+    // Dentro del plazo más un margen de 500 ms, y nunca con el texto en inglés de Terminus.
+    expect(Date.now() - startedAt).toBeLessThan(50 + 500)
+    expect(JSON.stringify(result)).not.toMatch(/timeout of|exceeded/)
+  })
+
   it('reutiliza el resultado mientras dura la caché: una ráfaga de sondeos hace una consulta', async () => {
     const { indicator, calls } = indicatorWith(() => Promise.resolve({ KeyCount: 0 }), {
       cacheTtlMs: 60_000,
