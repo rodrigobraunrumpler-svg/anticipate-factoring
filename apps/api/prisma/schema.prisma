@@ -349,6 +349,12 @@ model Invoice {
   xmlFilePurpose   StoredFilePurpose    @default(INVOICE_XML) @map("xml_file_purpose")
   pdfFileId        String?              @map("pdf_file_id") @db.Uuid
   pdfFilePurpose   StoredFilePurpose    @default(INVOICE_PDF) @map("pdf_file_purpose")
+  /// Id de la transacción que creó la factura (pg_current_xact_id(), xid8: sin ambigüedad de vuelta
+  /// de reloj). Un trigger BEFORE INSERT lo fuerza al valor real (ignora cualquier valor del
+  /// cliente) e invoices_guard lo congela; invoice_installments_same_transaction lo compara con la
+  /// transacción en curso para aceptar una cuota solo dentro de la transacción que creó su factura,
+  /// incluso bajo un SAVEPOINT (a diferencia de xmin, pg_current_xact_id() no cambia con ellos).
+  creatingXactId   Unsupported("xid8")  @default(dbgenerated("pg_current_xact_id()")) @map("creating_xact_id")
   createdAt        DateTime             @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt        DateTime             @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(3)
   /// Misma solicitud, mismo estado, misma moneda, emisor = proveedor y receptor = pagador.

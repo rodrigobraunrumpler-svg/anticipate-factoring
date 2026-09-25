@@ -664,8 +664,12 @@ describe('estructura de la base', () => {
       'invoices_guard',
       'invoices_complete',
       'invoices_purge_requires_request_purge',
+      'invoices_set_creating_xact_id',
       'invoice_installments_complete',
       'invoice_installments_same_transaction',
+      'invoice_installments_purge_requires_invoice_purge',
+      'consents_purge_requires_request_purge',
+      'status_history_purge_requires_request_purge',
       'stored_files_guard',
       'reject_append_only_mutation',
       'outbox_events_guard',
@@ -735,6 +739,12 @@ describe('estructura de la base', () => {
           events: 'DELETE',
         },
         {
+          table: 'invoices',
+          name: 'invoices_set_creating_xact_id',
+          timing: 'BEFORE',
+          events: 'INSERT',
+        },
+        {
           table: 'invoice_installments',
           name: 'invoice_installments_append_only',
           timing: 'BEFORE',
@@ -752,12 +762,24 @@ describe('estructura de la base', () => {
           timing: 'BEFORE',
           events: 'INSERT',
         },
+        {
+          table: 'invoice_installments',
+          name: 'invoice_installments_purge_requires_invoice_purge',
+          timing: 'AFTER',
+          events: 'DELETE',
+        },
         { table: 'stored_files', name: 'stored_files_guard', timing: 'BEFORE', events: 'UPDATE' },
         {
           table: 'status_history',
           name: 'status_history_append_only',
           timing: 'BEFORE',
           events: 'DELETE,UPDATE',
+        },
+        {
+          table: 'status_history',
+          name: 'status_history_purge_requires_request_purge',
+          timing: 'AFTER',
+          events: 'DELETE',
         },
         {
           table: 'audit_logs',
@@ -770,6 +792,12 @@ describe('estructura de la base', () => {
           name: 'consents_append_only',
           timing: 'BEFORE',
           events: 'DELETE,UPDATE',
+        },
+        {
+          table: 'consents',
+          name: 'consents_purge_requires_request_purge',
+          timing: 'AFTER',
+          events: 'DELETE',
         },
         {
           table: 'outbox_events',
@@ -792,14 +820,22 @@ describe('estructura de la base', () => {
       SELECT tgname AS name, tgdeferrable AS deferrable, tginitdeferred AS deferred FROM pg_trigger
       WHERE tgname IN (
         'advance_requests_complete', 'invoices_complete', 'invoice_installments_complete',
-        'invoices_purge_requires_request_purge'
+        'invoices_purge_requires_request_purge', 'invoice_installments_purge_requires_invoice_purge',
+        'consents_purge_requires_request_purge', 'status_history_purge_requires_request_purge'
       )
       ORDER BY tgname`)
     expect(deferredTriggers).toEqual([
       { name: 'advance_requests_complete', deferrable: true, deferred: true },
+      { name: 'consents_purge_requires_request_purge', deferrable: true, deferred: true },
       { name: 'invoice_installments_complete', deferrable: true, deferred: true },
+      {
+        name: 'invoice_installments_purge_requires_invoice_purge',
+        deferrable: true,
+        deferred: true,
+      },
       { name: 'invoices_complete', deferrable: true, deferred: true },
       { name: 'invoices_purge_requires_request_purge', deferrable: true, deferred: true },
+      { name: 'status_history_purge_requires_request_purge', deferrable: true, deferred: true },
     ])
   })
 })
@@ -1429,10 +1465,52 @@ describe('comportamiento de los triggers', () => {
     expect(error).toMatchObject({ constraint: 'invoices_purge_requires_request_purge' })
   })
 
+  // Mismo patrón para los hermanos de una factura o una solicitud viva: la purga por retención
+  // dejaba borrar solo las cuotas de una factura, o solo un consentimiento o el historial de una
+  // solicitud, sin borrar la factura o la solicitud dueña (reproducido: una solicitud DESEMBOLSADA
+  // con 0 cuotas, 1 consentimiento o sin historial, y su factura o su solicitud intactas).
+  it('(i) purgar solo las cuotas sin la factura se rechaza al confirmar (D49)', async () => {
+    const request = await createCompleteAdvanceRequest(db.prisma)
+    const error = await sqlError(async (client) => {
+      await client.query("SET LOCAL app.retention_purge = 'on'")
+      await client.query('DELETE FROM invoice_installments WHERE invoice_id = $1', [
+        request.invoices[0]?.id,
+      ])
+      // La factura no se borra.
+    }, 'COMMIT')
+    expect(error).toMatchObject({ constraint: 'invoice_installments_purge_requires_invoice_purge' })
+  })
+
+  it('(i) purgar solo un consentimiento sin la solicitud se rechaza al confirmar (D49)', async () => {
+    const request = await createCompleteAdvanceRequest(db.prisma)
+    const error = await sqlError(async (client) => {
+      await client.query("SET LOCAL app.retention_purge = 'on'")
+      await client.query("DELETE FROM consents WHERE advance_request_id = $1 AND type = 'TERMS'", [
+        request.id,
+      ])
+      // La solicitud no se borra.
+    }, 'COMMIT')
+    expect(error).toMatchObject({ constraint: 'consents_purge_requires_request_purge' })
+  })
+
+  it('(i) purgar solo el historial sin la solicitud se rechaza al confirmar (D49)', async () => {
+    const request = await createCompleteAdvanceRequest(db.prisma)
+    const error = await sqlError(async (client) => {
+      await client.query("SET LOCAL app.retention_purge = 'on'")
+      await client.query('DELETE FROM status_history WHERE advance_request_id = $1', [request.id])
+      // La solicitud no se borra.
+    }, 'COMMIT')
+    expect(error).toMatchObject({ constraint: 'status_history_purge_requires_request_purge' })
+  })
+
   // Una cuota que no movía earliest_due_date pasaba el trigger diferido de la ronda 1 sin más
   // (invoice_installments_complete solo compara el agregado final). El gate de abajo cierra el
   // camino de raíz: una cuota nunca se agrega fuera de la transacción que creó su factura, se mueva
-  // o no earliest_due_date.
+  // o no earliest_due_date. Compara invoices.creating_xact_id (congelada al insertar la factura)
+  // contra pg_current_xact_id(), nunca contra xmin: xmin es quien escribió la última versión de la
+  // fila, no quien la creó, y dentro de un SAVEPOINT es el xid de la subtransacción mientras
+  // pg_current_xact_id() sigue siendo el de la transacción de nivel superior (así corren los
+  // `$transaction` anidados de Prisma).
   it('(i) una cuota solo se agrega en la misma transacción que creó su factura (D49)', async () => {
     // Camino feliz: crear la solicitud completa (factura + cuotas) en una única transacción, como
     // hace la API, sigue funcionando.
@@ -1449,6 +1527,217 @@ describe('comportamiento de los triggers', () => {
       ),
     )
     expect(error).toMatchObject({ constraint: 'invoice_installments_same_transaction' })
+  })
+
+  // xmin (la ronda 2) cambia con cualquier UPDATE, incluso uno sin cambios reales: invoices_guard
+  // deja pasar un UPDATE que solo toca updated_at (lo excluye de su diff), así que un script podía
+  // "tocar" la factura para que xmin volviera a coincidir con la transacción en curso y reabrir la
+  // ventana para agregar una cuota. creating_xact_id nunca cambia después del INSERT (la congela
+  // invoices_guard, como cualquier otra columna), así que el UPDATE sin cambios ya no ayuda.
+  it('(i) tocar la factura con un UPDATE sin cambios no reabre la ventana para una cuota nueva (D49)', async () => {
+    const request = await createCompleteAdvanceRequest(db.prisma)
+    const invoiceId = request.invoices[0]?.id
+    const error = await sqlError(async (client) => {
+      await client.query('UPDATE invoices SET updated_at = updated_at WHERE id = $1', [invoiceId])
+      await client.query(
+        `INSERT INTO invoice_installments (invoice_id, number, label, amount, due_date)
+         VALUES ($1, 2, 'Cuota002', '100.00', '2026-10-01')`,
+        [invoiceId],
+      )
+    })
+    expect(error).toMatchObject({ constraint: 'invoice_installments_same_transaction' })
+  })
+
+  // Mismo hueco de xmin, con el camino real por el que se abría: la FK de alcance con ON UPDATE
+  // CASCADE copia el nuevo status de la solicitud al request_status de sus facturas en cada cambio
+  // de estado, lo que también "toca" la factura (cambia su xmin) sin cambiar creating_xact_id.
+  it('(i) un cambio de estado no reabre la ventana para una cuota nueva (D49)', async () => {
+    const request = await createCompleteAdvanceRequest(db.prisma)
+    const invoiceId = request.invoices[0]?.id
+    const error = await sqlError(async (client) => {
+      await client.query(
+        "UPDATE advance_requests SET status = 'CONTACTED', version = version + 1 WHERE id = $1",
+        [request.id],
+      )
+      await client.query(
+        `INSERT INTO invoice_installments (invoice_id, number, label, amount, due_date)
+         VALUES ($1, 2, 'Cuota002', '100.00', '2026-10-01')`,
+        [invoiceId],
+      )
+    })
+    expect(error).toMatchObject({ constraint: 'invoice_installments_same_transaction' })
+  })
+
+  // Prisma 7.10 corre los `$transaction` anidados como SAVEPOINT (`prisma_sp_N`) y un bloque
+  // EXCEPTION de PL/pgSQL abre uno también: pg_current_xact_id() es el mismo antes y dentro del
+  // SAVEPOINT (a diferencia de xmin, que ahí sí cambia a un xid de la subtransacción), así que
+  // crear la factura y su cuota bajo un SAVEPOINT sigue aceptándose.
+  it('(i) una factura y su cuota creadas bajo un SAVEPOINT en la misma transacción se aceptan (D49)', async () => {
+    const seed = await createCompleteAdvanceRequest(db.prisma)
+    const requestId = newId()
+    const invoiceId = newId()
+    const xmlFileId = newId()
+    const error = await sqlError(async (client) => {
+      await insert(client, 'stored_files', {
+        id: xmlFileId,
+        storage_bucket: 'anticipate-test',
+        key: `savepoint/${xmlFileId}`,
+        purpose: 'INVOICE_XML',
+        content_type: 'application/xml',
+        size_bytes: 1024,
+        sha256: HEX_64,
+        status: 'ATTACHED',
+        attached_at: NOW,
+      })
+      await insert(client, 'advance_requests', {
+        ...BASE.advance_requests?.(),
+        id: requestId,
+        payer_id: seed.payerId,
+        payer_ruc: seed.payerRuc,
+        supplier_id: seed.supplierId,
+        supplier_ruc: seed.supplierRuc,
+      })
+      await client.query('SAVEPOINT prisma_sp_0')
+      await insert(client, 'invoices', {
+        ...BASE.invoices?.(),
+        id: invoiceId,
+        advance_request_id: requestId,
+        issuer_ruc: seed.supplierRuc,
+        recipient_ruc: seed.payerRuc,
+        xml_file_id: xmlFileId,
+      })
+      await client.query(
+        `INSERT INTO invoice_installments (invoice_id, number, label, amount, due_date)
+         VALUES ($1, 1, 'Cuota001', '10620.00', '2026-11-30')`,
+        [invoiceId],
+      )
+      await client.query('RELEASE SAVEPOINT prisma_sp_0')
+      await insert(client, 'consents', {
+        ...BASE.consents?.(),
+        advance_request_id: requestId,
+        type: 'TERMS',
+      })
+      await insert(client, 'consents', {
+        ...BASE.consents?.(),
+        advance_request_id: requestId,
+        type: 'PERSONAL_DATA',
+      })
+      await insert(client, 'status_history', {
+        ...BASE.status_history?.(),
+        advance_request_id: requestId,
+      })
+    }, 'COMMIT')
+    expect(error).toBeNull()
+  })
+
+  it('(i) un creating_xact_id que venga del cliente al insertar la factura se ignora (D49)', async () => {
+    const seed = await createCompleteAdvanceRequest(db.prisma)
+    const invoiceId = newId()
+    const xmlFileId = newId()
+    const client = await pool.connect()
+    let forced: boolean | undefined
+    try {
+      await client.query('BEGIN')
+      await client.query(
+        `INSERT INTO stored_files (id, storage_bucket, key, purpose, content_type, size_bytes, sha256, status, attached_at)
+         VALUES ($1, 'anticipate-test', $2, 'INVOICE_XML', 'application/xml', 1024, $3, 'ATTACHED', now())`,
+        [xmlFileId, `client-value/${xmlFileId}`, HEX_64],
+      )
+      const result = await client.query<{ forced: boolean }>(
+        `INSERT INTO invoices (
+           id, advance_request_id, request_status, currency, issuer_ruc, recipient_ruc, document_type,
+           series_number, invoice_key, issuer_name, payment_terms, total, net_pending_amount, issue_date,
+           due_date, signed, xml_file_id, creating_xact_id
+         ) VALUES (
+           $1, $2, 'NEW', 'PEN', $3, $4, '01', 'F001-00000901', $6, 'Proveedor', 'CREDIT',
+           '11800.00', '10620.00', '2026-09-01', '2026-11-30', true, $5, '999999999'::xid8
+         ) RETURNING creating_xact_id = pg_current_xact_id() AS forced`,
+        [
+          invoiceId,
+          seed.id,
+          seed.supplierRuc,
+          seed.payerRuc,
+          xmlFileId,
+          invoiceKey({ issuerRuc: seed.supplierRuc, seriesNumber: 'F001-00000901' }),
+        ],
+      )
+      forced = result.rows[0]?.forced
+    } finally {
+      await client.query('ROLLBACK')
+      client.release()
+    }
+    expect(forced).toBe(true)
+  })
+
+  it('(i) creating_xact_id de la factura no se puede modificar (D49)', async () => {
+    const request = await createCompleteAdvanceRequest(db.prisma)
+    expect(
+      await updateError("UPDATE invoices SET creating_xact_id = '999999999' WHERE id = $1", [
+        request.invoices[0]?.id,
+      ]),
+    ).toMatchObject({ constraint: 'invoices_immutable' })
+  })
+
+  // Con el gate ya cerrado de raíz, se puede volver a probar el trigger diferido de la ronda 1 sin
+  // que lo tape una transacción anterior: una cuota de la MISMA transacción que su factura, pero
+  // que adelanta la fecha más próxima antes de lo que la solicitud declaró, se rechaza al confirmar.
+  it('(i) una cuota que adelanta earliest_due_date en la misma transacción rompe el agregado y se rechaza al confirmar (D49)', async () => {
+    const seed = await createCompleteAdvanceRequest(db.prisma)
+    const requestId = newId()
+    const invoiceId = newId()
+    const xmlFileId = newId()
+    const error = await sqlError(async (client) => {
+      await insert(client, 'stored_files', {
+        id: xmlFileId,
+        storage_bucket: 'anticipate-test',
+        key: `earliest/${xmlFileId}`,
+        purpose: 'INVOICE_XML',
+        content_type: 'application/xml',
+        size_bytes: 1024,
+        sha256: HEX_64,
+        status: 'ATTACHED',
+        attached_at: NOW,
+      })
+      // earliest_due_date declarado: 2026-11-30 (por defecto de BASE.advance_requests).
+      await insert(client, 'advance_requests', {
+        ...BASE.advance_requests?.(),
+        id: requestId,
+        payer_id: seed.payerId,
+        payer_ruc: seed.payerRuc,
+        supplier_id: seed.supplierId,
+        supplier_ruc: seed.supplierRuc,
+      })
+      await insert(client, 'invoices', {
+        ...BASE.invoices?.(),
+        id: invoiceId,
+        advance_request_id: requestId,
+        issuer_ruc: seed.supplierRuc,
+        recipient_ruc: seed.payerRuc,
+        xml_file_id: xmlFileId,
+      })
+      // Mismo neto (10620.00) repartido en dos cuotas, pero la primera vence antes de lo declarado.
+      await client.query(
+        `INSERT INTO invoice_installments (invoice_id, number, label, amount, due_date) VALUES
+         ($1, 1, 'Cuota001', '5000.00', '2026-10-01'),
+         ($1, 2, 'Cuota002', '5620.00', '2026-11-30')`,
+        [invoiceId],
+      )
+      await insert(client, 'consents', {
+        ...BASE.consents?.(),
+        advance_request_id: requestId,
+        type: 'TERMS',
+      })
+      await insert(client, 'consents', {
+        ...BASE.consents?.(),
+        advance_request_id: requestId,
+        type: 'PERSONAL_DATA',
+      })
+      await insert(client, 'status_history', {
+        ...BASE.status_history?.(),
+        advance_request_id: requestId,
+      })
+    }, 'COMMIT')
+    expect(error).toMatchObject({ constraint: 'advance_requests_complete' })
   })
 
   it('(i) una factura nueva en una solicitud existente rompe el conteo y se rechaza al confirmar (D49)', async () => {
