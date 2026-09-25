@@ -10,7 +10,7 @@ import { PrismaService } from '#/infrastructure/prisma/prisma.service.js'
 import { createTestApp } from '../support/app.js'
 import { testConfig } from '../support/config.js'
 import { createTestPrisma, truncateAll } from '../support/db.js'
-import { createCompleteAdvanceRequest } from '../support/factories.js'
+import { type CompleteAdvanceRequest, createCompleteAdvanceRequest } from '../support/factories.js'
 
 const db = createTestPrisma()
 // SQL directo, sin Prisma: el error de node-postgres trae `code` y `constraint` tal como los manda
@@ -49,17 +49,24 @@ async function sqlError(
 }
 
 /** Los objetos van como JSON (columnas jsonb); los arreglos, como arreglos de PostgreSQL. */
-function insert(client: pg.PoolClient, table: string, row: Row) {
+function sqlValue(value: unknown): unknown {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? JSON.stringify(value)
+    : value
+}
+
+/** El INSERT de una fila, con sus valores como parámetros numerados desde `firstParam`. */
+function insertSql(table: string, row: Row, firstParam = 1): { text: string; values: unknown[] } {
   const columns = Object.keys(row)
-  const values = Object.values(row).map((value) =>
-    value !== null && typeof value === 'object' && !Array.isArray(value)
-      ? JSON.stringify(value)
-      : value,
-  )
-  return client.query(
-    `INSERT INTO "${table}" (${columns.map((column) => `"${column}"`).join(', ')}) VALUES (${columns.map((_, i) => `$${i + 1}`).join(', ')})`,
-    values,
-  )
+  return {
+    text: `INSERT INTO "${table}" (${columns.map((column) => `"${column}"`).join(', ')}) VALUES (${columns.map((_, i) => `$${firstParam + i}`).join(', ')})`,
+    values: Object.values(row).map(sqlValue),
+  }
+}
+
+function insert(client: pg.ClientBase, table: string, row: Row) {
+  const { text, values } = insertSql(table, row)
+  return client.query(text, values)
 }
 
 const OTHER_ID = '0199a000-0000-7000-8000-000000000001'
@@ -528,6 +535,216 @@ async function queryRows<T extends pg.QueryResultRow>(
 const updateError = (sql: string, params: unknown[]) =>
   sqlError((client) => client.query(sql, params))
 
+type AggregateRows = {
+  requestId: string
+  invoiceId: string
+  rows: (readonly [table: string, row: Row])[]
+}
+
+/**
+ * Las filas de un agregado completo, en orden de inserción: archivo XML `ATTACHED`, solicitud,
+ * factura, su cuota por el neto, los dos consentimientos y el historial inicial. Usa el pagador y el
+ * proveedor de `seed`; los tests que las insertan a mano limpian con `purgeAggregate`.
+ */
+function aggregateRows(seed: CompleteAdvanceRequest): AggregateRows {
+  const requestId = newId()
+  const invoiceId = newId()
+  const xmlFileId = newId()
+  // La fábrica solo usa la serie F001: la factura de este agregado nunca choca con la de `seed`.
+  const seriesNumber = 'F002-00000001'
+  return {
+    requestId,
+    invoiceId,
+    rows: [
+      [
+        'stored_files',
+        { ...BASE.stored_files?.(), id: xmlFileId, status: 'ATTACHED', attached_at: NOW },
+      ],
+      [
+        'advance_requests',
+        {
+          ...BASE.advance_requests?.(),
+          id: requestId,
+          payer_id: seed.payerId,
+          payer_ruc: seed.payerRuc,
+          supplier_id: seed.supplierId,
+          supplier_ruc: seed.supplierRuc,
+        },
+      ],
+      [
+        'invoices',
+        {
+          ...BASE.invoices?.(),
+          id: invoiceId,
+          advance_request_id: requestId,
+          issuer_ruc: seed.supplierRuc,
+          recipient_ruc: seed.payerRuc,
+          series_number: seriesNumber,
+          invoice_key: invoiceKey({ issuerRuc: seed.supplierRuc, seriesNumber }),
+          xml_file_id: xmlFileId,
+        },
+      ],
+      ['invoice_installments', { ...BASE.invoice_installments?.(), invoice_id: invoiceId }],
+      ['consents', { ...BASE.consents?.(), advance_request_id: requestId, type: 'TERMS' }],
+      ['consents', { ...BASE.consents?.(), advance_request_id: requestId, type: 'PERSONAL_DATA' }],
+      ['status_history', { ...BASE.status_history?.(), advance_request_id: requestId }],
+    ],
+  }
+}
+
+/**
+ * Todas las filas en UNA sentencia: cada INSERT menos el último va en su propia CTE que modifica
+ * datos. Las CTE comparten la foto de la sentencia y ninguna ve lo que escriben las otras; la FK y los
+ * triggers AFTER ROW recién lo ven al terminar la sentencia.
+ */
+function insertInOneStatement(client: pg.ClientBase, rows: AggregateRows['rows']) {
+  const values: unknown[] = []
+  const statements = rows.map(([table, row]) => {
+    const statement = insertSql(table, row, values.length + 1)
+    values.push(...statement.values)
+    return statement.text
+  })
+  const steps = statements.slice(0, -1).map((text, i) => `step_${i} AS (${text})`)
+  return client.query(`WITH ${steps.join(',\n')}\n${statements.at(-1)}`, values)
+}
+
+/** El INSERT de una fila con sus valores escritos como literales, para el cuerpo de un bloque DO. */
+function insertLiteral(table: string, row: Row): string {
+  const columns = Object.keys(row)
+  const values = Object.values(row).map((value) => {
+    if (Array.isArray(value)) throw new Error(`insertLiteral no escribe arreglos (${table}).`)
+    return value === null || value === undefined
+      ? 'NULL'
+      : pg.escapeLiteral(String(sqlValue(value)))
+  })
+  return `INSERT INTO "${table}" (${columns.map((column) => `"${column}"`).join(', ')}) VALUES (${values.join(', ')})`
+}
+
+/**
+ * Borra entero un agregado ya confirmado con el escape de la purga por retención, en una transacción
+ * que se confirma (así corren los constraint triggers diferidos de la purga). Es como limpian lo que
+ * confirman los tests que insertan a mano; devuelve el error, si hubo.
+ */
+function purgeAggregate(requestId: string): Promise<SqlError | null> {
+  return sqlError(async (client) => {
+    await client.query("SET LOCAL app.retention_purge = 'on'")
+    const { rows: files } = await client.query<{ id: string }>(
+      `SELECT file.id FROM invoices i CROSS JOIN LATERAL (VALUES (i.xml_file_id), (i.pdf_file_id)) AS file(id)
+       WHERE i.advance_request_id = $1 AND file.id IS NOT NULL`,
+      [requestId],
+    )
+    await client.query(
+      'DELETE FROM invoice_installments WHERE invoice_id IN (SELECT id FROM invoices WHERE advance_request_id = $1)',
+      [requestId],
+    )
+    await client.query('DELETE FROM invoices WHERE advance_request_id = $1', [requestId])
+    await client.query('DELETE FROM consents WHERE advance_request_id = $1', [requestId])
+    await client.query('DELETE FROM status_history WHERE advance_request_id = $1', [requestId])
+    await client.query('DELETE FROM stored_files WHERE id = ANY($1::uuid[])', [
+      files.map((file) => file.id),
+    ])
+    await client.query('DELETE FROM advance_requests WHERE id = $1', [requestId])
+  }, 'COMMIT')
+}
+
+/** Filas de cada parte del agregado que siguen en la base. */
+async function aggregateLeftovers(requestId: string, invoiceIds: string[], fileIds: string[]) {
+  const [counts] = await queryRows<Record<string, number>>(
+    `SELECT (SELECT count(*)::int FROM advance_requests WHERE id = $1) AS advance_requests,
+            (SELECT count(*)::int FROM invoices WHERE advance_request_id = $1) AS invoices,
+            (SELECT count(*)::int FROM invoice_installments WHERE invoice_id = ANY($2::uuid[])) AS invoice_installments,
+            (SELECT count(*)::int FROM consents WHERE advance_request_id = $1) AS consents,
+            (SELECT count(*)::int FROM status_history WHERE advance_request_id = $1) AS status_history,
+            (SELECT count(*)::int FROM stored_files WHERE id = ANY($3::uuid[])) AS stored_files`,
+    [requestId, invoiceIds, fileIds],
+  )
+  return counts
+}
+
+const installmentsOf = (invoiceId: string) =>
+  queryRows<{ number: number; amount: string }>(
+    'SELECT number, amount::text AS amount FROM invoice_installments WHERE invoice_id = $1 ORDER BY number',
+    [invoiceId],
+  )
+
+/**
+ * Una sola sentencia que inserta una cuota para la factura `$1` y después espera el candado de aviso
+ * `$2`. La primera rama del UNION ALL entrega su fila de inmediato: los triggers BEFORE ROW de esa
+ * fila ya corrieron y la fila ya está escrita. La segunda llama a pg_advisory_xact_lock y no entrega
+ * ninguna fila (el void que devuelve nunca es NULL). La sentencia termina, y con ella corren la FK y
+ * los triggers AFTER ROW, recién cuando el dueño del candado lo suelta. La cuota vence después de la
+ * fecha más próxima del agregado, así que el trigger diferido del agregado no la nota: solo el gate
+ * de las cuotas puede rechazarla.
+ */
+const INSTALLMENT_BLOCKED_ON_LOCK = `
+  INSERT INTO invoice_installments (invoice_id, number, label, amount, due_date)
+  SELECT $1::uuid, 2, 'Cuota002', 100.00, '2026-12-15'::date
+  UNION ALL
+  SELECT $1::uuid, 3, 'Cuota003', 100.00, '2026-12-15'::date
+  FROM pg_advisory_xact_lock($2::bigint) AS gate(result) WHERE gate.result IS NULL`
+
+/** Espera, consultando pg_locks, a que la sesión `pid` quede bloqueada en un candado de aviso. */
+async function waitForAdvisoryLockWait(pid: number, finished: () => boolean): Promise<void> {
+  const deadline = Date.now() + 5_000
+  for (;;) {
+    const [row] = await queryRows<{ waiting: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1 FROM pg_locks WHERE pid = $1 AND locktype = 'advisory' AND NOT granted
+       ) AS waiting`,
+      [pid],
+    )
+    if (row?.waiting) return
+    if (finished()) throw new Error('La sentencia de B terminó sin esperar el candado de aviso.')
+    if (Date.now() > deadline) throw new Error('B no quedó esperando el candado de aviso.')
+  }
+}
+
+/**
+ * La carrera entre dos transacciones, cada una en su propia conexión. A inserta un agregado completo
+ * y, sin confirmar, toma el candado de aviso `lock`. B, con el aislamiento dado, corre
+ * INSTALLMENT_BLOCKED_ON_LOCK para la factura de A: su fila pasa por los triggers BEFORE ROW con la
+ * factura de A todavía sin confirmar y la sentencia queda esperando el candado. Cuando pg_locks
+ * muestra a B esperando, A confirma, así que la sentencia de B termina con la factura de A ya
+ * confirmada. Devuelve el error de B (de la sentencia o de su COMMIT), o null si B confirmó.
+ */
+async function raceForeignInstallment(
+  seed: CompleteAdvanceRequest,
+  isolation: 'READ COMMITTED' | 'REPEATABLE READ',
+  lock: number,
+): Promise<{ requestId: string; invoiceId: string; error: SqlError | null }> {
+  const aggregate = aggregateRows(seed)
+  const a = new pg.Client({ connectionString: testConfig().database.url })
+  const b = new pg.Client({ connectionString: testConfig().database.url })
+  await Promise.all([a.connect(), b.connect()])
+  try {
+    await a.query('BEGIN')
+    for (const [table, row] of aggregate.rows) await insert(a, table, row)
+    await a.query('SELECT pg_advisory_xact_lock($1::bigint)', [lock])
+
+    const pid = (await b.query<{ pid: number }>('SELECT pg_backend_pid() AS pid')).rows[0]?.pid
+    await b.query(`BEGIN ISOLATION LEVEL ${isolation}`)
+    let finished = false
+    const outcome = b
+      .query(INSTALLMENT_BLOCKED_ON_LOCK, [aggregate.invoiceId, lock])
+      .then(() => b.query('COMMIT'))
+      .then(
+        () => null,
+        async (error: unknown) => {
+          await b.query('ROLLBACK').catch(() => undefined)
+          return error as SqlError
+        },
+      )
+      .finally(() => {
+        finished = true
+      })
+    await waitForAdvisoryLockWait(pid ?? -1, () => finished)
+    await a.query('COMMIT')
+    return { requestId: aggregate.requestId, invoiceId: aggregate.invoiceId, error: await outcome }
+  } finally {
+    await Promise.all([a.end(), b.end()])
+  }
+}
+
 describe('estructura de la base', () => {
   it('(a) toda FK tiene un índice no parcial que empieza por su primera columna', async () => {
     const WHITELIST = ['supplier_documents.reviewed_by_id', 'status_history.user_id']
@@ -759,7 +976,7 @@ describe('estructura de la base', () => {
         {
           table: 'invoice_installments',
           name: 'invoice_installments_same_transaction',
-          timing: 'BEFORE',
+          timing: 'AFTER',
           events: 'INSERT',
         },
         {
@@ -837,6 +1054,20 @@ describe('estructura de la base', () => {
       { name: 'invoices_purge_requires_request_purge', deferrable: true, deferred: true },
       { name: 'status_history_purge_requires_request_purge', deferrable: true, deferred: true },
     ])
+    // El gate de las cuotas, en cambio, corre al terminar cada sentencia (AFTER ROW) y nunca se
+    // posterga: no es un constraint trigger, así que ni DEFERRABLE ni SET CONSTRAINTS lo llevan al
+    // COMMIT. Su función es VOLATILE: en READ COMMITTED su consulta toma una foto nueva y ve la
+    // factura que otra transacción confirmó mientras la sentencia corría.
+    const [gate] = await queryRows<{
+      per_row: boolean
+      constraint_trigger: boolean
+      deferrable: boolean
+    }>(`
+      SELECT (tgtype & 1) = 1 AS per_row, tgconstraint <> 0 AS constraint_trigger,
+             tgdeferrable AS deferrable
+      FROM pg_trigger WHERE tgname = 'invoice_installments_same_transaction'`)
+    expect(gate).toEqual({ per_row: true, constraint_trigger: false, deferrable: false })
+    expect(volatility.invoice_installments_same_transaction).toBe('v')
   })
 })
 
@@ -1434,21 +1665,29 @@ describe('comportamiento de los triggers', () => {
   // transacción) liberaba la clave de una factura de una solicitud DESEMBOLSADA: doble
   // financiamiento. El constraint trigger diferido de abajo exige que, si una factura se borra, su
   // solicitud se haya borrado también antes de confirmar.
+  // Se confirma (antes terminaba en ROLLBACK y los constraint triggers diferidos de la purga nunca
+  // llegaban a correr) y se comprueba que no quedó ninguna fila del agregado.
   it('(i) purgar el agregado completo en una transacción sí funciona (D49)', async () => {
     const request = await createCompleteAdvanceRequest(db.prisma)
-    const purge = await sqlError(async (client) => {
-      await client.query("SET LOCAL app.retention_purge = 'on'")
-      await client.query(
-        'DELETE FROM invoice_installments WHERE invoice_id IN (SELECT id FROM invoices WHERE advance_request_id = $1)',
-        [request.id],
-      )
-      await client.query('DELETE FROM invoices WHERE advance_request_id = $1', [request.id])
-      await client.query('DELETE FROM consents WHERE advance_request_id = $1', [request.id])
-      await client.query('DELETE FROM status_history WHERE advance_request_id = $1', [request.id])
-      await client.query('DELETE FROM stored_files WHERE id = ANY($1::uuid[])', [request.fileIds])
-      await client.query('DELETE FROM advance_requests WHERE id = $1', [request.id])
+    const invoiceIds = request.invoices.map((invoice) => invoice.id)
+    expect(await aggregateLeftovers(request.id, invoiceIds, request.fileIds)).toEqual({
+      advance_requests: 1,
+      invoices: 1,
+      invoice_installments: 1,
+      consents: 2,
+      status_history: 1,
+      stored_files: 1,
     })
-    expect(purge).toBeNull()
+
+    expect(await purgeAggregate(request.id)).toBeNull()
+    expect(await aggregateLeftovers(request.id, invoiceIds, request.fileIds)).toEqual({
+      advance_requests: 0,
+      invoices: 0,
+      invoice_installments: 0,
+      consents: 0,
+      status_history: 0,
+      stored_files: 0,
+    })
   })
 
   it('(i) purgar solo las facturas sin la solicitud se rechaza al confirmar (D49)', async () => {
@@ -1510,7 +1749,9 @@ describe('comportamiento de los triggers', () => {
   // contra pg_current_xact_id(), nunca contra xmin: xmin es quien escribió la última versión de la
   // fila, no quien la creó, y dentro de un SAVEPOINT es el xid de la subtransacción mientras
   // pg_current_xact_id() sigue siendo el de la transacción de nivel superior (así corren los
-  // `$transaction` anidados de Prisma).
+  // `$transaction` anidados de Prisma). Es un trigger AFTER INSERT FOR EACH ROW, no diferido: corre
+  // al terminar cada sentencia, y una factura que no ve en ese momento también es una violación
+  // (integrity_hardening_4; ver la carrera de abajo).
   it('(i) una cuota solo se agrega en la misma transacción que creó su factura (D49)', async () => {
     // Camino feliz: crear la solicitud completa (factura + cuotas) en una única transacción, como
     // hace la API, sigue funcionando.
@@ -1518,7 +1759,7 @@ describe('comportamiento de los triggers', () => {
     expect(request.invoices[0]?.id).toBeDefined()
 
     // Ataque: una cuota nueva para esa misma factura, ya confirmada en otra transacción, se
-    // rechaza de inmediato (no hace falta esperar a la confirmación).
+    // rechaza al terminar la sentencia (no hace falta esperar a la confirmación).
     const error = await sqlError((client) =>
       client.query(
         `INSERT INTO invoice_installments (invoice_id, number, label, amount, due_date)
@@ -1527,6 +1768,71 @@ describe('comportamiento de los triggers', () => {
       ),
     )
     expect(error).toMatchObject({ constraint: 'invoice_installments_same_transaction' })
+  })
+
+  // La carrera que dejaba pasar el gate cuando era BEFORE INSERT (reproducida en la revisión de la
+  // ronda 3): en READ COMMITTED, la fila de B pasaba el trigger con la factura de A todavía sin
+  // confirmar (invisible, así que no había creating_xact_id que comparar), A confirmaba antes de que
+  // terminara la sentencia de B, la FK ya encontraba la factura y el trigger diferido del agregado no
+  // suma cuotas: B confirmaba una cuota ajena sobre la factura de A (suma 10720.00 contra un neto de
+  // 10620.00). Ahora el gate corre al terminar la sentencia y su consulta toma una foto nueva: ve la
+  // factura de A con el creating_xact_id de A y la rechaza.
+  it('(i) una cuota para la factura de otra transacción que confirma a mitad de la sentencia se rechaza (D49)', async () => {
+    const seed = await createCompleteAdvanceRequest(db.prisma)
+    const race = await raceForeignInstallment(seed, 'READ COMMITTED', 2026_0925_41)
+    try {
+      // B se rechaza, y A confirmó su agregado con la factura intacta: una sola cuota, por el neto.
+      expect({
+        code: race.error?.code,
+        constraint: race.error?.constraint,
+        installments: await installmentsOf(race.invoiceId),
+      }).toEqual({
+        code: '23000',
+        constraint: 'invoice_installments_same_transaction',
+        installments: [{ number: 1, amount: '10620.00' }],
+      })
+    } finally {
+      expect(await purgeAggregate(race.requestId)).toBeNull()
+    }
+  })
+
+  // En REPEATABLE READ la foto de B es la de su primera sentencia, cuando la factura de A todavía no
+  // estaba confirmada. Hoy la rechaza la FK, que en este aislamiento consulta con esa misma foto y
+  // corre antes que el gate (los triggers de una tabla corren por orden de nombre y los de la FK
+  // empiezan con "RI_"); el gate la rechazaría igual, porque tampoco la ve (lo prueba el test
+  // siguiente con la FK postergada). Cualquiera de las dos reglas vale: lo que importa es que B no
+  // confirma nada sobre la factura de A.
+  it('(i) en REPEATABLE READ la misma carrera también se rechaza (D49)', async () => {
+    const seed = await createCompleteAdvanceRequest(db.prisma)
+    const race = await raceForeignInstallment(seed, 'REPEATABLE READ', 2026_0925_42)
+    try {
+      expect([
+        { code: '23503', constraint: 'invoice_installments_invoice_id_fkey' },
+        { code: '23000', constraint: 'invoice_installments_same_transaction' },
+      ]).toContainEqual({ code: race.error?.code, constraint: race.error?.constraint })
+      expect(await installmentsOf(race.invoiceId)).toEqual([{ number: 1, amount: '10620.00' }])
+    } finally {
+      expect(await purgeAggregate(race.requestId)).toBeNull()
+    }
+  })
+
+  // El gate no deja la factura inexistente o invisible en manos de la FK: si no la ve al terminar la
+  // sentencia, rechaza él mismo. Para que sea lo único que corre al terminar la sentencia, la FK se
+  // posterga dentro de una transacción que se deshace (DDL transaccional, como disableTrigger en (e)).
+  it('(i) una cuota sin factura visible la rechaza el propio gate, sin depender de la FK (D49)', async () => {
+    const error = await sqlError(async (client) => {
+      await client.query(
+        'ALTER TABLE invoice_installments ALTER CONSTRAINT invoice_installments_invoice_id_fkey DEFERRABLE INITIALLY DEFERRED',
+      )
+      await insert(client, 'invoice_installments', {
+        ...BASE.invoice_installments?.(),
+        invoice_id: newId(),
+      })
+    })
+    expect(error).toMatchObject({
+      code: '23000',
+      constraint: 'invoice_installments_same_transaction',
+    })
   })
 
   // xmin (la ronda 2) cambia con cualquier UPDATE, incluso uno sin cambios reales: invoices_guard
@@ -1628,6 +1934,46 @@ describe('comportamiento de los triggers', () => {
       })
     }, 'COMMIT')
     expect(error).toBeNull()
+  })
+
+  // Una sola sentencia con CTE que insertan la factura y sus cuotas juntas: las CTE comparten la foto
+  // de la sentencia, así que un trigger BEFORE ROW de la cuota nunca veía la factura. El gate corre al
+  // terminar la sentencia, cuando la factura ya se ve con el creating_xact_id de esta transacción.
+  it('(i) un agregado creado en una sola sentencia con CTE que modifican datos se confirma (D49)', async () => {
+    const seed = await createCompleteAdvanceRequest(db.prisma)
+    const aggregate = aggregateRows(seed)
+    const error = await sqlError((client) => insertInOneStatement(client, aggregate.rows), 'COMMIT')
+    try {
+      expect(error).toBeNull()
+      expect(await installmentsOf(aggregate.invoiceId)).toEqual([{ number: 1, amount: '10620.00' }])
+    } finally {
+      expect(await purgeAggregate(aggregate.requestId)).toBeNull()
+    }
+  })
+
+  // Un bloque PL/pgSQL con EXCEPTION corre en una subtransacción: pg_current_xact_id() sigue siendo el
+  // de la transacción de nivel superior, igual que el creating_xact_id que recibió la factura.
+  it('(i) un agregado creado dentro de un bloque PL/pgSQL con EXCEPTION se confirma (D49)', async () => {
+    const seed = await createCompleteAdvanceRequest(db.prisma)
+    const aggregate = aggregateRows(seed)
+    const statements = aggregate.rows.map(([table, row]) => `${insertLiteral(table, row)};`)
+    const error = await sqlError(
+      (client) =>
+        client.query(`DO $block$
+          BEGIN
+            ${statements.join('\n            ')}
+          EXCEPTION WHEN unique_violation THEN
+            RAISE;
+          END
+        $block$`),
+      'COMMIT',
+    )
+    try {
+      expect(error).toBeNull()
+      expect(await installmentsOf(aggregate.invoiceId)).toEqual([{ number: 1, amount: '10620.00' }])
+    } finally {
+      expect(await purgeAggregate(aggregate.requestId)).toBeNull()
+    }
   })
 
   it('(i) un creating_xact_id que venga del cliente al insertar la factura se ignora (D49)', async () => {
