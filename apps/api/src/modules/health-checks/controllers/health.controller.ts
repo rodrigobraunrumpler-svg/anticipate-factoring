@@ -2,6 +2,7 @@ import { Controller, Get, VERSION_NEUTRAL } from '@nestjs/common'
 import { HealthCheck, type HealthCheckResult, HealthCheckService } from '@nestjs/terminus'
 import { SkipThrottle } from '@nestjs/throttler'
 import { HEALTH_PATHS } from '#/bootstrap/constants.js'
+import { SkipResponseEnvelope } from '#/common/decorators/skip-response-envelope.decorator.js'
 
 /**
  * Sondas del orquestador y del monitoreo externo: fuera del prefijo `api`, sin versión
@@ -9,6 +10,7 @@ import { HEALTH_PATHS } from '#/bootstrap/constants.js'
  * agrega `Cache-Control: no-cache`.
  */
 @SkipThrottle()
+@SkipResponseEnvelope()
 @Controller({ version: VERSION_NEUTRAL })
 export class HealthController {
   constructor(private readonly health: HealthCheckService) {}

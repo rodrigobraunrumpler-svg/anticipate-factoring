@@ -1,10 +1,12 @@
 import { type DynamicModule, Module, type Type } from '@nestjs/common'
-import { APP_GUARD } from '@nestjs/core'
+import { APP_FILTER, APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core'
 import { ThrottlerModule } from '@nestjs/throttler'
 import { LoggerModule } from 'nestjs-pino'
 import { createPinoHttpOptions } from '#/bootstrap/index.js'
 import { type AppConfig, AppConfigModule } from '#/common/config/index.js'
+import { AllExceptionsFilter } from '#/common/filters/index.js'
 import { AppThrottlerGuard, createThrottlerOptions } from '#/common/guards/app-throttler.guard.js'
+import { ResponseEnvelopeInterceptor } from '#/common/interceptors/response-envelope.interceptor.js'
 import { TimeModule } from '#/infrastructure/time/index.js'
 import { HealthChecksModule } from '#/modules/health-checks/index.js'
 
@@ -29,7 +31,11 @@ export class AppModule {
         HealthChecksModule,
         ...extraModules,
       ],
-      providers: [{ provide: APP_GUARD, useClass: AppThrottlerGuard }],
+      providers: [
+        { provide: APP_GUARD, useClass: AppThrottlerGuard },
+        { provide: APP_FILTER, useClass: AllExceptionsFilter },
+        { provide: APP_INTERCEPTOR, useClass: ResponseEnvelopeInterceptor },
+      ],
     }
   }
 }

@@ -242,6 +242,9 @@ catalogs:
     lefthook:
       specifier: ^2.1.14
       version: 2.1.14
+    multer:
+      specifier: 2.4.0
+      version: 2.4.0
     nestjs-pino:
       specifier: ^5.2.0
       version: 5.2.0
@@ -362,6 +365,9 @@ importers:
       helmet:
         specifier: 'catalog:'
         version: 8.3.0
+      multer:
+        specifier: 'catalog:'
+        version: 2.4.0
       nestjs-pino:
         specifier: 'catalog:'
         version: 5.2.0(@nestjs/common@12.1.0(reflect-metadata@0.2.2)(rxjs@7.8.2)(supports-color@7.2.0))(@nestjs/core@12.1.0)(pino-http@11.0.0)(pino@10.3.1)(rxjs@7.8.2)
@@ -405,6 +411,9 @@ importers:
       '@types/supertest':
         specifier: 'catalog:'
         version: 7.2.1
+      fast-check:
+        specifier: 'catalog:'
+        version: 4.10.2
       pino-pretty:
         specifier: 'catalog:'
         version: 13.1.3

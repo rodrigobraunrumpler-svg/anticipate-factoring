@@ -1,7 +1,13 @@
-import { type NestApplicationOptions, RequestMethod, VersioningType } from '@nestjs/common'
+import {
+  type NestApplicationOptions,
+  RequestMethod,
+  StandardSchemaValidationPipe,
+  VersioningType,
+} from '@nestjs/common'
 import type { NestExpressApplication } from '@nestjs/platform-express'
 import helmet from 'helmet'
 import { Logger } from 'nestjs-pino'
+import { z } from 'zod'
 import {
   API_DEFAULT_VERSION,
   API_PREFIX,
@@ -13,7 +19,9 @@ import {
   setupSwagger,
 } from '#/bootstrap/index.js'
 import type { AppConfig } from '#/common/config/index.js'
+import { bodyParserErrorMiddleware } from '#/common/middleware/body-parser-error.middleware.js'
 import { CorrelationIdMiddleware } from '#/common/middleware/index.js'
+import { validationExceptionFactory } from '#/common/validation/validation-exception.factory.js'
 
 /**
  * Opciones de creación que comparten `main.ts` y `createTestApp`. `bodyParser: false` porque los
@@ -40,11 +48,18 @@ export function setupApp(app: NestExpressApplication, config: AppConfig): NestEx
   app.use(helmet(createHelmetOptions(config.nodeEnv)))
   app.enableCors(createCorsOptions(config.corsOrigins))
   configureBodyParsers(app)
+  // Conserva el tipo de los errores del parser para AllExceptionsFilter.
+  app.use(bodyParserErrorMiddleware)
   app.setGlobalPrefix(API_PREFIX, {
     exclude: Object.values(HEALTH_PATHS).map((path) => ({ path, method: RequestMethod.GET })),
   })
   app.enableVersioning({ type: VersioningType.URI, defaultVersion: API_DEFAULT_VERSION })
   configureServerTimeouts(app.getHttpServer(), config.server)
   if (config.nodeEnv !== 'production') setupSwagger(app)
+  // Mensajes por defecto de Zod en español: ninguna validación responde en inglés.
+  z.config(z.locales.es())
+  app.useGlobalPipes(
+    new StandardSchemaValidationPipe({ exceptionFactory: validationExceptionFactory }),
+  )
   return app
 }

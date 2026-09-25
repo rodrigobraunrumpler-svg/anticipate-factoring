@@ -157,7 +157,7 @@ describe('setupApp', () => {
 
   it('acepta JSON hasta el tope y corta con 413 lo que lo supera, sin llegar al controlador', async () => {
     const small = await request(http).post('/api/v1/probe/json').send({ ok: true }).expect(200)
-    expect(small.body).toEqual({ received: true })
+    expect(small.body.data).toEqual({ received: true })
     const tooLarge = await request(http)
       .post('/api/v1/probe/json')
       .set('content-type', 'application/json')
@@ -169,7 +169,7 @@ describe('setupApp', () => {
 
   it('el reloj de la app es el de la prueba', async () => {
     const res = await request(http).get('/api/v1/probe').expect(200)
-    expect(res.body.now).toBe(TEST_NOW.toISOString())
+    expect(res.body.data.now).toBe(TEST_NOW.toISOString())
   })
 
   it('aplica al servidor HTTP los tiempos de la configuración', () => {
@@ -247,11 +247,11 @@ describe('límites de peticiones', () => {
       const fromProxy = await request(behindProxy.getHttpServer())
         .get('/api/v1/probe')
         .set('x-forwarded-for', '203.0.113.7')
-      expect(fromProxy.body.clientIp).toBe('203.0.113.7')
+      expect(fromProxy.body.data.clientIp).toBe('203.0.113.7')
       const fromClient = await request(direct.getHttpServer())
         .get('/api/v1/probe')
         .set('x-forwarded-for', '203.0.113.7')
-      expect(fromClient.body.clientIp).toMatch(/127\.0\.0\.1$/)
+      expect(fromClient.body.data.clientIp).toMatch(/127\.0\.0\.1$/)
     } finally {
       await behindProxy.close()
       await direct.close()

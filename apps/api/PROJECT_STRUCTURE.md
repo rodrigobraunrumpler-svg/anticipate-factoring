@@ -56,7 +56,7 @@ apps/api/
 | `constants/` | `http-headers.constants.ts` | Nombres de las cabeceras del contrato HTTP |
 | `decorators/` | `submit-throttle.decorator.ts`, `response-message.decorator.ts`, `skip-response-envelope.decorator.ts` | Metadatos de ruta que leen el guard y el interceptor |
 | `guards/` | `app-throttler.guard.ts` | Límites de peticiones por IP real (`APP_GUARD`) |
-| `middleware/` | `correlation-id.middleware.ts`, `content-length-limit.middleware.ts`, `index.ts` | Piezas de Express que corren antes de los guards |
+| `middleware/` | `correlation-id.middleware.ts`, `content-length-limit.middleware.ts`, `body-parser-error.middleware.ts` (errores de body-parser con su tipo, para `AllExceptionsFilter`), `index.ts` | Piezas de Express que corren antes de los guards |
 | `time/` | `clock.ts` | Puerto `Clock` y token `CLOCK` |
 | `types/` | `express.d.ts`, `paginated-list.ts` | `Request.correlationId` y listas paginadas |
 | `utils/` | `client-ip.ts`, `correlation-id.ts`, `build-pagination-meta.ts` | Utilidades genéricas que usan dos partes o más |
