@@ -1,6 +1,12 @@
 import { createServer, type Server, type Socket } from 'node:net'
 import { ListObjectsV2Command } from '@aws-sdk/client-s3'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
+import {
+  replyEmptyList,
+  type S3StubHandler,
+  startS3StubServer,
+  trustStubCertificate,
+} from '../../../../test/support/s3-stub-server.js'
 import { createS3Client, S3_CLIENT_TUNING } from './s3-client.factory.js'
 
 const settings = {
@@ -62,7 +68,7 @@ describe('createS3Client', () => {
     cleanups.push(silent.stop)
     const client = createS3Client(
       { ...settings, endpoint: silent.url },
-      { connectionTimeoutMs: 200, requestTimeoutMs: 300, maxAttempts: 1 },
+      { connectionTimeoutMs: 200, requestTimeoutMs: 300, maxAttempts: 1, maxSockets: 50 },
     )
     cleanups.push(() => client.destroy())
 
@@ -71,5 +77,30 @@ describe('createS3Client', () => {
       client.send(new ListObjectsV2Command({ Bucket: 'anticipate-local', MaxKeys: 1 })),
     ).rejects.toMatchObject({ name: 'TimeoutError' })
     expect(Date.now() - startedAt).toBeLessThan(3_000)
+  })
+})
+
+describe('createS3Client sobre HTTPS, como con R2', () => {
+  let restoreCertificates: () => void = () => {}
+  beforeAll(() => {
+    restoreCertificates = trustStubCertificate()
+  })
+  afterAll(() => restoreCertificates())
+
+  it('usa el maxSockets de la configuración: nunca abre más conexiones a la vez', async () => {
+    const slowList: S3StubHandler = (_req, res) => setTimeout(() => replyEmptyList(res), 100)
+    const stub = await startS3StubServer(slowList, { tls: true })
+    cleanups.push(stub.stop)
+    const client = createS3Client(
+      { ...settings, endpoint: stub.url },
+      { connectionTimeoutMs: 5_000, requestTimeoutMs: 5_000, maxAttempts: 1, maxSockets: 2 },
+    )
+    cleanups.push(() => client.destroy())
+
+    const list = () => client.send(new ListObjectsV2Command({ Bucket: 'stub', MaxKeys: 1 }))
+    const results = await Promise.all(Array.from({ length: 6 }, list))
+
+    expect(results.map((result) => result.KeyCount)).toEqual([0, 0, 0, 0, 0, 0])
+    expect(stub.maxInFlight()).toBe(2)
   })
 })

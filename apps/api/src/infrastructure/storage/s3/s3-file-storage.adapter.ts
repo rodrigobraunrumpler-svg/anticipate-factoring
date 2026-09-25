@@ -14,57 +14,187 @@ import {
   type PutFileInput,
   type StoredObject,
 } from '#/common/storage/index.js'
+import { ConcurrencyLimiter, forEachConcurrently } from './concurrency.js'
+import { S3_CLIENT_TUNING } from './s3-client.factory.js'
 
-export type S3FileStorageOptions = { readonly bucket: string }
+/** Cuánto le pide el adaptador al proveedor a la vez y cuánto espera cada operación. */
+export type S3RequestLimits = {
+  /**
+   * Peticiones en curso a la vez, sumando todas las llamadas de este adaptador. Queda por debajo de
+   * `S3ClientTuning.maxSockets`: ninguna petición espera socket en el pool, donde esa espera gasta
+   * el tope de conexión, y la readiness, que comparte el cliente, siempre encuentra uno libre.
+   */
+  readonly maxConcurrentRequests: number
+  /**
+   * Peticiones en curso de una misma llamada a `putAll` o `deleteQuietly`: una llamada grande, como
+   * un lote del borrado diferido, nunca toma todos los cupos y deja lugar a las subidas.
+   */
+  readonly maxConcurrentRequestsPerCall: number
+  /**
+   * Plazo de una operación desde que obtiene su cupo: todos los intentos, las esperas entre ellos y
+   * la lectura de la respuesta. Corta lo que el SDK deja colgado, como una respuesta que manda las
+   * cabeceras y no termina el cuerpo.
+   */
+  readonly operationTimeoutMs: number
+}
+
+/** Margen del plazo por operación sobre los intentos del SDK: las esperas entre reintentos. */
+const RETRY_BACKOFF_MARGIN_MS = 10_000
+
+/**
+ * 32 peticiones en curso contra 50 sockets; 16 por llamada, así un envío de 20 archivos sube casi
+ * todo en paralelo y un lote de borrados deja la mitad de los cupos libres. El plazo por operación
+ * (100 s) supera los 3 intentos de 30 s del cliente: solo actúa si el SDK no corta por su cuenta.
+ */
+export const S3_REQUEST_LIMITS: S3RequestLimits = Object.freeze({
+  maxConcurrentRequests: 32,
+  maxConcurrentRequestsPerCall: 16,
+  operationTimeoutMs:
+    S3_CLIENT_TUNING.maxAttempts * S3_CLIENT_TUNING.requestTimeoutMs + RETRY_BACKOFF_MARGIN_MS,
+})
+
+export type S3FileStorageOptions = {
+  readonly bucket: string
+  /** Por defecto, `S3_REQUEST_LIMITS`. */
+  readonly limits?: S3RequestLimits
+}
+
+/** Una operación que no terminó en su plazo. Mismo `name` que los cortes por tiempo del SDK. */
+export class StorageOperationTimeoutError extends Error {
+  constructor(operation: string, timeoutMs: number, options?: ErrorOptions) {
+    super(`${operation} no terminó en ${timeoutMs} ms.`, options)
+    this.name = 'TimeoutError'
+  }
+}
 
 const MAX_DOWNLOAD_NAME_LENGTH = 150
 const FALLBACK_DOWNLOAD_NAME = 'archivo'
+
+/** La petición no se mandó: cuando obtuvo su cupo ya no hacía falta. */
+const SKIPPED: unique symbol = Symbol('SKIPPED')
+
+type RequestControl = {
+  /** Se consulta al obtener el cupo: `false` descarta la petición sin mandarla. */
+  readonly wanted?: () => boolean
+  /** Recibe el error final, ya con el corte por plazo traducido, antes de liberar el cupo. */
+  readonly onFailure?: (error: unknown) => void
+}
 
 /** `FileStoragePort` sobre la API de S3 (R2 en staging y producción, S3Mock en local). */
 export class S3FileStorageAdapter implements FileStoragePort {
   readonly bucket: string
   private readonly logger = new Logger(S3FileStorageAdapter.name)
+  private readonly limits: S3RequestLimits
+  /** Cupos de peticiones en curso, compartidos por todas las llamadas de este adaptador. */
+  private readonly requests: ConcurrencyLimiter
 
   constructor(
     private readonly client: S3Client,
     options: S3FileStorageOptions,
   ) {
     this.bucket = options.bucket
+    this.limits = checkedLimits(options.limits ?? S3_REQUEST_LIMITS)
+    this.requests = new ConcurrencyLimiter(this.limits.maxConcurrentRequests)
   }
 
   async putAll(inputs: readonly PutFileInput[]): Promise<StoredObject[]> {
-    // allSettled y no all: cuando se decide qué borrar, ninguna subida puede seguir en curso, o
-    // un objeto llegaría después de la limpieza y quedaría sin fila que lo encuentre.
-    const results = await Promise.allSettled(inputs.map((input) => this.put(input)))
-    const stored: StoredObject[] = []
-    const failures: unknown[] = []
-    for (const result of results) {
-      if (result.status === 'fulfilled') stored.push(result.value)
-      else failures.push(result.reason)
-    }
-    if (failures.length === 0) return stored
+    const stored: Array<StoredObject | undefined> = inputs.map(() => undefined)
+    let firstFailure: { readonly error: unknown } | undefined
+    let failed = 0
+    // Todas las subidas terminan antes de decidir qué borrar: un objeto que llegara después de la
+    // limpieza quedaría sin fila que lo encuentre. Tras el primer fallo no empieza ninguna más.
+    await forEachConcurrently(
+      inputs,
+      this.limits.maxConcurrentRequestsPerCall,
+      async (input, index) => {
+        try {
+          const result = await this.request(
+            'PutObject',
+            (abortSignal) => this.put(input, abortSignal),
+            {
+              wanted: () => firstFailure === undefined,
+              // Antes de liberar el cupo: la subida que lo recibe ya no se manda.
+              onFailure: (error) => {
+                firstFailure ??= { error }
+              },
+            },
+          )
+          if (result !== SKIPPED) stored[index] = result
+        } catch (error) {
+          failed += 1
+          firstFailure ??= { error }
+        }
+      },
+    )
+    const uploaded = stored.filter((object): object is StoredObject => object !== undefined)
+    if (firstFailure === undefined) return uploaded
 
-    const notDeleted = await this.deleteQuietly(stored.map((object) => object.key))
+    const notDeleted = await this.deleteQuietly(uploaded.map((object) => object.key))
     this.logger.warn(
       {
-        failed: failures.length,
-        uploaded: stored.length,
+        failed,
+        uploaded: uploaded.length,
+        notStarted: inputs.length - uploaded.length - failed,
         notDeleted: notDeleted.length,
-        error: describeError(failures[0]),
+        error: describeError(firstFailure.error),
       },
       'Falló una subida; se intentó borrar las que sí llegaron.',
     )
-    throw failures[0]
+    throw firstFailure.error
   }
 
   async deleteQuietly(keys: readonly string[]): Promise<string[]> {
-    const outcomes = await Promise.all([...new Set(keys)].map((key) => this.deleteOne(key)))
-    return outcomes.filter((key): key is string => key !== null)
+    const unique = [...new Set(keys)]
+    const notDeleted = new Set<string>()
+    // Si el proveedor deja de responder, cada borrado esperaría su plazo entero: no se mandan más y
+    // lo que falta queda pendiente para la próxima pasada.
+    let unresponsive = false
+    let skipped = 0
+    await forEachConcurrently(unique, this.limits.maxConcurrentRequestsPerCall, async (key) => {
+      try {
+        const result = await this.request(
+          'DeleteObject',
+          // DeleteObject unitario (sin cuerpo ni checksum) en vez de DeleteObjects, que exige una
+          // suma de verificación que R2 no documenta con el SDK actual.
+          (abortSignal) =>
+            this.client.send(new DeleteObjectCommand({ Bucket: this.bucket, Key: key }), {
+              abortSignal,
+            }),
+          {
+            wanted: () => !unresponsive,
+            onFailure: (error) => {
+              if (isTimeout(error)) unresponsive = true
+            },
+          },
+        )
+        if (result === SKIPPED) {
+          skipped += 1
+          notDeleted.add(key)
+        }
+      } catch (error) {
+        notDeleted.add(key)
+        this.logger.warn(
+          { key, error: describeError(error) },
+          'No se pudo borrar un archivo del almacenamiento; queda pendiente.',
+        )
+      }
+    })
+    if (skipped > 0) {
+      this.logger.warn(
+        { skipped },
+        'El almacenamiento dejó de responder; los borrados que faltaban quedan pendientes.',
+      )
+    }
+    return unique.filter((key) => notDeleted.has(key))
   }
 
   async exists(key: string): Promise<boolean> {
     try {
-      await this.client.send(new HeadObjectCommand({ Bucket: this.bucket, Key: key }))
+      await this.request('HeadObject', (abortSignal) =>
+        this.client.send(new HeadObjectCommand({ Bucket: this.bucket, Key: key }), {
+          abortSignal,
+        }),
+      )
       return true
     } catch (error) {
       if (httpStatusOf(error) === 404) return false
@@ -84,7 +214,39 @@ export class S3FileStorageAdapter implements FileStoragePort {
     )
   }
 
-  private async put(input: PutFileInput): Promise<StoredObject> {
+  /**
+   * Una petición al proveedor: espera un cupo del tope global y la corta si no termina en
+   * `operationTimeoutMs`, contado desde que obtuvo el cupo. Si al obtenerlo `wanted` dice que ya no
+   * hace falta, no la manda y resuelve `SKIPPED`. `onFailure` corre antes de liberar el cupo: la
+   * petición que lo recibe ya ve el fallo en su `wanted`.
+   */
+  private request<T>(
+    operation: string,
+    send: (abortSignal: AbortSignal) => Promise<T>,
+    control: RequestControl = {},
+  ): Promise<T | typeof SKIPPED> {
+    return this.requests.run(async () => {
+      if (control.wanted?.() === false) return SKIPPED
+      const { operationTimeoutMs } = this.limits
+      // Un temporizador propio y no AbortSignal.timeout: se limpia al terminar en vez de quedar
+      // pendiente hasta vencer o hasta que el recolector libere la señal.
+      const deadline = new AbortController()
+      const timer = setTimeout(() => deadline.abort(), operationTimeoutMs)
+      try {
+        return await send(deadline.signal)
+      } catch (sendError) {
+        const error = deadline.signal.aborted
+          ? new StorageOperationTimeoutError(operation, operationTimeoutMs, { cause: sendError })
+          : sendError
+        control.onFailure?.(error)
+        throw error
+      } finally {
+        clearTimeout(timer)
+      }
+    })
+  }
+
+  private async put(input: PutFileInput, abortSignal: AbortSignal): Promise<StoredObject> {
     await this.client.send(
       new PutObjectCommand({
         Bucket: this.bucket,
@@ -93,6 +255,7 @@ export class S3FileStorageAdapter implements FileStoragePort {
         ContentType: input.contentType,
         ContentLength: input.body.byteLength,
       }),
+      { abortSignal },
     )
     return {
       bucket: this.bucket,
@@ -101,22 +264,23 @@ export class S3FileStorageAdapter implements FileStoragePort {
       sha256: createHash('sha256').update(input.body).digest('hex'),
     }
   }
+}
 
-  /** Borra una clave; devuelve la clave si no se pudo borrar y `null` si quedó borrada. */
-  private async deleteOne(key: string): Promise<string | null> {
-    try {
-      // DeleteObject unitario (sin cuerpo ni checksum) en vez de DeleteObjects, que exige una suma
-      // de verificación que R2 no documenta con el SDK actual.
-      await this.client.send(new DeleteObjectCommand({ Bucket: this.bucket, Key: key }))
-      return null
-    } catch (error) {
-      this.logger.warn(
-        { key, error: describeError(error) },
-        'No se pudo borrar un archivo del almacenamiento; queda pendiente.',
-      )
-      return key
-    }
+/** Mayor demora que acepta `setTimeout`; con más, Node dispara el temporizador enseguida. */
+const MAX_TIMER_DELAY_MS = 2_147_483_647
+
+function checkedLimits(limits: S3RequestLimits): S3RequestLimits {
+  const { maxConcurrentRequests, maxConcurrentRequestsPerCall, operationTimeoutMs } = limits
+  const isPositiveInteger = (value: number) => Number.isSafeInteger(value) && value >= 1
+  if (
+    !isPositiveInteger(maxConcurrentRequests) ||
+    !isPositiveInteger(maxConcurrentRequestsPerCall) ||
+    !isPositiveInteger(operationTimeoutMs) ||
+    operationTimeoutMs > MAX_TIMER_DELAY_MS
+  ) {
+    throw new RangeError(`Límites del almacenamiento inválidos: ${JSON.stringify(limits)}`)
   }
+  return limits
 }
 
 /**
@@ -149,6 +313,11 @@ function encodeRfc5987(value: string): string {
     /['()*]/g,
     (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`,
   )
+}
+
+/** Corte por tiempo: el plazo del adaptador o los topes de conexión y petición del SDK. */
+function isTimeout(error: unknown): boolean {
+  return error instanceof Error && error.name === 'TimeoutError'
 }
 
 function httpStatusOf(error: unknown): number | undefined {

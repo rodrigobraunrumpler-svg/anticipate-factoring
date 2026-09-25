@@ -9,20 +9,24 @@ export const DOWNLOAD_URL_TTL_SECONDS = 300
 
 /**
  * Único acceso de la aplicación al almacenamiento de archivos. La implementación vive en
- * `infrastructure/storage`; los casos de uso solo conocen este puerto y su token.
+ * `infrastructure/storage`; los casos de uso solo conocen este puerto y su token. Ninguna operación
+ * queda colgada: todas terminan, bien o con error, en un plazo acotado aunque el proveedor no
+ * responda o deje una respuesta a medias.
  */
 export interface FileStoragePort {
   /** Bucket donde quedan los objetos; se guarda en `stored_files.storage_bucket`. */
   readonly bucket: string
   /**
-   * Sube todo o nada, en paralelo. Resuelve con un resultado por entrada y en el mismo orden.
-   * Si una subida falla, espera a que terminen las demás, borra las que sí llegaron y rechaza con
-   * el error de la primera que falló: al rechazar no queda ninguna subida en curso.
+   * Sube todo o nada, en paralelo con un tope. Resuelve con un resultado por entrada y en el mismo
+   * orden. Si una subida falla, no empieza ninguna más, espera a que terminen las que estaban en
+   * curso, borra las que sí llegaron y rechaza con el error de la primera que falló: al rechazar no
+   * queda ninguna subida en curso.
    */
   putAll(inputs: readonly PutFileInput[]): Promise<StoredObject[]>
   /**
    * Borra sin lanzar nunca. Devuelve las claves que NO se pudieron borrar, sin repetir, para que
-   * quien llama las deje pendientes. Una clave que no existe cuenta como borrada.
+   * quien llama las deje pendientes. Una clave que no existe cuenta como borrada. Si el proveedor
+   * deja de responder, no intenta las que faltan y también las devuelve.
    */
   deleteQuietly(keys: readonly string[]): Promise<string[]>
   /** `true` si el objeto existe y `false` si no; ante cualquier otro error del proveedor, lanza. */

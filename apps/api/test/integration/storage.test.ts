@@ -3,6 +3,7 @@ import { createServer, type Server, type Socket } from 'node:net'
 import type { INestApplication } from '@nestjs/common'
 import request from 'supertest'
 import { afterAll, afterEach, describe, expect, it } from 'vitest'
+import { S3_REQUEST_LIMITS } from '#/infrastructure/storage/s3/s3-file-storage.adapter.js'
 import {
   S3_READINESS_TIMEOUT_MS,
   STORAGE_UNAVAILABLE_MESSAGE,
@@ -43,6 +44,28 @@ describe('S3FileStorageAdapter contra S3Mock', () => {
     ])
     expect(await storage.exists(key('a.xml'))).toBe(true)
     expect(await storage.exists(key('nunca-existio.xml'))).toBe(false)
+  })
+
+  it('con más archivos que los topes de concurrencia, sube y borra todo en orden', async () => {
+    const storage = storageWith()
+    const batch = `${prefix}muchos/`
+    const count = S3_REQUEST_LIMITS.maxConcurrentRequests + 8
+    const inputs = Array.from({ length: count }, (_, index) => ({
+      key: `${batch}${String(index).padStart(3, '0')}.xml`,
+      body: Buffer.from(`<Invoice n="${index}"/>`),
+      contentType: 'application/xml',
+    }))
+
+    const [stored, again] = await Promise.all([
+      storage.putAll(inputs),
+      storage.putAll(inputs.map((input) => ({ ...input, key: `${input.key}.copia` }))),
+    ])
+
+    expect(stored.map((object) => object.key)).toEqual(inputs.map((input) => input.key))
+    expect(again).toHaveLength(count)
+    expect(await listKeys(batch)).toHaveLength(2 * count)
+    await expect(storage.deleteQuietly(await listKeys(batch))).resolves.toEqual([])
+    expect(await listKeys(batch)).toEqual([])
   })
 
   it('putAll es todo o nada: si una subida falla, no queda ningún objeto', async () => {

@@ -3,8 +3,8 @@ import { Global, Inject, Module, type OnApplicationShutdown } from '@nestjs/comm
 import { HealthIndicatorService, TerminusModule } from '@nestjs/terminus'
 import { APP_CONFIG, type AppConfig } from '#/common/config/index.js'
 import { FILE_STORAGE } from '#/common/storage/index.js'
-import { createS3Client, S3_CLIENT } from './s3-client.factory.js'
-import { S3FileStorageAdapter } from './s3-file-storage.adapter.js'
+import { createS3Client, S3_CLIENT, S3_CLIENT_TUNING } from './s3-client.factory.js'
+import { S3_REQUEST_LIMITS, S3FileStorageAdapter } from './s3-file-storage.adapter.js'
 import {
   S3_READINESS_CACHE_TTL_MS,
   S3_READINESS_TIMEOUT_MS,
@@ -13,7 +13,9 @@ import {
 
 /**
  * Dueño del cliente S3. Exporta solo el puerto `FILE_STORAGE` y el indicador de readiness, nunca
- * el cliente: ningún módulo de negocio llega al bucket sin pasar por el puerto.
+ * el cliente: ningún módulo de negocio llega al bucket sin pasar por el puerto. El adaptador y el
+ * indicador comparten el cliente; `S3_REQUEST_LIMITS.maxConcurrentRequests` queda por debajo de
+ * `S3_CLIENT_TUNING.maxSockets`, así la readiness nunca espera socket detrás de las subidas.
  */
 @Global()
 @Module({
@@ -22,13 +24,16 @@ import {
     {
       provide: S3_CLIENT,
       inject: [APP_CONFIG],
-      useFactory: (config: AppConfig) => createS3Client(config.storage),
+      useFactory: (config: AppConfig) => createS3Client(config.storage, S3_CLIENT_TUNING),
     },
     {
       provide: FILE_STORAGE,
       inject: [S3_CLIENT, APP_CONFIG],
       useFactory: (client: S3Client, config: AppConfig) =>
-        new S3FileStorageAdapter(client, { bucket: config.storage.bucket }),
+        new S3FileStorageAdapter(client, {
+          bucket: config.storage.bucket,
+          limits: S3_REQUEST_LIMITS,
+        }),
     },
     {
       provide: S3ReadinessIndicator,
