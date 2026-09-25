@@ -27,7 +27,17 @@
     "typecheck": "turbo run typecheck",
     "test": "turbo run test",
     "test:watch": "vitest",
-    "verify": "pnpm lint && turbo run typecheck test build"
+    "test:integration": "turbo run test:integration",
+    "verify": "pnpm lint && turbo run typecheck test build",
+    "infra:up": "docker compose up -d --wait --wait-timeout 120",
+    "infra:down": "docker compose --profile api down",
+    "infra:reset": "docker compose --profile api down --volumes --remove-orphans",
+    "infra:logs": "docker compose --profile api logs --follow --tail=200",
+    "api:image": "docker compose --profile api up -d --build --wait --wait-timeout 180",
+    "db:generate": "pnpm --filter @anticipate/api --fail-if-no-match db:generate",
+    "db:migrate": "pnpm --filter @anticipate/api --fail-if-no-match db:migrate",
+    "db:seed": "pnpm --filter @anticipate/api --fail-if-no-match db:seed",
+    "db:check-drift": "pnpm --filter @anticipate/api --fail-if-no-match db:check-drift"
   },
   "devDependencies": {
     "@biomejs/biome": "catalog:",

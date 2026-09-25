@@ -1,0 +1,114 @@
+name: anticipate
+
+services:
+  postgres:
+    image: postgres:18.6-alpine3.24
+    environment:
+      POSTGRES_USER: anticipate
+      POSTGRES_PASSWORD: anticipate
+      POSTGRES_DB: anticipate
+      # Mismo locale que Neon (C.UTF-8) con el proveedor builtin de PostgreSQL: orden por punto de
+      # código y mayúsculas/minúsculas Unicode, sin depender de la libc de la imagen (musl no ordena
+      # por idioma). Así una consulta ordena y compara igual en local, en CI y en Neon.
+      POSTGRES_INITDB_ARGS: --encoding=UTF8 --locale-provider=builtin --locale=C.UTF-8
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      # Desde la 18 la imagen guarda los datos en /var/lib/postgresql/18/docker y declara el volumen
+      # en /var/lib/postgresql; montarlo en /var/lib/postgresql/data, como hasta la 17, no arranca.
+      - postgres-data:/var/lib/postgresql
+      - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      # -h 127.0.0.1: la instancia temporal del initdb solo escucha en el socket unix; sin host,
+      # pg_isready diría "healthy" antes de que terminen los scripts de init.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U anticipate -d anticipate"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+
+  s3mock:
+    image: adobe/s3mock:5.2.3
+    environment:
+      COM_ADOBE_TESTING_S3MOCK_STORE_ROOT: /s3mockroot
+      COM_ADOBE_TESTING_S3MOCK_STORE_INITIAL_BUCKETS: anticipate-local
+      COM_ADOBE_TESTING_S3MOCK_STORE_RETAIN_FILES_ON_EXIT: "true"
+      COM_ADOBE_TESTING_S3MOCK_STORE_REGION: us-east-1
+    ports:
+      - "127.0.0.1:${S3MOCK_PORT:-9090}:9090"
+    volumes:
+      - s3mock-data:/s3mockroot
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9090/favicon.ico"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 20s
+
+  mailpit:
+    image: axllent/mailpit:v1.31.2
+    environment:
+      MP_SMTP_AUTH_ACCEPT_ANY: "1"
+      MP_SMTP_AUTH_ALLOW_INSECURE: "1"
+      MP_DATABASE: /data/mailpit.db
+      MP_MAX_MESSAGES: "1000"
+      TZ: America/Lima
+    ports:
+      - "127.0.0.1:${MAILPIT_SMTP_PORT:-1025}:1025"
+      - "127.0.0.1:${MAILPIT_UI_PORT:-8025}:8025"
+    volumes:
+      - mailpit-data:/data
+    healthcheck:
+      test: ["CMD", "/mailpit", "readyz"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+  # Solo con `pnpm api:image`: la imagen de producción de la API (Dockerfile de la Tarea 14) contra
+  # la infraestructura local. Las migraciones no corren aquí: se aplican antes con `pnpm db:migrate`.
+  api:
+    profiles: ["api"]
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+      target: runtime
+    image: anticipate-api:local
+    # Variables en línea y no en un env_file: `infra:up` no depende de un archivo local que no todos
+    # tienen. Son valores de desarrollo, sin secretos. Dentro de la red de Compose los puertos son los
+    # del contenedor (postgres:5432, s3mock:9090, mailpit:1025), nunca los del host.
+    environment:
+      NODE_ENV: production
+      PORT: "4000"
+      LOG_LEVEL: info
+      DATABASE_URL: postgresql://anticipate:anticipate@postgres:5432/anticipate
+      DATABASE_DIRECT_URL: postgresql://anticipate:anticipate@postgres:5432/anticipate
+      S3_ENDPOINT: http://s3mock:9090
+      S3_REGION: us-east-1
+      S3_BUCKET: anticipate-local
+      S3_ACCESS_KEY_ID: local
+      S3_SECRET_ACCESS_KEY: local
+      S3_FORCE_PATH_STYLE: "true"
+      MAIL_TRANSPORT: smtp
+      SMTP_HOST: mailpit
+      SMTP_PORT: "1025"
+      MAIL_FROM_EMAIL: solicitudes@anticipate.local
+      TEAM_NOTIFICATION_EMAIL: equipo@anticipate.local
+      ADMIN_BASE_URL: http://localhost:3000
+      # No es una clave de Cloudflare: en producción la configuración rechaza las tres claves secretas
+      # de prueba de Turnstile. La prueba de humo de la imagen no envía solicitudes; un envío real a
+      # esta imagen recibe 403 CAPTCHA_FAILED.
+      TURNSTILE_SECRET_KEY: local-image-smoke-test-not-a-secret
+    ports:
+      - "127.0.0.1:${API_PORT:-4000}:4000"
+    # Al recibir SIGTERM la API deja de programar pasadas del outbox y del mantenimiento, espera la que
+    # está en curso y recién entonces cierra el pool; 30 s cubren el tope por handler del outbox (20 s).
+    stop_grace_period: 30s
+    depends_on:
+      postgres: { condition: service_healthy }
+      s3mock: { condition: service_healthy }
+      mailpit: { condition: service_healthy }
+
+volumes:
+  postgres-data:
+  s3mock-data:
+  mailpit-data:

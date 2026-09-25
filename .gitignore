@@ -8,13 +8,16 @@ dist/
 coverage/
 *.tsbuildinfo
 
-# entorno y secretos
+# entorno y secretos (las plantillas .env.example y .env.test.example sí se versionan)
 .env
 .env.*
 !.env.example
+!.env.test.example
 
 # prisma
 apps/api/prisma/*.db
+# cliente de Prisma generado por `pnpm db:generate` (turbo lo regenera antes de build, typecheck, test y dev de la API)
+apps/api/src/infrastructure/prisma/generated/
 
 # sistema y editores
 .DS_Store

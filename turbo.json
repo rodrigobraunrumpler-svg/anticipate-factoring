@@ -1,5 +1,6 @@
 {
   "$schema": "https://turbo.build/schema.json",
+  "envMode": "strict",
   "tasks": {
     "build": {
       "dependsOn": ["^build"],
@@ -7,6 +8,19 @@
     },
     "typecheck": { "dependsOn": ["^build"] },
     "test": { "dependsOn": ["^build"] },
-    "dev": { "cache": false, "persistent": true }
+    "dev": { "cache": false, "persistent": true },
+    "db:generate": {
+      "inputs": ["prisma/**/*.prisma", "prisma.config.ts"],
+      "outputs": ["src/infrastructure/prisma/generated/**"]
+    },
+    "test:integration": { "dependsOn": ["^build", "db:generate"], "cache": false },
+    "@anticipate/api#build": { "dependsOn": ["^build", "db:generate"], "outputs": ["dist/**"] },
+    "@anticipate/api#typecheck": { "dependsOn": ["^build", "db:generate"] },
+    "@anticipate/api#test": { "dependsOn": ["^build", "db:generate"] },
+    "@anticipate/api#dev": {
+      "dependsOn": ["^build", "db:generate"],
+      "cache": false,
+      "persistent": true
+    }
   }
 }

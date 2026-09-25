@@ -222,6 +222,10 @@ catalogs:
       specifier: ^4.6.5
       version: 4.6.5
 
+overrides:
+  pg: ^8.23.0
+  '@types/pg': ^8.23.1
+
 importers:
 
   .:
