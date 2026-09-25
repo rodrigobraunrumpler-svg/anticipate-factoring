@@ -37,7 +37,7 @@ apps/api/
 | Carpeta | Contenido | No contiene |
 |---|---|---|
 | `src/` (raíz) | `main.ts` (lee `.env` fuera de producción, valida la configuración, crea la app y abre el puerto), `app.module.ts` (`AppModule.register(config, extraModules)`, la raíz de composición) y `app.setup.ts` (`NEST_APP_OPTIONS` y `setupApp`, compartidos por producción y tests) | Lógica de negocio |
-| `bootstrap/` | Una pieza por archivo: `constants.ts` (`API_PREFIX`, `API_DEFAULT_VERSION`, `SWAGGER_PATH`, `HEALTH_PATHS`), `body-parser.options.ts`, `cors.options.ts`, `helmet.options.ts`, `server-timeouts.ts`, `pino-http.options.ts` y `swagger.setup.ts` | Nada de `modules/` |
+| `bootstrap/` | Una pieza por archivo: `constants.ts` (`API_PREFIX`, `API_DEFAULT_VERSION`, `SWAGGER_PATH`, `HEALTH_PATHS`), `body-parser.options.ts`, `cors.options.ts`, `helmet.options.ts`, `server-timeouts.ts`, `pino-http.options.ts`, `swagger.setup.ts` y `startup-banner.ts` (las líneas de arranque: URL completas fuera de producción) | Nada de `modules/` |
 | `common/` | Lo transversal: configuración validada, cabeceras del contrato, decoradores, guards, middleware, puertos comunes (`Clock`, almacenamiento, captcha), excepciones, filtro, interceptores y validación | Nada de `modules/`, `infrastructure/` ni `workers/` |
 | `infrastructure/` | Adaptadores de los puertos: Prisma y sus repositorios (`prisma/repositories/<módulo>/`, con su módulo de persistencia y sus `mappers/`), S3, correo, Turnstile y reloj | Casos de uso, controladores, workers |
 | `modules/<m>/domain/` | TypeScript puro: tipos, servicios de dominio y errores del módulo | Nest, Prisma, Express, adaptadores |

@@ -12,4 +12,5 @@ export {
   serializeSafeResponse,
 } from './pino-http.options.js'
 export { configureServerTimeouts } from './server-timeouts.js'
+export { type StartupBannerInput, startupBannerLines } from './startup-banner.js'
 export { setupSwagger } from './swagger.setup.js'

@@ -1,6 +1,7 @@
 import { Logger } from '@nestjs/common'
 import { NestFactory } from '@nestjs/core'
 import type { NestExpressApplication } from '@nestjs/platform-express'
+import { startupBannerLines } from '#/bootstrap/index.js'
 import { ConfigValidationError, parseConfig } from '#/common/config/index.js'
 import { AppModule } from './app.module.js'
 import { NEST_APP_OPTIONS, setupApp } from './app.setup.js'
@@ -30,7 +31,9 @@ async function bootstrap(): Promise<void> {
     await app.close()
     throw error
   }
-  new Logger('Bootstrap').log(`API escuchando en el puerto ${config.port} (${config.nodeEnv})`)
+  const logger = new Logger('Bootstrap')
+  for (const line of startupBannerLines({ nodeEnv: config.nodeEnv, port: config.port }))
+    logger.log(line)
 }
 
 bootstrap().catch((error: unknown) => {
