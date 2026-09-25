@@ -1,0 +1,1131 @@
+import { CLOSE_REASONS_BY_STATUS, TRANSITIONS } from '@anticipate/shared/advance-request'
+import { isValidRuc } from '@anticipate/shared/identity'
+import { invoiceKey } from '@anticipate/shared/invoice'
+import fc from 'fast-check'
+import pg from 'pg'
+import { afterAll, beforeEach, describe, expect, it } from 'vitest'
+import { newId } from '#/infrastructure/prisma/id.js'
+import { PrismaService } from '#/infrastructure/prisma/prisma.service.js'
+import { createTestApp } from '../support/app.js'
+import { testConfig } from '../support/config.js'
+import { createTestPrisma, truncateAll } from '../support/db.js'
+import { createCompleteAdvanceRequest } from '../support/factories.js'
+
+const db = createTestPrisma()
+// SQL directo, sin Prisma: el error de node-postgres trae `code` y `constraint` tal como los manda
+// PostgreSQL (los triggers ponen el nombre de su regla en CONSTRAINT).
+const pool = new pg.Pool({ connectionString: testConfig().database.url, max: 2 })
+
+type SqlError = Error & { code?: string; constraint?: string }
+type Row = Record<string, unknown>
+
+afterAll(async () => {
+  await pool.end()
+  await db.close()
+})
+
+beforeEach(async () => {
+  await truncateAll(db.prisma)
+})
+
+/** Corre `work` en una transacción que se deshace (o se confirma) y devuelve el error, si hubo. */
+async function sqlError(
+  work: (client: pg.PoolClient) => Promise<unknown>,
+  end: 'ROLLBACK' | 'COMMIT' = 'ROLLBACK',
+): Promise<SqlError | null> {
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+    await work(client)
+    await client.query(end)
+    return null
+  } catch (error) {
+    await client.query('ROLLBACK')
+    return error as SqlError
+  } finally {
+    client.release()
+  }
+}
+
+/** Los objetos van como JSON (columnas jsonb); los arreglos, como arreglos de PostgreSQL. */
+function insert(client: pg.PoolClient, table: string, row: Row) {
+  const columns = Object.keys(row)
+  const values = Object.values(row).map((value) =>
+    value !== null && typeof value === 'object' && !Array.isArray(value)
+      ? JSON.stringify(value)
+      : value,
+  )
+  return client.query(
+    `INSERT INTO "${table}" (${columns.map((column) => `"${column}"`).join(', ')}) VALUES (${columns.map((_, i) => `$${i + 1}`).join(', ')})`,
+    values,
+  )
+}
+
+const OTHER_ID = '0199a000-0000-7000-8000-000000000001'
+const UUID_V4 = '1b4e28ba-2fa1-4d2c-883f-0016d3cca427'
+const HEX_64 = 'ab'.repeat(32)
+const NOW = '2026-09-25T12:00:00.000Z'
+
+/**
+ * Una fila por tabla que cumple todas sus CHECK. Las FK apuntan a ids que no existen: PostgreSQL
+ * evalúa las CHECK al insertar la fila y las FK al terminar la sentencia, así que una fila que
+ * rompe una CHECK falla con el nombre de esa CHECK y la fila base falla solo por FK (23503).
+ */
+const BASE: Record<string, () => Row> = {
+  payers: () => ({
+    slug: 'base',
+    ruc: '20131312955',
+    legal_name: 'Pagador Base S.A.',
+    short_name: 'Base',
+    advance_percent: '80.00',
+    min_term_days: 15,
+    max_invoices: 10,
+    allowed_currencies: ['PEN'],
+    accent_color: '#0E7C86',
+    logo_url: 'https://cdn.anticipate.pe/logos/base.png',
+    texts: { title: 'Adelanta tus facturas' },
+  }),
+  suppliers: () => ({ ruc: '20100070970', legal_name: 'Proveedor Base S.A.C.' }),
+  legal_representatives: () => ({ supplier_id: OTHER_ID, full_name: 'Ana Pérez', dni: '46728673' }),
+  supplier_documents: () => ({
+    supplier_id: OTHER_ID,
+    representative_id: OTHER_ID,
+    type: 'REPRESENTATIVE_ID',
+    status: 'PENDING_REVIEW',
+    file_id: OTHER_ID,
+  }),
+  advance_requests: () => ({
+    id: newId(),
+    public_code: 'ANT-2026-000999',
+    idempotency_key: newId(),
+    request_fingerprint: HEX_64,
+    payer_id: OTHER_ID,
+    payer_ruc: '20131312955',
+    supplier_id: OTHER_ID,
+    supplier_ruc: '20100070970',
+    supplier_legal_name: 'Proveedor Base S.A.C.',
+    contact_full_name: 'Ana Pérez',
+    contact_dni: '46728673',
+    contact_mobile: '987654321',
+    contact_email: 'ana@proveedor.pe',
+    is_legal_representative: false,
+    contact_job_title: 'Gerente de finanzas',
+    contact_time_slot: 'MORNING',
+    requested_amount: '8000.00',
+    currency: 'PEN',
+    applied_advance_percent: '80.00',
+    applied_min_term_days: 15,
+    total_net_pending: '10620.00',
+    max_amount: '8496.00',
+    cavali_registration: 'UNKNOWN',
+    invoice_count: 1,
+    earliest_due_date: '2026-11-30',
+  }),
+  invoices: () => ({
+    id: newId(),
+    advance_request_id: OTHER_ID,
+    request_status: 'NEW',
+    currency: 'PEN',
+    issuer_ruc: '20100070970',
+    recipient_ruc: '20131312955',
+    document_type: '01',
+    series_number: 'F001-00000123',
+    invoice_key: '20100070970|F001-123',
+    issuer_name: 'Proveedor Base S.A.C.',
+    payment_terms: 'CREDIT',
+    total: '11800.00',
+    net_pending_amount: '10620.00',
+    issue_date: '2026-09-01',
+    due_date: '2026-11-30',
+    signed: true,
+    xml_file_id: OTHER_ID,
+  }),
+  invoice_installments: () => ({
+    invoice_id: OTHER_ID,
+    number: 1,
+    label: 'Cuota001',
+    amount: '10620.00',
+    due_date: '2026-11-30',
+  }),
+  stored_files: () => ({
+    id: newId(),
+    storage_bucket: 'anticipate-test',
+    key: `base/${newId()}`,
+    purpose: 'INVOICE_XML',
+    content_type: 'application/xml',
+    size_bytes: 1024,
+    sha256: HEX_64,
+  }),
+  status_history: () => ({ advance_request_id: OTHER_ID, to_status: 'NEW', version: 1 }),
+  consents: () => ({
+    advance_request_id: OTHER_ID,
+    type: 'TERMS',
+    document_version: '2026-09',
+    ip: '203.0.113.10',
+    accepted_at: NOW,
+  }),
+  users: () => ({
+    email: 'agente@anticipate.pe',
+    full_name: 'Agente Base',
+    password_hash: '$argon2id$v=19$m=65536,t=3,p=4$c2FsdA$aGFzaA',
+    role: 'AGENT',
+  }),
+  follow_ups: () => ({
+    advance_request_id: OTHER_ID,
+    user_id: OTHER_ID,
+    channel: 'CALL',
+    note: 'Llamada inicial',
+  }),
+  audit_logs: () => ({ action: 'advance-request.viewed', entity: 'advance_request' }),
+  outbox_events: () => ({
+    id: newId(),
+    handler: 'email.team-alert',
+    dedupe_key: `base:${newId()}`,
+    event_type: 'advance-request.created',
+    payload: { id: OTHER_ID, type: 'advance-request.created', version: 1 },
+    advance_request_id: OTHER_ID,
+    max_attempts: 5,
+  }),
+}
+
+/** Cada CHECK de la migración integrity con una fila que rompe solo esa regla. */
+const CHECK_CASES: { constraint: string; table: string; row: Row }[] = [
+  { constraint: 'payers_slug_check', table: 'payers', row: { slug: 'Sea' } },
+  { constraint: 'payers_ruc_check', table: 'payers', row: { ruc: '20131312956' } },
+  {
+    constraint: 'payers_legal_name_check',
+    table: 'payers',
+    row: { legal_name: ' \u3000ab\u00a0' },
+  },
+  { constraint: 'payers_short_name_check', table: 'payers', row: { short_name: '\ta\n' } },
+  { constraint: 'payers_advance_percent_check', table: 'payers', row: { advance_percent: '0.50' } },
+  { constraint: 'payers_min_term_days_check', table: 'payers', row: { min_term_days: -1 } },
+  { constraint: 'payers_max_invoices_check', table: 'payers', row: { max_invoices: 0 } },
+  {
+    constraint: 'payers_allowed_currencies_check',
+    table: 'payers',
+    row: { allowed_currencies: [] },
+  },
+  { constraint: 'payers_accent_color_check', table: 'payers', row: { accent_color: '#12345' } },
+  {
+    constraint: 'payers_logo_url_check',
+    table: 'payers',
+    row: { logo_url: 'javascript:alert(1)' },
+  },
+  {
+    constraint: 'payers_texts_check',
+    table: 'payers',
+    row: { texts: { Title: 'Clave que no es camelCase' } },
+  },
+  { constraint: 'suppliers_ruc_check', table: 'suppliers', row: { ruc: '12345678901' } },
+  { constraint: 'suppliers_legal_name_check', table: 'suppliers', row: { legal_name: '   ' } },
+  {
+    constraint: 'legal_representatives_dni_check',
+    table: 'legal_representatives',
+    row: { dni: '4672867' },
+  },
+  {
+    constraint: 'legal_representatives_full_name_check',
+    table: 'legal_representatives',
+    row: { full_name: '  ' },
+  },
+  {
+    constraint: 'supplier_documents_file_purpose_check',
+    table: 'supplier_documents',
+    row: { file_purpose: 'INVOICE_PDF' },
+  },
+  {
+    constraint: 'supplier_documents_representative_check',
+    table: 'supplier_documents',
+    row: { representative_id: null },
+  },
+  {
+    constraint: 'supplier_documents_valid_until_required_check',
+    table: 'supplier_documents',
+    row: { status: 'APPROVED', reviewed_by_id: OTHER_ID, reviewed_at: NOW },
+  },
+  {
+    constraint: 'supplier_documents_valid_until_not_applicable_check',
+    table: 'supplier_documents',
+    row: { type: 'MASTER_AGREEMENT', representative_id: null, valid_until: '2027-09-01' },
+  },
+  {
+    constraint: 'supplier_documents_issued_on_check',
+    table: 'supplier_documents',
+    row: {
+      type: 'POWER_OF_ATTORNEY_CERTIFICATE',
+      status: 'APPROVED',
+      reviewed_by_id: OTHER_ID,
+      reviewed_at: NOW,
+      valid_until: '2027-09-01',
+    },
+  },
+  {
+    constraint: 'supplier_documents_review_check',
+    table: 'supplier_documents',
+    row: { reviewed_at: NOW },
+  },
+  {
+    constraint: 'supplier_documents_validity_range_check',
+    table: 'supplier_documents',
+    row: { issued_on: '2026-10-01', valid_until: '2026-09-01' },
+  },
+  {
+    constraint: 'advance_requests_id_version_check',
+    table: 'advance_requests',
+    row: { id: UUID_V4 },
+  },
+  {
+    constraint: 'advance_requests_public_code_check',
+    table: 'advance_requests',
+    row: { public_code: 'ant-2026-000999' },
+  },
+  {
+    constraint: 'advance_requests_request_fingerprint_check',
+    table: 'advance_requests',
+    row: { request_fingerprint: 'G'.repeat(64) },
+  },
+  {
+    constraint: 'advance_requests_contact_full_name_check',
+    table: 'advance_requests',
+    row: { contact_full_name: ' ab ' },
+  },
+  {
+    constraint: 'advance_requests_contact_dni_check',
+    table: 'advance_requests',
+    row: { contact_dni: '4672867' },
+  },
+  {
+    constraint: 'advance_requests_contact_mobile_check',
+    table: 'advance_requests',
+    row: { contact_mobile: '887654321' },
+  },
+  {
+    constraint: 'advance_requests_contact_email_check',
+    table: 'advance_requests',
+    row: { contact_email: 'Ana@proveedor.pe' },
+  },
+  {
+    constraint: 'advance_requests_contact_job_title_check',
+    table: 'advance_requests',
+    row: { contact_job_title: null },
+  },
+  {
+    constraint: 'advance_requests_legal_representative_check',
+    table: 'advance_requests',
+    row: { is_legal_representative: true },
+  },
+  {
+    constraint: 'advance_requests_requested_amount_check',
+    table: 'advance_requests',
+    row: { requested_amount: '8496.01' },
+  },
+  {
+    constraint: 'advance_requests_snapshot_check',
+    table: 'advance_requests',
+    row: { applied_min_term_days: -1 },
+  },
+  {
+    constraint: 'advance_requests_max_amount_check',
+    table: 'advance_requests',
+    row: { max_amount: '8496.01' },
+  },
+  { constraint: 'advance_requests_version_check', table: 'advance_requests', row: { version: 0 } },
+  {
+    constraint: 'advance_requests_close_reason_check',
+    table: 'advance_requests',
+    row: { close_reason: 'OTHER', close_reason_detail: 'Motivo' },
+  },
+  {
+    constraint: 'advance_requests_close_reason_detail_check',
+    table: 'advance_requests',
+    row: { status: 'WITHDRAWN', close_reason: 'OTHER', closed_at: NOW },
+  },
+  {
+    constraint: 'advance_requests_closed_at_check',
+    table: 'advance_requests',
+    row: { closed_at: NOW },
+  },
+  {
+    constraint: 'advance_requests_next_action_check',
+    table: 'advance_requests',
+    row: { status: 'DISBURSED', closed_at: NOW, next_action_at: NOW },
+  },
+  {
+    constraint: 'advance_requests_utm_check',
+    table: 'advance_requests',
+    row: { utm: '["utm_source"]' },
+  },
+  {
+    constraint: 'advance_requests_referrer_check',
+    table: 'advance_requests',
+    row: { referrer: 'android-app://com.google' },
+  },
+  {
+    constraint: 'advance_requests_purpose_check',
+    table: 'advance_requests',
+    row: { purpose: '   ' },
+  },
+  {
+    constraint: 'advance_requests_invoice_count_check',
+    table: 'advance_requests',
+    row: { invoice_count: 0 },
+  },
+  { constraint: 'invoices_id_version_check', table: 'invoices', row: { id: UUID_V4 } },
+  { constraint: 'invoices_document_type_check', table: 'invoices', row: { document_type: '03' } },
+  { constraint: 'invoices_payment_terms_check', table: 'invoices', row: { payment_terms: 'CASH' } },
+  {
+    constraint: 'invoices_series_number_check',
+    table: 'invoices',
+    row: { series_number: 'F01-123', invoice_key: '20100070970|F01-123' },
+  },
+  {
+    constraint: 'invoices_invoice_key_check',
+    table: 'invoices',
+    row: { invoice_key: '20100070970|F001-00000123' },
+  },
+  {
+    constraint: 'invoices_net_pending_amount_check',
+    table: 'invoices',
+    row: { net_pending_amount: '11800.01' },
+  },
+  { constraint: 'invoices_dates_check', table: 'invoices', row: { due_date: '2026-08-31' } },
+  {
+    constraint: 'invoices_xml_file_purpose_check',
+    table: 'invoices',
+    row: { xml_file_purpose: 'INVOICE_PDF' },
+  },
+  {
+    constraint: 'invoices_pdf_file_purpose_check',
+    table: 'invoices',
+    row: { pdf_file_purpose: 'INVOICE_XML' },
+  },
+  { constraint: 'invoices_detraction_check', table: 'invoices', row: { detraction: '"10%"' } },
+  {
+    constraint: 'invoice_installments_number_check',
+    table: 'invoice_installments',
+    row: { number: 0 },
+  },
+  {
+    constraint: 'invoice_installments_amount_check',
+    table: 'invoice_installments',
+    row: { amount: '0.00' },
+  },
+  {
+    constraint: 'invoice_installments_label_check',
+    table: 'invoice_installments',
+    row: { label: ' ' },
+  },
+  { constraint: 'stored_files_id_version_check', table: 'stored_files', row: { id: UUID_V4 } },
+  { constraint: 'stored_files_size_bytes_check', table: 'stored_files', row: { size_bytes: 0 } },
+  {
+    constraint: 'stored_files_sha256_check',
+    table: 'stored_files',
+    row: { sha256: 'AB'.repeat(32) },
+  },
+  {
+    constraint: 'stored_files_content_type_check',
+    table: 'stored_files',
+    row: { purpose: 'SUPPLIER_DOCUMENT', content_type: 'text/plain' },
+  },
+  {
+    constraint: 'stored_files_xml_content_type_check',
+    table: 'stored_files',
+    row: { content_type: 'application/pdf' },
+  },
+  {
+    constraint: 'stored_files_pdf_content_type_check',
+    table: 'stored_files',
+    row: { purpose: 'INVOICE_PDF', content_type: 'image/png' },
+  },
+  { constraint: 'stored_files_status_check', table: 'stored_files', row: { status: 'ATTACHED' } },
+  { constraint: 'status_history_initial_check', table: 'status_history', row: { version: 2 } },
+  {
+    constraint: 'status_history_initial_status_check',
+    table: 'status_history',
+    row: { to_status: 'CONTACTED' },
+  },
+  { constraint: 'status_history_actor_check', table: 'status_history', row: { user_id: OTHER_ID } },
+  {
+    constraint: 'status_history_close_reason_check',
+    table: 'status_history',
+    row: { from_status: 'NEW', to_status: 'WITHDRAWN', version: 2 },
+  },
+  {
+    constraint: 'status_history_close_reason_detail_check',
+    table: 'status_history',
+    row: { from_status: 'NEW', to_status: 'WITHDRAWN', version: 2, close_reason: 'OTHER' },
+  },
+  {
+    constraint: 'consents_document_version_check',
+    table: 'consents',
+    row: { document_version: ' ' },
+  },
+  { constraint: 'users_email_check', table: 'users', row: { email: 'Agente@anticipate.pe' } },
+  { constraint: 'users_full_name_check', table: 'users', row: { full_name: ' ' } },
+  {
+    constraint: 'users_password_hash_check',
+    table: 'users',
+    row: { password_hash: '$2b$10$bcrypt' },
+  },
+  { constraint: 'follow_ups_note_check', table: 'follow_ups', row: { note: '  ' } },
+  { constraint: 'audit_logs_actor_check', table: 'audit_logs', row: { user_id: OTHER_ID } },
+  { constraint: 'outbox_events_id_version_check', table: 'outbox_events', row: { id: UUID_V4 } },
+  {
+    constraint: 'outbox_events_handler_check',
+    table: 'outbox_events',
+    row: { handler: 'Email.TeamAlert' },
+  },
+  {
+    constraint: 'outbox_events_event_type_check',
+    table: 'outbox_events',
+    row: { event_type: ' ', payload: { id: OTHER_ID, type: ' ', version: 1 } },
+  },
+  {
+    constraint: 'outbox_events_payload_check',
+    table: 'outbox_events',
+    row: { payload: { id: OTHER_ID, version: 1 } },
+  },
+  {
+    constraint: 'outbox_events_aggregate_check',
+    table: 'outbox_events',
+    row: { advance_request_id: null },
+  },
+  { constraint: 'outbox_events_attempts_check', table: 'outbox_events', row: { attempts: 6 } },
+  {
+    constraint: 'outbox_events_lease_check',
+    table: 'outbox_events',
+    row: { status: 'PROCESSING' },
+  },
+  {
+    constraint: 'outbox_events_published_check',
+    table: 'outbox_events',
+    row: { published_at: NOW },
+  },
+]
+
+async function queryRows<T extends pg.QueryResultRow>(
+  sql: string,
+  params: unknown[] = [],
+): Promise<T[]> {
+  return (await pool.query<T>(sql, params)).rows
+}
+
+const updateError = (sql: string, params: unknown[]) =>
+  sqlError((client) => client.query(sql, params))
+
+describe('estructura de la base', () => {
+  it('(a) toda FK tiene un índice no parcial que empieza por su primera columna', async () => {
+    const WHITELIST = ['supplier_documents.reviewed_by_id', 'status_history.user_id']
+    const foreignKeys = await queryRows<{ fk: string; name: string; covered: boolean }>(`
+      SELECT c.conrelid::regclass::text || '.' || (
+               SELECT string_agg(a.attname, ',' ORDER BY k.ord)
+               FROM unnest(c.conkey) WITH ORDINALITY AS k(attnum, ord)
+               JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = k.attnum
+             ) AS fk,
+             c.conname AS name,
+             EXISTS (
+               SELECT 1 FROM pg_index i
+               WHERE i.indrelid = c.conrelid AND i.indpred IS NULL AND i.indisvalid AND i.indkey[0] = c.conkey[1]
+             ) AS covered
+      FROM pg_constraint c JOIN pg_namespace n ON n.oid = c.connamespace
+      WHERE n.nspname = 'public' AND c.contype = 'f'`)
+    expect(foreignKeys.map((row) => row.name)).toContain('invoices_request_scope_fkey')
+    expect(
+      foreignKeys.filter((row) => !row.covered && !WHITELIST.includes(row.fk)).map((row) => row.fk),
+    ).toEqual([])
+  })
+
+  it('(b) las CHECK de la base son exactamente las de la migración integrity', async () => {
+    const rows = await queryRows<{ name: string }>(`
+      SELECT c.conname AS name FROM pg_constraint c JOIN pg_namespace n ON n.oid = c.connamespace
+      WHERE n.nspname = 'public' AND c.contype = 'c'`)
+    expect(rows.map((row) => row.name).sort()).toEqual(
+      [...new Set(CHECK_CASES.map((c) => c.constraint))].sort(),
+    )
+  })
+
+  it('(b) la clave canónica de la factura usa la misma función que prueba (f)', async () => {
+    const [row] = await queryRows<{ definition: string }>(
+      `SELECT pg_get_constraintdef(oid) AS definition FROM pg_constraint WHERE conname = 'invoices_invoice_key_check'`,
+    )
+    expect(row?.definition).toContain('canonical_invoice_key(')
+  })
+
+  it('(c) los índices parciales, descendentes, GIN y BRIN conservan su definición', async () => {
+    const indexes = await queryRows<{ name: string; definition: string }>(`
+      SELECT indexname AS name,
+             regexp_replace(indexdef, '^CREATE (UNIQUE )?INDEX \\S+ ON ', 'CREATE \\1INDEX ON ') AS definition
+      FROM pg_indexes WHERE schemaname = 'public'`)
+    const definitions = indexes.map((index) => index.definition)
+    const expected = [
+      'CREATE INDEX ON public.advance_requests USING btree (id DESC) WHERE (closed_at IS NULL)',
+      'CREATE INDEX ON public.advance_requests USING btree (status, id DESC)',
+      'CREATE INDEX ON public.advance_requests USING btree (payer_id, id DESC)',
+      'CREATE INDEX ON public.advance_requests USING btree (supplier_id, id DESC)',
+      'CREATE INDEX ON public.advance_requests USING btree (assigned_to_id, id DESC) WHERE (closed_at IS NULL)',
+      'CREATE INDEX ON public.advance_requests USING btree (next_action_at) WHERE ((closed_at IS NULL) AND (next_action_at IS NOT NULL))',
+      'CREATE INDEX ON public.advance_requests USING btree (assigned_to_id, next_action_at) WHERE ((closed_at IS NULL) AND (next_action_at IS NOT NULL))',
+      'CREATE INDEX ON public.advance_requests USING gin (contact_full_name gin_trgm_ops)',
+      'CREATE INDEX ON public.suppliers USING gin (legal_name gin_trgm_ops)',
+      'CREATE INDEX ON public.supplier_documents USING btree (valid_until) WHERE (superseded_at IS NULL)',
+      "CREATE UNIQUE INDEX ON public.invoices USING btree (invoice_key) WHERE (request_status <> ALL (ARRAY['REJECTED'::advance_request_status, 'WITHDRAWN'::advance_request_status]))",
+      "CREATE INDEX ON public.stored_files USING btree (created_at) WHERE (status = 'PENDING'::stored_file_status)",
+      'CREATE INDEX ON public.stored_files USING btree (purge_after) WHERE ((purged_at IS NULL) AND (deleted_at IS NOT NULL))',
+      'CREATE INDEX ON public.follow_ups USING btree (user_id, created_at DESC)',
+      'CREATE UNIQUE INDEX ON public.status_history USING btree (advance_request_id) WHERE (from_status IS NULL)',
+      'CREATE INDEX ON public.audit_logs USING btree (entity_id, created_at DESC)',
+      'CREATE INDEX ON public.audit_logs USING btree (user_id, created_at DESC)',
+      'CREATE INDEX ON public.audit_logs USING brin (created_at)',
+      "CREATE INDEX ON public.outbox_events USING btree (handler, available_at) WHERE (status = 'PENDING'::outbox_status)",
+      "CREATE INDEX ON public.outbox_events USING btree (lock_expires_at) WHERE (status = 'PROCESSING'::outbox_status)",
+      "CREATE INDEX ON public.outbox_events USING btree (created_at DESC) WHERE (status = 'DEAD_LETTER'::outbox_status)",
+    ]
+    expect(expected.filter((definition) => !definitions.includes(definition))).toEqual([])
+
+    // Nombres de los que dependen el código y el contrato (P2002 por nombre, rangos de la PK, búsquedas).
+    expect(indexes.map((index) => index.name)).toEqual(
+      expect.arrayContaining([
+        'advance_requests_open_idx',
+        'advance_requests_open_assigned_idx',
+        'advance_requests_idempotency_key_key',
+        'advance_requests_invoice_scope_key',
+        'invoices_open_invoice_key_key',
+        'status_history_one_initial_key',
+        'outbox_events_dedupe_key_key',
+        'suppliers_legal_name_trgm_idx',
+        'audit_logs_created_brin_idx',
+        'payers_id_ruc_key',
+        'suppliers_id_ruc_key',
+        'legal_representatives_id_supplier_key',
+      ]),
+    )
+    const [scope] = await queryRows<{ on_update: string; on_delete: string }>(`
+      SELECT confupdtype AS on_update, confdeltype AS on_delete FROM pg_constraint
+      WHERE conname = 'invoices_request_scope_fkey'`)
+    expect(scope).toEqual({ on_update: 'c', on_delete: 'r' })
+  })
+
+  it('(d) secuencia, funciones y triggers presentes', async () => {
+    const [sequence] = await queryRows<{ data_type: string }>(`
+      SELECT data_type FROM information_schema.sequences
+      WHERE sequence_schema = 'public' AND sequence_name = 'advance_request_code_seq'`)
+    expect(sequence).toEqual({ data_type: 'bigint' })
+
+    const functions = await queryRows<{ name: string; volatility: string }>(`
+      SELECT p.proname AS name, p.provolatile AS volatility
+      FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+      WHERE n.nspname = 'public' AND p.prokind = 'f'`)
+    const volatility = Object.fromEntries(functions.map((f) => [f.name, f.volatility]))
+    for (const name of [
+      'js_trim',
+      'js_length',
+      'is_valid_ruc',
+      'is_valid_payer_texts',
+      'canonical_invoice_key',
+      'uuidv7_floor',
+    ]) {
+      expect(volatility[name], name).toBe('i')
+    }
+    for (const name of [
+      'set_updated_at',
+      'advance_requests_guard',
+      'advance_requests_complete',
+      'invoices_guard',
+      'stored_files_guard',
+      'reject_append_only_mutation',
+      'outbox_events_guard',
+    ]) {
+      expect(volatility[name], name).toBeDefined()
+    }
+
+    const triggers = await queryRows<{
+      table: string
+      name: string
+      timing: string
+      events: string
+    }>(`
+      SELECT event_object_table AS table, trigger_name AS name, action_timing AS timing,
+             string_agg(event_manipulation, ',' ORDER BY event_manipulation) AS events
+      FROM information_schema.triggers WHERE trigger_schema = 'public'
+      GROUP BY 1, 2, 3`)
+    const withUpdatedAt = await queryRows<{ table: string }>(`
+      SELECT c.table_name AS table FROM information_schema.columns c
+      JOIN information_schema.tables t ON t.table_schema = c.table_schema AND t.table_name = c.table_name
+      WHERE c.table_schema = 'public' AND c.column_name = 'updated_at' AND t.table_type = 'BASE TABLE'`)
+    expect(withUpdatedAt.length).toBeGreaterThanOrEqual(9)
+    const key = (t: { table: string; name: string; timing: string; events: string }) =>
+      `${t.table}:${t.name}:${t.timing}:${t.events}`
+    expect(triggers.map(key).sort()).toEqual(
+      [
+        ...withUpdatedAt.map(({ table }) => ({
+          table,
+          name: `${table}_set_updated_at`,
+          timing: 'BEFORE',
+          events: 'UPDATE',
+        })),
+        {
+          table: 'advance_requests',
+          name: 'advance_requests_guard',
+          timing: 'BEFORE',
+          events: 'UPDATE',
+        },
+        {
+          table: 'advance_requests',
+          name: 'advance_requests_complete',
+          timing: 'AFTER',
+          events: 'INSERT',
+        },
+        { table: 'invoices', name: 'invoices_guard', timing: 'BEFORE', events: 'UPDATE' },
+        { table: 'stored_files', name: 'stored_files_guard', timing: 'BEFORE', events: 'UPDATE' },
+        {
+          table: 'status_history',
+          name: 'status_history_append_only',
+          timing: 'BEFORE',
+          events: 'DELETE,UPDATE',
+        },
+        {
+          table: 'audit_logs',
+          name: 'audit_logs_append_only',
+          timing: 'BEFORE',
+          events: 'DELETE,UPDATE',
+        },
+        {
+          table: 'consents',
+          name: 'consents_append_only',
+          timing: 'BEFORE',
+          events: 'DELETE,UPDATE',
+        },
+        {
+          table: 'outbox_events',
+          name: 'outbox_events_guard',
+          timing: 'BEFORE',
+          events: 'DELETE,UPDATE',
+        },
+      ]
+        .map(key)
+        .sort(),
+    )
+    const [complete] = await queryRows<{ deferrable: boolean; deferred: boolean }>(`
+      SELECT tgdeferrable AS deferrable, tginitdeferred AS deferred FROM pg_trigger
+      WHERE tgname = 'advance_requests_complete'`)
+    expect(complete).toEqual({ deferrable: true, deferred: true })
+  })
+})
+
+describe('(e) cada CHECK rechaza la fila que la rompe', () => {
+  it.each(Object.keys(BASE))('la fila base de %s cumple todas sus CHECK', async (table) => {
+    const error = await sqlError((client) => insert(client, table, BASE[table]?.() ?? {}))
+    expect([undefined, '23503']).toContain(error?.code)
+  })
+
+  it.each(CHECK_CASES)('$constraint', async ({ constraint, table, row }) => {
+    const error = await sqlError((client) => insert(client, table, { ...BASE[table]?.(), ...row }))
+    expect({ code: error?.code, constraint: error?.constraint }).toEqual({
+      code: '23514',
+      constraint,
+    })
+  })
+})
+
+describe('reglas espejo de shared', () => {
+  const digits = (length: number) =>
+    fc.string({ unit: fc.constantFrom(...'0123456789'), minLength: length, maxLength: length })
+
+  it('(f) is_valid_ruc coincide con isValidRuc en 5000 casos', async () => {
+    const candidates = fc.oneof(
+      {
+        weight: 4,
+        arbitrary: fc
+          .tuple(fc.constantFrom('10', '15', '16', '17', '20'), digits(9))
+          .map(([a, b]) => a + b),
+      },
+      { weight: 2, arbitrary: digits(11) },
+      { weight: 1, arbitrary: fc.string({ unit: 'grapheme', maxLength: 13 }) },
+    )
+    const values = fc
+      .sample(candidates, { numRuns: 5000, seed: 20260925 })
+      .filter((value) => !value.includes('\u0000'))
+    const rows = await queryRows<{ valid: boolean }>(
+      'SELECT is_valid_ruc(v) AS valid FROM unnest($1::text[]) WITH ORDINALITY AS t(v, n) ORDER BY n',
+      [values],
+    )
+    const expected = values.map((value) => isValidRuc(value))
+    expect(rows.map((row) => row.valid)).toEqual(expected)
+    expect(expected.filter(Boolean).length).toBeGreaterThan(200)
+  })
+
+  it('(f) canonical_invoice_key coincide con invoiceKey en 5000 casos', async () => {
+    const seriesNumber = fc
+      .tuple(
+        fc.string({
+          unit: fc.constantFrom(...'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'),
+          minLength: 4,
+          maxLength: 4,
+        }),
+        fc.integer({ min: 1, max: 8 }).chain((length) => digits(length)),
+      )
+      .map(([series, number]) => `${series}-${number}`)
+    const invoices = fc.sample(fc.tuple(digits(11), seriesNumber), {
+      numRuns: 5000,
+      seed: 20260925,
+    })
+    const rows = await queryRows<{ key: string }>(
+      'SELECT canonical_invoice_key(r, s) AS key FROM unnest($1::text[], $2::text[]) WITH ORDINALITY AS t(r, s, n) ORDER BY n',
+      [invoices.map(([ruc]) => ruc), invoices.map(([, series]) => series)],
+    )
+    expect(rows.map((row) => row.key)).toEqual(
+      invoices.map(([issuerRuc, series]) => invoiceKey({ issuerRuc, seriesNumber: series })),
+    )
+  })
+
+  it('(g) transiciones y reglas de cierre de la base = TRANSITIONS y CLOSE_REASONS_BY_STATUS', async () => {
+    const transitions = await queryRows<{
+      from_status: string
+      to_status: string
+      min_role: string
+    }>('SELECT from_status, to_status, min_role FROM advance_request_transitions')
+    const byKey = (
+      a: { from_status: string; to_status: string },
+      b: { from_status: string; to_status: string },
+    ) => `${a.from_status}>${a.to_status}`.localeCompare(`${b.from_status}>${b.to_status}`)
+    expect(transitions.sort(byKey)).toEqual(
+      TRANSITIONS.map((t) => ({
+        from_status: t.from,
+        to_status: t.to,
+        min_role: t.minRole ?? 'AGENT',
+      })).sort(byKey),
+    )
+
+    const rules = await queryRows<{ status: string; reason: string }>(
+      'SELECT status, reason FROM close_reason_rules',
+    )
+    const asText = (list: { status: string; reason: string }[]) =>
+      list.map((r) => `${r.status}:${r.reason}`).sort()
+    expect(asText(rules)).toEqual(
+      asText(
+        Object.entries(CLOSE_REASONS_BY_STATUS).flatMap(([status, reasons]) =>
+          reasons.map((reason) => ({ status, reason })),
+        ),
+      ),
+    )
+  })
+})
+
+describe('comportamiento de los triggers', () => {
+  const move = (id: string, status: string, extra = '') =>
+    pool.query(
+      `UPDATE advance_requests SET status = $2, version = version + 1${extra} WHERE id = $1`,
+      [id, status],
+    )
+
+  it('(h) WITHDRAWN libera las facturas de la solicitud y DISBURSED las deja bloqueadas', async () => {
+    const first = await createCompleteAdvanceRequest(db.prisma, {
+      invoices: [{ seriesNumber: 'F001-00000077' }],
+    })
+    await expect(
+      createCompleteAdvanceRequest(db.prisma, { invoices: [{ seriesNumber: 'F001-77' }] }),
+    ).rejects.toMatchObject({
+      code: 'P2002',
+      meta: {
+        driverAdapterError: { cause: { constraint: { index: 'invoices_open_invoice_key_key' } } },
+      },
+    })
+
+    await move(first.id, 'WITHDRAWN', ", close_reason = 'SUPPLIER_WITHDREW', closed_at = now()")
+    const [invoice] = await queryRows<{ request_status: string }>(
+      'SELECT request_status FROM invoices WHERE id = $1',
+      [first.invoices[0]?.id],
+    )
+    expect(invoice).toEqual({ request_status: 'WITHDRAWN' })
+
+    const second = await createCompleteAdvanceRequest(db.prisma, {
+      invoices: [{ seriesNumber: 'F001-77' }],
+    })
+    for (const status of [
+      'CONTACTED',
+      'DOCUMENTS_PENDING',
+      'UNDER_REVIEW',
+      'QUOTE_SENT',
+      'APPROVED',
+    ]) {
+      await move(second.id, status)
+    }
+    await move(second.id, 'DISBURSED', ', closed_at = now()')
+    await expect(
+      createCompleteAdvanceRequest(db.prisma, { invoices: [{ seriesNumber: 'F001-0077' }] }),
+    ).rejects.toMatchObject({ code: 'P2002' })
+  })
+
+  it('(i) status_history y audit_logs son de solo inserción; la purga por retención sí borra', async () => {
+    const request = await createCompleteAdvanceRequest(db.prisma)
+    await pool.query(
+      "INSERT INTO audit_logs (action, entity) VALUES ('advance-request.viewed', 'advance_request')",
+    )
+
+    for (const [sql, constraint] of [
+      [
+        "UPDATE status_history SET correlation_id = 'otro' WHERE advance_request_id = $1",
+        'status_history_append_only',
+      ],
+      ['DELETE FROM status_history WHERE advance_request_id = $1', 'status_history_append_only'],
+      [
+        "UPDATE audit_logs SET action = 'otro' WHERE $1::uuid IS NOT NULL",
+        'audit_logs_append_only',
+      ],
+      ['DELETE FROM audit_logs WHERE $1::uuid IS NOT NULL', 'audit_logs_append_only'],
+    ] as const) {
+      expect((await updateError(sql, [request.id]))?.constraint, sql).toBe(constraint)
+    }
+    const purge = await sqlError(async (client) => {
+      await client.query("SET LOCAL app.retention_purge = 'on'")
+      await client.query('DELETE FROM audit_logs')
+    })
+    expect(purge).toBeNull()
+  })
+
+  it('(i) de un consentimiento solo cambia revoked_at, y una sola vez', async () => {
+    const request = await createCompleteAdvanceRequest(db.prisma)
+    const revoke =
+      "UPDATE consents SET revoked_at = now() WHERE advance_request_id = $1 AND type = 'TERMS'"
+    expect(
+      await updateError(
+        "UPDATE consents SET document_version = 'otra' WHERE advance_request_id = $1",
+        [request.id],
+      ),
+    ).toMatchObject({ constraint: 'consents_append_only' })
+    expect(
+      await updateError('DELETE FROM consents WHERE advance_request_id = $1', [request.id]),
+    ).toMatchObject({
+      constraint: 'consents_append_only',
+    })
+    await pool.query(revoke, [request.id])
+    expect(await updateError(revoke, [request.id])).toMatchObject({
+      constraint: 'consents_append_only',
+    })
+  })
+
+  it('(i) la solicitud: identidad inmutable, versión + 1, transición válida y updated_at de la base', async () => {
+    const request = await createCompleteAdvanceRequest(db.prisma)
+    const cases = [
+      [
+        'UPDATE advance_requests SET requested_amount = requested_amount - 1, version = version + 1 WHERE id = $1',
+        'advance_requests_identity_immutable',
+      ],
+      [
+        "UPDATE advance_requests SET public_code = 'ANT-2026-999999', version = version + 1 WHERE id = $1",
+        'advance_requests_identity_immutable',
+      ],
+      [
+        "UPDATE advance_requests SET status = 'CONTACTED' WHERE id = $1",
+        'advance_requests_version_increment',
+      ],
+      [
+        "UPDATE advance_requests SET status = 'CONTACTED', version = version + 2 WHERE id = $1",
+        'advance_requests_version_increment',
+      ],
+      [
+        "UPDATE advance_requests SET status = 'APPROVED', version = version + 1 WHERE id = $1",
+        'advance_requests_transition_allowed',
+      ],
+    ] as const
+    for (const [sql, constraint] of cases) {
+      expect((await updateError(sql, [request.id]))?.constraint, sql).toBe(constraint)
+    }
+    await pool.query(
+      "UPDATE advance_requests SET status = 'CONTACTED', version = version + 1, updated_at = '2000-01-01T00:00:00Z' WHERE id = $1",
+      [request.id],
+    )
+    const [row] = await queryRows<{ status: string; version: number; stale: boolean }>(
+      "SELECT status, version, updated_at < '2001-01-01' AS stale FROM advance_requests WHERE id = $1",
+      [request.id],
+    )
+    expect(row).toEqual({ status: 'CONTACTED', version: 2, stale: false })
+  })
+
+  it('(i) facturas y archivos: solo cambia lo que su ciclo de vida permite', async () => {
+    const request = await createCompleteAdvanceRequest(db.prisma)
+    const fileId = request.fileIds[0]
+    expect(
+      await updateError('UPDATE invoices SET total = total + 1 WHERE advance_request_id = $1', [
+        request.id,
+      ]),
+    ).toMatchObject({ constraint: 'invoices_immutable' })
+    expect(
+      await updateError("UPDATE stored_files SET sha256 = repeat('0', 64) WHERE id = $1", [fileId]),
+    ).toMatchObject({
+      constraint: 'stored_files_identity_immutable',
+    })
+    expect(
+      await updateError(
+        "UPDATE stored_files SET status = 'PENDING', attached_at = NULL WHERE id = $1",
+        [fileId],
+      ),
+    ).toMatchObject({ constraint: 'stored_files_status_transition' })
+    await pool.query(
+      "UPDATE stored_files SET status = 'DELETED', deleted_at = now(), purge_after = now() + interval '35 days' WHERE id = $1",
+      [fileId],
+    )
+    await pool.query('UPDATE stored_files SET purged_at = now() WHERE id = $1', [fileId])
+    expect(
+      await updateError(
+        "UPDATE stored_files SET purged_at = now() + interval '1 day' WHERE id = $1",
+        [fileId],
+      ),
+    ).toMatchObject({ constraint: 'stored_files_purged_at_immutable' })
+    expect(
+      await updateError("UPDATE stored_files SET status = 'ATTACHED' WHERE id = $1", [fileId]),
+    ).toMatchObject({
+      constraint: 'stored_files_status_transition',
+    })
+  })
+
+  it('(i) outbox: identidad inmutable, PUBLISHED no cambia y solo se borra lo publicado', async () => {
+    const request = await createCompleteAdvanceRequest(db.prisma)
+    const eventId = newId()
+    await pool.query(
+      `INSERT INTO outbox_events (id, handler, dedupe_key, event_type, payload, advance_request_id, max_attempts)
+       VALUES ($1, 'email.team-alert', $2, 'advance-request.created', $3, $4, 5)`,
+      [
+        eventId,
+        `email.team-alert:${request.id}`,
+        JSON.stringify({ id: eventId, type: 'advance-request.created', version: 1 }),
+        request.id,
+      ],
+    )
+    expect(await updateError('DELETE FROM outbox_events WHERE id = $1', [eventId])).toMatchObject({
+      constraint: 'outbox_events_delete_published_only',
+    })
+    expect(
+      await updateError("UPDATE outbox_events SET handler = 'email.otro' WHERE id = $1", [eventId]),
+    ).toMatchObject({
+      constraint: 'outbox_events_identity_immutable',
+    })
+    await pool.query(
+      "UPDATE outbox_events SET status = 'PUBLISHED', published_at = now() WHERE id = $1",
+      [eventId],
+    )
+    expect(
+      await updateError(
+        "UPDATE outbox_events SET status = 'PENDING', published_at = NULL WHERE id = $1",
+        [eventId],
+      ),
+    ).toMatchObject({ constraint: 'outbox_events_published_immutable' })
+    await pool.query('DELETE FROM outbox_events WHERE id = $1', [eventId])
+  })
+
+  it('(i) la base rechaza al confirmar una solicitud incompleta', async () => {
+    const complete = await createCompleteAdvanceRequest(db.prisma)
+    const alone = await sqlError(
+      (client) =>
+        insert(client, 'advance_requests', {
+          ...BASE.advance_requests?.(),
+          payer_id: complete.payerId,
+          payer_ruc: complete.payerRuc,
+          supplier_id: complete.supplierId,
+          supplier_ruc: complete.supplierRuc,
+        }),
+      'COMMIT',
+    )
+    expect(alone).toMatchObject({ constraint: 'advance_requests_complete' })
+
+    // Por Prisma, el error del COMMIT llega como DriverAdapterError con el código y el mensaje de PostgreSQL.
+    for (const [part, message] of [
+      ['invoices', /no tiene facturas/],
+      ['consents', /no tiene los dos consentimientos/],
+      ['initialHistory', /no tiene su historial inicial/],
+    ] as const) {
+      await expect(
+        createCompleteAdvanceRequest(db.prisma, { omit: [part] }),
+        part,
+      ).rejects.toMatchObject({
+        cause: { code: '23000', message: expect.stringMatching(message) },
+      })
+    }
+    const [count] = await queryRows<{ total: number }>(
+      'SELECT count(*)::int AS total FROM advance_requests',
+    )
+    expect(count).toEqual({ total: 1 })
+  })
+
+  it('(j) la base fija los tres timeouts y la app los recibe por su pool', async () => {
+    const settings = await queryRows<{ setting: string }>(`
+      SELECT unnest(s.setconfig) AS setting FROM pg_db_role_setting s
+      JOIN pg_database d ON d.oid = s.setdatabase
+      WHERE d.datname = current_database() AND s.setrole = 0`)
+    expect(settings.map((row) => row.setting).sort()).toEqual([
+      'idle_in_transaction_session_timeout=30s',
+      'lock_timeout=5s',
+      'statement_timeout=15s',
+    ])
+
+    const app = await createTestApp()
+    try {
+      const prisma = app.get(PrismaService)
+      const [timeouts] = await prisma.$queryRawUnsafe<
+        {
+          statement_timeout: string
+          lock_timeout: string
+          idle_in_transaction_session_timeout: string
+        }[]
+      >(
+        `SELECT current_setting('statement_timeout') AS statement_timeout,
+                current_setting('lock_timeout') AS lock_timeout,
+                current_setting('idle_in_transaction_session_timeout') AS idle_in_transaction_session_timeout`,
+      )
+      expect(timeouts).toEqual({
+        statement_timeout: '15s',
+        lock_timeout: '5s',
+        idle_in_transaction_session_timeout: '30s',
+      })
+      const [shown] =
+        await prisma.$queryRawUnsafe<{ statement_timeout: string }[]>('SHOW statement_timeout')
+      expect(shown).toEqual({ statement_timeout: '15s' })
+    } finally {
+      await app.close()
+    }
+  })
+
+  it('(k) uuidv7_floor acota los ids reales de su milisegundo y traduce una fecha a un rango de la PK', async () => {
+    const appIds = Array.from({ length: 500 }, () => newId())
+    const [bounds] = await queryRows<{ total: number; bounded: number }>(
+      `WITH ids AS (
+         SELECT unnest($1::uuid[]) AS id
+         UNION ALL
+         SELECT uuidv7() FROM generate_series(1, 500)
+       )
+       SELECT count(*)::int AS total,
+              count(*) FILTER (
+                WHERE uuidv7_floor(uuid_extract_timestamp(id)) <= id
+                  AND id < uuidv7_floor(uuid_extract_timestamp(id) + interval '1 millisecond')
+              )::int AS bounded
+       FROM ids`,
+      [appIds],
+    )
+    expect(bounds).toEqual({ total: 1000, bounded: 1000 })
+
+    const client = await pool.connect()
+    try {
+      const insertLog = async () =>
+        (
+          await client.query<{ id: string }>(
+            "INSERT INTO audit_logs (action, entity) VALUES ('advance-request.viewed', 'advance_request') RETURNING id",
+          )
+        ).rows[0]?.id
+      const before = await insertLog()
+      await client.query('SELECT pg_sleep(0.005)')
+      const cut = (await client.query<{ cut: Date }>('SELECT clock_timestamp() AS cut')).rows[0]
+        ?.cut
+      await client.query('SELECT pg_sleep(0.005)')
+      const after = await insertLog()
+      const { rows } = await client.query<{ id: string }>(
+        'SELECT id FROM audit_logs WHERE id >= uuidv7_floor($1) ORDER BY id',
+        [cut],
+      )
+      expect(before).toBeDefined()
+      expect(rows.map((row) => row.id)).toEqual([after])
+    } finally {
+      client.release()
+    }
+  })
+})
