@@ -11,6 +11,7 @@ import { PrismaModule } from '#/infrastructure/prisma/index.js'
 import { StorageModule } from '#/infrastructure/storage/s3/index.js'
 import { TimeModule } from '#/infrastructure/time/index.js'
 import { HealthChecksModule } from '#/modules/health-checks/index.js'
+import { PayersModule } from '#/modules/payers/payers.module.js'
 
 /** Módulos que un test agrega a la app (controladores de prueba, raíces de composición). */
 export type ExtraModules = ReadonlyArray<Type | DynamicModule>
@@ -33,6 +34,7 @@ export class AppModule {
         PrismaModule,
         StorageModule,
         HealthChecksModule,
+        PayersModule,
         ...extraModules,
       ],
       providers: [
