@@ -559,6 +559,18 @@ describe('estructura de la base', () => {
     )
   })
 
+  // Las dos únicas CHECK que alguna vez se agregaron NOT VALID (integrity_hardening, sobre payers,
+  // que ya existía fuera de la migración baseline) se validaron después, en su propia migración
+  // (integrity_hardening_validate). Toda CHECK de la base, sin excepción, debe terminar validada:
+  // una NOT VALID sin su VALIDATE deja una regla que no rige para las filas que ya estaban.
+  it('(b) toda CHECK de la base está validada (ninguna quedó NOT VALID sin validar)', async () => {
+    const rows = await queryRows<{ name: string; validated: boolean }>(`
+      SELECT c.conname AS name, c.convalidated AS validated
+      FROM pg_constraint c JOIN pg_namespace n ON n.oid = c.connamespace
+      WHERE n.nspname = 'public' AND c.contype = 'c'`)
+    expect(rows.filter((row) => !row.validated).map((row) => row.name)).toEqual([])
+  })
+
   it('(b) la clave canónica de la factura usa la misma función que prueba (f)', async () => {
     const [row] = await queryRows<{ definition: string }>(
       `SELECT pg_get_constraintdef(oid) AS definition FROM pg_constraint WHERE conname = 'invoices_invoice_key_check'`,
@@ -651,7 +663,9 @@ describe('estructura de la base', () => {
       'assert_advance_request_complete',
       'invoices_guard',
       'invoices_complete',
+      'invoices_purge_requires_request_purge',
       'invoice_installments_complete',
+      'invoice_installments_same_transaction',
       'stored_files_guard',
       'reject_append_only_mutation',
       'outbox_events_guard',
@@ -715,6 +729,12 @@ describe('estructura de la base', () => {
           events: 'INSERT',
         },
         {
+          table: 'invoices',
+          name: 'invoices_purge_requires_request_purge',
+          timing: 'AFTER',
+          events: 'DELETE',
+        },
+        {
           table: 'invoice_installments',
           name: 'invoice_installments_append_only',
           timing: 'BEFORE',
@@ -724,6 +744,12 @@ describe('estructura de la base', () => {
           table: 'invoice_installments',
           name: 'invoice_installments_complete',
           timing: 'AFTER',
+          events: 'INSERT',
+        },
+        {
+          table: 'invoice_installments',
+          name: 'invoice_installments_same_transaction',
+          timing: 'BEFORE',
           events: 'INSERT',
         },
         { table: 'stored_files', name: 'stored_files_guard', timing: 'BEFORE', events: 'UPDATE' },
@@ -755,20 +781,25 @@ describe('estructura de la base', () => {
         .map(key)
         .sort(),
     )
-    // Las tres se disparan AFTER INSERT y diferidas: una solicitud puede insertar sus facturas y
-    // cuotas después de sí misma, todo en la misma transacción, y solo se comprueba al confirmar.
+    // Todas diferidas: una solicitud puede insertar sus facturas y cuotas después de sí misma (o
+    // borrarlas en cualquier orden al purgar), todo en la misma transacción, y solo se comprueba
+    // al confirmar.
     const deferredTriggers = await queryRows<{
       name: string
       deferrable: boolean
       deferred: boolean
     }>(`
       SELECT tgname AS name, tgdeferrable AS deferrable, tginitdeferred AS deferred FROM pg_trigger
-      WHERE tgname IN ('advance_requests_complete', 'invoices_complete', 'invoice_installments_complete')
+      WHERE tgname IN (
+        'advance_requests_complete', 'invoices_complete', 'invoice_installments_complete',
+        'invoices_purge_requires_request_purge'
+      )
       ORDER BY tgname`)
     expect(deferredTriggers).toEqual([
       { name: 'advance_requests_complete', deferrable: true, deferred: true },
       { name: 'invoice_installments_complete', deferrable: true, deferred: true },
       { name: 'invoices_complete', deferrable: true, deferred: true },
+      { name: 'invoices_purge_requires_request_purge', deferrable: true, deferred: true },
     ])
   })
 })
@@ -845,35 +876,41 @@ describe('reglas espejo de shared', () => {
 
   // Zod 4 mide `.min()`/`.max()` en puntos de código Unicode (no en unidades UTF-16, como medía el
   // js_length que integrity_hardening eliminó): char_length() de PostgreSQL ya cuenta puntos de
-  // código, así que las CHECK que antes llamaban a js_length ahora lo usan directamente. Estos dos
-  // tests comparan esa cuenta con publicPayerSchema en textos con emoji y con los 25 espacios que
-  // reconoce js_trim, para que este espejo no se pueda romper otra vez en silencio.
+  // código, así que las CHECK que antes llamaban a js_length ahora lo usan directamente. Los dos
+  // tests de abajo prueban la CHECK real de la tabla (un INSERT dentro de una transacción que
+  // siempre se deshace, con SAVEPOINT por fila para no pagar un BEGIN/ROLLBACK por caso), nunca una
+  // copia de su expresión: si la CHECK real se desincroniza de publicPayerSchema, esto lo detecta.
+  // Cruzan cada frontera (2, 3, 40 y 200 puntos de código, y 2000 en un texto) con caracteres
+  // astrales y los 25 espacios que reconoce js_trim (`size: 'max'`: sin eso, fast-check 4.10.2 no
+  // genera cadenas de más de 10 caracteres y ninguna frontera se cruza), e incluyen los
+  // contraejemplos del hallazgo: 'a'.repeat(199)+'😀' (200 puntos de código, 201 unidades UTF-16) y
+  // 1500 emoji en un texto (1500 puntos de código, 3000 unidades UTF-16).
   const jsWhitespace = [
-    '\u0009',
-    '\u000A',
-    '\u000B',
-    '\u000C',
-    '\u000D',
-    ' ',
-    ' ',
-    ' ',
-    ' ',
-    ' ',
-    ' ',
-    ' ',
-    ' ',
-    ' ',
-    ' ',
-    ' ',
-    ' ',
-    ' ',
-    ' ',
-    ' ',
-    ' ',
-    ' ',
-    ' ',
-    '　',
-    '﻿',
+    String.fromCharCode(0x0009), // tabulacion
+    String.fromCharCode(0x000a), // salto de linea (LF)
+    String.fromCharCode(0x000b), // tabulacion vertical
+    String.fromCharCode(0x000c), // salto de pagina
+    String.fromCharCode(0x000d), // retorno de carro (CR)
+    String.fromCharCode(0x0020), // espacio
+    String.fromCharCode(0x00a0), // espacio de no separacion (NBSP)
+    String.fromCharCode(0x1680), // espacio ogham
+    String.fromCharCode(0x2000), // espacio en cuadratin
+    String.fromCharCode(0x2001), // espacio em cuadratin
+    String.fromCharCode(0x2002), // espacio en
+    String.fromCharCode(0x2003), // espacio em
+    String.fromCharCode(0x2004), // espacio de tres por em
+    String.fromCharCode(0x2005), // espacio de cuatro por em
+    String.fromCharCode(0x2006), // espacio de seis por em
+    String.fromCharCode(0x2007), // espacio de cifra
+    String.fromCharCode(0x2008), // espacio de puntuacion
+    String.fromCharCode(0x2009), // espacio fino
+    String.fromCharCode(0x200a), // espacio de cabello
+    String.fromCharCode(0x2028), // separador de linea
+    String.fromCharCode(0x2029), // separador de parrafo
+    String.fromCharCode(0x202f), // espacio fino de no separacion
+    String.fromCharCode(0x205f), // espacio matematico medio
+    String.fromCharCode(0x3000), // espacio ideografico
+    String.fromCharCode(0xfeff), // BOM / ancho cero sin separacion
   ]
   const astralChars = ['😀', '🚀', '𝔘', '🧪', '🎉', '𠀀']
   const lengthMirrorUnit = fc.oneof(
@@ -897,51 +934,172 @@ describe('reglas espejo de shared', () => {
     allowedCurrencies: ['PEN'],
     accentColor: '#0E7C86',
     logoUrl: null,
+    texts: {},
+  }
+  /**
+   * `text` con unos pocos de los espacios de js_trim a los lados (no los 25: con contenido cerca
+   * de un límite, 25 a cada lado desbordaría el VARCHAR de la columna antes de llegar a la CHECK;
+   * ver la nota de `probePayerChecks`). Los 25 igual se generan como candidatos sueltos vía
+   * `lengthMirrorUnit`.
+   */
+  const padded = (text: string) =>
+    `${jsWhitespace[0]}${jsWhitespace[6]}${jsWhitespace[23]}${text}${jsWhitespace[24]}${jsWhitespace[17]}${jsWhitespace[5]}`
+  const codePointLength = (text: string) => [...text].length
+
+  /**
+   * Prueba cada patch de `payers` contra su CHECK real: un INSERT por fila, con SAVEPOINT, dentro
+   * de una única transacción que nunca se confirma (ROLLBACK TO SAVEPOINT tras cada fila, y
+   * ROLLBACK de todo al final). Mucho más barato que abrir una transacción por fila y, a
+   * diferencia de evaluar la expresión aparte, prueba la restricción real de la tabla.
+   */
+  async function probePayerChecks(
+    patches: readonly Row[],
+  ): Promise<{ accepted: boolean; constraint?: string | undefined }[]> {
+    const client = await pool.connect()
+    const results: { accepted: boolean; constraint?: string | undefined }[] = []
+    try {
+      await client.query('BEGIN')
+      for (const patch of patches) {
+        await client.query('SAVEPOINT probe')
+        try {
+          await insert(client, 'payers', { ...BASE.payers?.(), ...patch })
+          results.push({ accepted: true })
+        } catch (error) {
+          results.push({ accepted: false, constraint: (error as SqlError).constraint })
+        } finally {
+          await client.query('ROLLBACK TO SAVEPOINT probe')
+        }
+      }
+      await client.query('ROLLBACK')
+    } finally {
+      client.release()
+    }
+    return results
   }
 
-  it('(f) legalName y shortName miden puntos de código como publicPayerSchema (con emoji y espacios de JS)', async () => {
-    const values = fc
-      .sample(fc.string({ unit: lengthMirrorUnit, minLength: 0, maxLength: 205 }), {
-        numRuns: 4000,
+  /**
+   * Para un valor cuyo largo *sin recortar* ya supera `max` (sin espacios que quitar, como
+   * 'a'.repeat(201)), `legal_name`/`short_name` son `VARCHAR(max)`: PostgreSQL lo rechaza por el
+   * tipo de la columna (22001) antes de llegar a la CHECK, que nunca corre. Para cualquier otro
+   * valor, la única causa posible de rechazo es la CHECK misma.
+   */
+  function expectRealCheck(
+    results: readonly { accepted: boolean; constraint?: string | undefined }[],
+    values: readonly string[],
+    max: number,
+    checkName: string,
+  ): void {
+    for (const [i, result] of results.entries()) {
+      if (result.accepted) continue
+      const value = values[i] ?? ''
+      const expectedConstraint = codePointLength(value) > max ? undefined : checkName
+      expect(result.constraint, `#${i} ${JSON.stringify(value).slice(0, 40)}`).toBe(
+        expectedConstraint,
+      )
+    }
+  }
+
+  it('(f) legalName y shortName miden puntos de código como publicPayerSchema, contra la CHECK real', async () => {
+    const legalNameBoundary = [
+      '',
+      'a',
+      'ab',
+      'abc',
+      'abcd',
+      'A😀', // 2 puntos de código: Zod lo rechaza; la CHECK vieja (UTF-16) lo aceptaba
+      'a'.repeat(199),
+      'a'.repeat(200),
+      'a'.repeat(201),
+      `${'a'.repeat(199)}😀`, // 200 puntos de código (201 unidades UTF-16): contraejemplo del hallazgo
+      `${'a'.repeat(200)}😀`,
+      padded('abc'),
+      padded('a'.repeat(190)), // 6 de relleno + 190 = 196, dentro de VARCHAR(200)
+    ]
+    const shortNameBoundary = [
+      '',
+      'a',
+      'ab',
+      'a😀', // 2 puntos de código, con astral
+      'a'.repeat(39),
+      'a'.repeat(40),
+      'a'.repeat(41),
+      `${'a'.repeat(39)}😀`, // 40 puntos de código (41 unidades UTF-16)
+      `${'a'.repeat(40)}😀`,
+      padded('ab'),
+      padded('a'.repeat(30)), // 6 de relleno + 30 = 36, dentro de VARCHAR(40)
+    ]
+    // Hasta 40: cabe en las dos columnas (payers_short_name VARCHAR(40) incluido) sin desbordar
+    // nunca el tipo, así que cada rechazo solo puede venir de la CHECK.
+    const sharedRandomValues = fc
+      .sample(fc.string({ unit: lengthMirrorUnit, minLength: 0, maxLength: 40, size: 'max' }), {
+        numRuns: 400,
         seed: 20260925,
       })
       .filter((value) => !value.includes('\u0000'))
+    // Hasta 200: cobertura ancha extra solo para legalName (su propio VARCHAR(200); no se usa
+    // contra shortName, que desbordaría VARCHAR(40) antes de llegar a su CHECK).
+    const legalNameWideValues = fc
+      .sample(fc.string({ unit: lengthMirrorUnit, minLength: 0, maxLength: 200, size: 'max' }), {
+        numRuns: 300,
+        seed: 20260926,
+      })
+      .filter((value) => !value.includes('\u0000'))
 
-    const legalNameExpected = values.map(
-      (value) => publicPayerSchema.safeParse({ ...basePayer, legalName: value, texts: {} }).success,
+    const legalNameValues = [...legalNameBoundary, ...sharedRandomValues, ...legalNameWideValues]
+    const legalNameExpected = legalNameValues.map(
+      (value) => publicPayerSchema.safeParse({ ...basePayer, legalName: value }).success,
     )
-    const legalNameRows = await queryRows<{ ok: boolean }>(
-      'SELECT char_length(js_trim(v)) BETWEEN 3 AND 200 AS ok FROM unnest($1::text[]) WITH ORDINALITY AS t(v, n) ORDER BY n',
-      [values],
+    const legalNameResults = await probePayerChecks(
+      legalNameValues.map((value) => ({ legal_name: value })),
     )
-    expect(legalNameRows.map((row) => row.ok)).toEqual(legalNameExpected)
+    expect(legalNameResults.map((r) => r.accepted)).toEqual(legalNameExpected)
+    expectRealCheck(legalNameResults, legalNameValues, 200, 'payers_legal_name_check')
+    expect(legalNameExpected.some(Boolean)).toBe(true)
+    expect(legalNameExpected.some((ok) => !ok)).toBe(true)
 
-    const shortNameExpected = values.map(
-      (value) => publicPayerSchema.safeParse({ ...basePayer, shortName: value, texts: {} }).success,
+    const shortNameValues = [...shortNameBoundary, ...sharedRandomValues]
+    const shortNameExpected = shortNameValues.map(
+      (value) => publicPayerSchema.safeParse({ ...basePayer, shortName: value }).success,
     )
-    const shortNameRows = await queryRows<{ ok: boolean }>(
-      'SELECT char_length(js_trim(v)) BETWEEN 2 AND 40 AS ok FROM unnest($1::text[]) WITH ORDINALITY AS t(v, n) ORDER BY n',
-      [values],
+    const shortNameResults = await probePayerChecks(
+      shortNameValues.map((value) => ({ short_name: value })),
     )
-    expect(shortNameRows.map((row) => row.ok)).toEqual(shortNameExpected)
+    expect(shortNameResults.map((r) => r.accepted)).toEqual(shortNameExpected)
+    expectRealCheck(shortNameResults, shortNameValues, 40, 'payers_short_name_check')
+    expect(shortNameExpected.some(Boolean)).toBe(true)
+    expect(shortNameExpected.some((ok) => !ok)).toBe(true)
   })
 
-  it('(f) el valor de un texto de payers mide puntos de código como publicPayerSchema (con emoji y espacios de JS)', async () => {
-    const values = fc
-      .sample(fc.string({ unit: lengthMirrorUnit, minLength: 0, maxLength: 2010 }), {
-        numRuns: 2000,
+  it('(f) el valor de un texto de payers mide puntos de código como publicPayerSchema, contra la CHECK real', async () => {
+    // texts es jsonb, sin el VARCHAR de legal_name/short_name: no hay tope aparte que confundir
+    // con la CHECK, así que aquí sí se prueba con relleno de los 25 espacios a la vez.
+    const paddedWide = (text: string) => `${jsWhitespace.join('')}${text}${jsWhitespace.join('')}`
+    const textsBoundary = [
+      '',
+      'a'.repeat(1999),
+      'a'.repeat(2000),
+      'a'.repeat(2001),
+      `${'a'.repeat(1999)}😀`, // 2000 puntos de código (2001 unidades UTF-16)
+      `${'a'.repeat(2000)}😀`,
+      '😀'.repeat(1500), // contraejemplo del hallazgo: 1500 puntos de código, 3000 unidades UTF-16
+      paddedWide('a'.repeat(2000)),
+    ]
+    const randomValues = fc
+      .sample(fc.string({ unit: lengthMirrorUnit, minLength: 0, maxLength: 2010, size: 'max' }), {
+        numRuns: 300,
         seed: 20260925,
       })
       .filter((value) => !value.includes('\u0000'))
+    const values = [...textsBoundary, ...randomValues]
 
     const expected = values.map(
       (value) => publicPayerSchema.safeParse({ ...basePayer, texts: { title: value } }).success,
     )
-    const rows = await queryRows<{ ok: boolean }>(
-      "SELECT is_valid_payer_texts(jsonb_build_object('title', v)) AS ok FROM unnest($1::text[]) WITH ORDINALITY AS t(v, n) ORDER BY n",
-      [values],
-    )
-    expect(rows.map((row) => row.ok)).toEqual(expected)
+    const results = await probePayerChecks(values.map((value) => ({ texts: { title: value } })))
+    expect(results.map((r) => r.accepted)).toEqual(expected)
+    expect(results.every((r) => r.accepted || r.constraint === 'payers_texts_check')).toBe(true)
+    expect(expected.some(Boolean)).toBe(true)
+    expect(expected.some((ok) => !ok)).toBe(true)
   })
 
   it('(g) transiciones y reglas de cierre de la base = TRANSITIONS y CLOSE_REASONS_BY_STATUS', async () => {
@@ -1236,29 +1394,61 @@ describe('comportamiento de los triggers', () => {
     ).toMatchObject({ constraint: 'invoice_installments_append_only' })
   })
 
-  it('(i) la purga por retención sí borra facturas y cuotas', async () => {
+  // Con la purga encendida, borrar solo las facturas (sin borrar también la solicitud, en la misma
+  // transacción) liberaba la clave de una factura de una solicitud DESEMBOLSADA: doble
+  // financiamiento. El constraint trigger diferido de abajo exige que, si una factura se borra, su
+  // solicitud se haya borrado también antes de confirmar.
+  it('(i) purgar el agregado completo en una transacción sí funciona (D49)', async () => {
     const request = await createCompleteAdvanceRequest(db.prisma)
-    const invoiceId = request.invoices[0]?.id
     const purge = await sqlError(async (client) => {
       await client.query("SET LOCAL app.retention_purge = 'on'")
-      await client.query('DELETE FROM invoice_installments WHERE invoice_id = $1', [invoiceId])
-      await client.query('DELETE FROM invoices WHERE id = $1', [invoiceId])
+      await client.query(
+        'DELETE FROM invoice_installments WHERE invoice_id IN (SELECT id FROM invoices WHERE advance_request_id = $1)',
+        [request.id],
+      )
+      await client.query('DELETE FROM invoices WHERE advance_request_id = $1', [request.id])
+      await client.query('DELETE FROM consents WHERE advance_request_id = $1', [request.id])
+      await client.query('DELETE FROM status_history WHERE advance_request_id = $1', [request.id])
+      await client.query('DELETE FROM stored_files WHERE id = ANY($1::uuid[])', [request.fileIds])
+      await client.query('DELETE FROM advance_requests WHERE id = $1', [request.id])
     })
     expect(purge).toBeNull()
   })
 
-  it('(i) una cuota nueva que rompe la fecha más próxima se rechaza al confirmar (D49)', async () => {
+  it('(i) purgar solo las facturas sin la solicitud se rechaza al confirmar (D49)', async () => {
     const request = await createCompleteAdvanceRequest(db.prisma)
-    const error = await sqlError(
-      (client) =>
-        client.query(
-          `INSERT INTO invoice_installments (invoice_id, number, label, amount, due_date)
-           VALUES ($1, 2, 'Cuota002', '100.00', '2026-10-01')`,
-          [request.invoices[0]?.id],
-        ),
-      'COMMIT',
+    const error = await sqlError(async (client) => {
+      await client.query("SET LOCAL app.retention_purge = 'on'")
+      await client.query(
+        'DELETE FROM invoice_installments WHERE invoice_id IN (SELECT id FROM invoices WHERE advance_request_id = $1)',
+        [request.id],
+      )
+      await client.query('DELETE FROM invoices WHERE advance_request_id = $1', [request.id])
+      // La solicitud no se borra: su clave de factura quedaría libre con la solicitud todavía viva.
+    }, 'COMMIT')
+    expect(error).toMatchObject({ constraint: 'invoices_purge_requires_request_purge' })
+  })
+
+  // Una cuota que no movía earliest_due_date pasaba el trigger diferido de la ronda 1 sin más
+  // (invoice_installments_complete solo compara el agregado final). El gate de abajo cierra el
+  // camino de raíz: una cuota nunca se agrega fuera de la transacción que creó su factura, se mueva
+  // o no earliest_due_date.
+  it('(i) una cuota solo se agrega en la misma transacción que creó su factura (D49)', async () => {
+    // Camino feliz: crear la solicitud completa (factura + cuotas) en una única transacción, como
+    // hace la API, sigue funcionando.
+    const request = await createCompleteAdvanceRequest(db.prisma)
+    expect(request.invoices[0]?.id).toBeDefined()
+
+    // Ataque: una cuota nueva para esa misma factura, ya confirmada en otra transacción, se
+    // rechaza de inmediato (no hace falta esperar a la confirmación).
+    const error = await sqlError((client) =>
+      client.query(
+        `INSERT INTO invoice_installments (invoice_id, number, label, amount, due_date)
+         VALUES ($1, 2, 'Cuota002', '100.00', '2026-10-01')`,
+        [request.invoices[0]?.id],
+      ),
     )
-    expect(error).toMatchObject({ constraint: 'advance_requests_complete' })
+    expect(error).toMatchObject({ constraint: 'invoice_installments_same_transaction' })
   })
 
   it('(i) una factura nueva en una solicitud existente rompe el conteo y se rechaza al confirmar (D49)', async () => {
