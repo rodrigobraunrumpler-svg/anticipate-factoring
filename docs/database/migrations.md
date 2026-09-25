@@ -109,6 +109,15 @@ empezar de cero en local, `pnpm infra:reset && pnpm infra:up` y luego `pnpm db:m
   del mismo nombre y se saltaba la regla. `pg_temp` va nombrado y al final; `pg_catalog, public` solo
   no basta. Las funciones SQL con cuerpo estándar (`RETURN` o `BEGIN ATOMIC`) resuelven sus nombres al
   crearse y no lo necesitan. El test estructural lo exige en todas las funciones de la base.
+- **Un xid guardado en una fila no identifica una transacción fuera de su clúster.** Una copia
+  lógica (`pg_dump` y su restauración, o la replicación lógica) lo lleva tal cual a una base cuyo
+  contador de xid puede ir por detrás: un clúster nuevo, una rama o una restauración a un punto
+  anterior. Allí otra transacción puede recibir ese mismo xid. Una regla que decide si una fila la
+  creó la transacción en curso compara el xid (`pg_current_xact_id()`) y también el instante en que
+  empezó esa transacción (`transaction_timestamp()`). Los dos los fuerza un trigger `BEFORE INSERT`
+  y quedan congelados después, como `invoices.creating_xact_id` y `invoices.creating_xact_start`.
+  El instante va en una columna `timestamptz(6)`: con menos precisión se redondea y la regla
+  rechaza las filas de la propia transacción.
 
 ## Producción
 

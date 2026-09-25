@@ -782,6 +782,51 @@ async function commitWithShadowTable(
   }
 }
 
+/**
+ * Una factura ya confirmada que llega por una copia lógica desde otro clúster (pg_dump y su
+ * restauración, o la replicación lógica) trae su creating_xact_id tal cual: pg_dump escribe los datos
+ * antes de crear los triggers, y el worker de la replicación lógica corre con
+ * session_replication_role = replica. En el clúster de destino ese valor puede ser el xid que reciba
+ * una transacción cualquiera. Aquí, `attack` corre en una transacción propia (un pg.Client suelto) que
+ * se confirma; antes, la "copia" reescribe sin triggers el creating_xact_id de `invoiceId` con el xid
+ * de esa transacción. Devuelve si la factura mostraba de verdad el xid de la transacción justo antes
+ * del ataque (así un test no puede pasar porque la copia no tomó) y el error de la transacción, o null
+ * si confirmó.
+ */
+async function commitWithCopiedXid(
+  invoiceId: string,
+  attack: (client: pg.ClientBase) => Promise<unknown>,
+): Promise<{ sameXid: boolean | undefined; error: SqlError | null }> {
+  const client = new pg.Client({ connectionString: testConfig().database.url })
+  await client.connect()
+  let sameXid: boolean | undefined
+  try {
+    await client.query('BEGIN')
+    const { rows } = await client.query<{ xid: string }>('SELECT pg_current_xact_id()::text AS xid')
+    const copyError = await sqlError(async (copy) => {
+      await copy.query("SET LOCAL session_replication_role = 'replica'")
+      await copy.query('UPDATE invoices SET creating_xact_id = $1::xid8 WHERE id = $2', [
+        rows[0]?.xid,
+        invoiceId,
+      ])
+    }, 'COMMIT')
+    if (copyError) throw copyError
+    const same = await client.query<{ same: boolean }>(
+      'SELECT creating_xact_id = pg_current_xact_id() AS same FROM invoices WHERE id = $1',
+      [invoiceId],
+    )
+    sameXid = same.rows[0]?.same
+    await attack(client)
+    await client.query('COMMIT')
+    return { sameXid, error: null }
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => undefined)
+    return { sameXid, error: error as SqlError }
+  } finally {
+    await client.end()
+  }
+}
+
 /** El id de la única factura de una solicitud creada por la fábrica. */
 function onlyInvoiceId(request: CompleteAdvanceRequest): string {
   const [invoice, ...rest] = request.invoices
@@ -1831,12 +1876,14 @@ describe('comportamiento de los triggers', () => {
   // Una cuota que no movía earliest_due_date pasaba el trigger diferido de la ronda 1 sin más
   // (invoice_installments_complete solo compara el agregado final). El gate de abajo cierra el
   // camino de raíz: una cuota nunca se agrega fuera de la transacción que creó su factura, se mueva
-  // o no earliest_due_date. Compara invoices.creating_xact_id (congelada al insertar la factura)
-  // contra pg_current_xact_id(), nunca contra xmin: xmin es quien escribió la última versión de la
-  // fila, no quien la creó, y dentro de un SAVEPOINT es el xid de la subtransacción mientras
-  // pg_current_xact_id() sigue siendo el de la transacción de nivel superior (así corren los
-  // `$transaction` anidados de Prisma). Es un trigger AFTER INSERT FOR EACH ROW, no diferido: corre
-  // al terminar cada sentencia, y una factura que no ve en ese momento también es una violación
+  // o no earliest_due_date. Compara invoices.creating_xact_id y invoices.creating_xact_start
+  // (congeladas al insertar la factura) contra pg_current_xact_id() y transaction_timestamp(), nunca
+  // contra xmin: xmin es quien escribió la última versión de la fila, no quien la creó, y dentro de
+  // un SAVEPOINT es el xid de la subtransacción mientras pg_current_xact_id() sigue siendo el de la
+  // transacción de nivel superior (así corren los `$transaction` anidados de Prisma). El inicio de la
+  // transacción cubre lo que el xid solo no cubre: una factura copiada de otro clúster (ver el test de
+  // la copia lógica, más abajo). Es un trigger AFTER INSERT FOR EACH ROW, no diferido: corre al
+  // terminar cada sentencia, y una factura que no ve en ese momento también es una violación
   // (integrity_hardening_4; ver la carrera de abajo).
   it('(i) una cuota solo se agrega en la misma transacción que creó su factura (D49)', async () => {
     // Camino feliz: crear la solicitud completa (factura + cuotas) en una única transacción, como
@@ -1962,8 +2009,9 @@ describe('comportamiento de los triggers', () => {
 
   // Prisma 7.10 corre los `$transaction` anidados como SAVEPOINT (`prisma_sp_N`) y un bloque
   // EXCEPTION de PL/pgSQL abre uno también: pg_current_xact_id() es el mismo antes y dentro del
-  // SAVEPOINT (a diferencia de xmin, que ahí sí cambia a un xid de la subtransacción), así que
-  // crear la factura y su cuota bajo un SAVEPOINT sigue aceptándose.
+  // SAVEPOINT (a diferencia de xmin, que ahí sí cambia a un xid de la subtransacción), y
+  // transaction_timestamp() tampoco cambia, así que crear la factura y su cuota bajo un SAVEPOINT
+  // sigue aceptándose.
   it('(i) una factura y su cuota creadas bajo un SAVEPOINT en la misma transacción se aceptan (D49)', async () => {
     const seed = await createCompleteAdvanceRequest(db.prisma)
     const requestId = newId()
@@ -2037,8 +2085,9 @@ describe('comportamiento de los triggers', () => {
     }
   })
 
-  // Un bloque PL/pgSQL con EXCEPTION corre en una subtransacción: pg_current_xact_id() sigue siendo el
-  // de la transacción de nivel superior, igual que el creating_xact_id que recibió la factura.
+  // Un bloque PL/pgSQL con EXCEPTION corre en una subtransacción: pg_current_xact_id() y
+  // transaction_timestamp() siguen siendo los de la transacción de nivel superior, iguales al
+  // creating_xact_id y al creating_xact_start que recibió la factura.
   it('(i) un agregado creado dentro de un bloque PL/pgSQL con EXCEPTION se confirma (D49)', async () => {
     const seed = await createCompleteAdvanceRequest(db.prisma)
     const aggregate = aggregateRows(seed)
@@ -2062,12 +2111,46 @@ describe('comportamiento de los triggers', () => {
     }
   })
 
-  it('(i) un creating_xact_id que venga del cliente al insertar la factura se ignora (D49)', async () => {
+  // Un xid8 nunca se repite dentro de un clúster, pero una copia lógica lleva los creating_xact_id del
+  // clúster de origen tal cual (ver commitWithCopiedXid). Un clúster nuevo empieza cerca del xid 750,
+  // así que cada factura copiada trae un xid futuro: cualquier sesión con INSERT consumía xids
+  // (`pg_current_xact_id(); COMMIT` en un bucle) hasta que el suyo coincidía con el de la factura y le
+  // agregaba una cuota. El gate veía el xid que esperaba, la FK encontraba la factura y el trigger
+  // diferido del agregado no suma cuotas (reproducido en la revisión con pg_dump y un clúster nuevo,
+  // como un rol sin superusuario: suma 10720.00 contra un neto de 10620.00). El gate exige además que
+  // creating_xact_start sea el transaction_timestamp() en curso:
+  // la transacción que creó la factura empezó antes de la copia, y ninguna posterior empieza en ese
+  // instante. Lo mismo vale para la replicación lógica y para una copia hacia una rama o una
+  // restauración a un punto anterior, que comparten el contador de xid hasta donde se separaron.
+  it('(i) una factura copiada de otro clúster con el xid de esta transacción no abre el gate de las cuotas (D49)', async () => {
+    const request = await createCompleteAdvanceRequest(db.prisma)
+    const invoiceId = onlyInvoiceId(request)
+    const { sameXid, error } = await commitWithCopiedXid(invoiceId, (client) =>
+      client.query(
+        `INSERT INTO invoice_installments (invoice_id, number, label, amount, due_date)
+         VALUES ($1, 2, 'Cuota002', '100.00', '2026-12-15')`,
+        [invoiceId],
+      ),
+    )
+    expect({
+      sameXid,
+      code: error?.code,
+      constraint: error?.constraint,
+      installments: await installmentsOf(invoiceId),
+    }).toEqual({
+      sameXid: true,
+      code: '23000',
+      constraint: 'invoice_installments_same_transaction',
+      installments: [{ number: 1, amount: '10620.00' }],
+    })
+  })
+
+  it('(i) creating_xact_id y creating_xact_start que vengan del cliente al insertar la factura se ignoran (D49)', async () => {
     const seed = await createCompleteAdvanceRequest(db.prisma)
     const invoiceId = newId()
     const xmlFileId = newId()
     const client = await pool.connect()
-    let forced: boolean | undefined
+    let forced: { xid: boolean; start: boolean } | undefined
     try {
       await client.query('BEGIN')
       await client.query(
@@ -2075,15 +2158,19 @@ describe('comportamiento de los triggers', () => {
          VALUES ($1, 'anticipate-test', $2, 'INVOICE_XML', 'application/xml', 1024, $3, 'ATTACHED', now())`,
         [xmlFileId, `client-value/${xmlFileId}`, HEX_64],
       )
-      const result = await client.query<{ forced: boolean }>(
+      // Los dos valores del cliente imitan los de una factura de otra transacción: un xid cualquiera y
+      // un instante del pasado, con microsegundos.
+      const result = await client.query<{ xid: boolean; start: boolean }>(
         `INSERT INTO invoices (
            id, advance_request_id, request_status, currency, issuer_ruc, recipient_ruc, document_type,
            series_number, invoice_key, issuer_name, payment_terms, total, net_pending_amount, issue_date,
-           due_date, signed, xml_file_id, creating_xact_id
+           due_date, signed, xml_file_id, creating_xact_id, creating_xact_start
          ) VALUES (
            $1, $2, 'NEW', 'PEN', $3, $4, '01', 'F001-00000901', $6, 'Proveedor', 'CREDIT',
-           '11800.00', '10620.00', '2026-09-01', '2026-11-30', true, $5, '999999999'::xid8
-         ) RETURNING creating_xact_id = pg_current_xact_id() AS forced`,
+           '11800.00', '10620.00', '2026-09-01', '2026-11-30', true, $5, '999999999'::xid8,
+           '2026-01-01T00:00:00.123456Z'
+         ) RETURNING creating_xact_id = pg_current_xact_id() AS xid,
+                     creating_xact_start = transaction_timestamp() AS start`,
         [
           invoiceId,
           seed.id,
@@ -2093,20 +2180,29 @@ describe('comportamiento de los triggers', () => {
           invoiceKey({ issuerRuc: seed.supplierRuc, seriesNumber: 'F001-00000901' }),
         ],
       )
-      forced = result.rows[0]?.forced
+      forced = result.rows[0]
     } finally {
       await client.query('ROLLBACK')
       client.release()
     }
-    expect(forced).toBe(true)
+    // Iguales exactos, con microsegundos: una columna con menos precisión redondearía el instante y el
+    // gate rechazaría las cuotas de la propia transacción.
+    expect(forced).toEqual({ xid: true, start: true })
   })
 
-  it('(i) creating_xact_id de la factura no se puede modificar (D49)', async () => {
+  it('(i) creating_xact_id y creating_xact_start de la factura no se pueden modificar (D49)', async () => {
     const request = await createCompleteAdvanceRequest(db.prisma)
+    const invoiceId = onlyInvoiceId(request)
     expect(
       await updateError("UPDATE invoices SET creating_xact_id = '999999999' WHERE id = $1", [
-        request.invoices[0]?.id,
+        invoiceId,
       ]),
+    ).toMatchObject({ constraint: 'invoices_immutable' })
+    expect(
+      await updateError(
+        'UPDATE invoices SET creating_xact_start = transaction_timestamp() WHERE id = $1',
+        [invoiceId],
+      ),
     ).toMatchObject({ constraint: 'invoices_immutable' })
   })
 
@@ -2215,14 +2311,18 @@ describe('comportamiento de los triggers', () => {
     const { shadowed, error } = await commitWithShadowTable(
       'invoices',
       async (client) => {
-        // La factura falsa dice que la creó esta transacción y que no es de ninguna solicitud (así
-        // el trigger diferido de las cuotas tampoco tiene un agregado que revisar).
+        // La factura falsa dice que la creó esta transacción (su xid y su inicio) y que no es de
+        // ninguna solicitud (así el trigger diferido de las cuotas tampoco tiene un agregado que
+        // revisar).
         await client.query(
-          'CREATE TEMP TABLE invoices (id uuid, creating_xact_id xid8, advance_request_id uuid) ON COMMIT DROP',
+          `CREATE TEMP TABLE invoices (
+             id uuid, creating_xact_id xid8, creating_xact_start timestamptz, advance_request_id uuid
+           ) ON COMMIT DROP`,
         )
-        await client.query('INSERT INTO pg_temp.invoices VALUES ($1, pg_current_xact_id(), NULL)', [
-          invoiceId,
-        ])
+        await client.query(
+          'INSERT INTO pg_temp.invoices VALUES ($1, pg_current_xact_id(), transaction_timestamp(), NULL)',
+          [invoiceId],
+        )
       },
       (client) =>
         client.query(

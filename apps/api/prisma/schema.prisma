@@ -326,42 +326,50 @@ model AdvanceRequest {
 }
 
 model Invoice {
-  id               String               @id @default(dbgenerated("uuidv7()")) @db.Uuid
-  advanceRequestId String               @map("advance_request_id") @db.Uuid
+  id                String               @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  advanceRequestId  String               @map("advance_request_id") @db.Uuid
   /// Copia del estado de la solicitud que mantiene la FK de alcance con ON UPDATE CASCADE.
-  requestStatus    AdvanceRequestStatus @map("request_status")
-  currency         Currency
-  issuerRuc        String               @map("issuer_ruc") @db.Char(11)
-  recipientRuc     String               @map("recipient_ruc") @db.Char(11)
-  documentType     String               @map("document_type") @db.VarChar(2)
-  seriesNumber     String               @map("series_number") @db.VarChar(20)
+  requestStatus     AdvanceRequestStatus @map("request_status")
+  currency          Currency
+  issuerRuc         String               @map("issuer_ruc") @db.Char(11)
+  recipientRuc      String               @map("recipient_ruc") @db.Char(11)
+  documentType      String               @map("document_type") @db.VarChar(2)
+  seriesNumber      String               @map("series_number") @db.VarChar(20)
   /// Clave canónica de `invoiceKey` de shared: RUC emisor, barra, serie y correlativo sin ceros a la izquierda.
-  invoiceKey       String               @map("invoice_key") @db.VarChar(40)
-  issuerName       String               @map("issuer_name") @db.VarChar(1500)
-  paymentTerms     PaymentTerms         @map("payment_terms")
-  total            Decimal              @db.Decimal(14, 2)
-  netPendingAmount Decimal              @map("net_pending_amount") @db.Decimal(14, 2)
-  issueDate        DateTime             @map("issue_date") @db.Date
-  dueDate          DateTime             @map("due_date") @db.Date
-  detraction       Json?
-  signed           Boolean
-  xmlFileId        String               @map("xml_file_id") @db.Uuid
-  xmlFilePurpose   StoredFilePurpose    @default(INVOICE_XML) @map("xml_file_purpose")
-  pdfFileId        String?              @map("pdf_file_id") @db.Uuid
-  pdfFilePurpose   StoredFilePurpose    @default(INVOICE_PDF) @map("pdf_file_purpose")
+  invoiceKey        String               @map("invoice_key") @db.VarChar(40)
+  issuerName        String               @map("issuer_name") @db.VarChar(1500)
+  paymentTerms      PaymentTerms         @map("payment_terms")
+  total             Decimal              @db.Decimal(14, 2)
+  netPendingAmount  Decimal              @map("net_pending_amount") @db.Decimal(14, 2)
+  issueDate         DateTime             @map("issue_date") @db.Date
+  dueDate           DateTime             @map("due_date") @db.Date
+  detraction        Json?
+  signed            Boolean
+  xmlFileId         String               @map("xml_file_id") @db.Uuid
+  xmlFilePurpose    StoredFilePurpose    @default(INVOICE_XML) @map("xml_file_purpose")
+  pdfFileId         String?              @map("pdf_file_id") @db.Uuid
+  pdfFilePurpose    StoredFilePurpose    @default(INVOICE_PDF) @map("pdf_file_purpose")
   /// Id de la transacción que creó la factura (pg_current_xact_id(), xid8: sin ambigüedad de vuelta
   /// de reloj). Un trigger BEFORE INSERT lo fuerza al valor real (ignora cualquier valor del
-  /// cliente) e invoices_guard lo congela; invoice_installments_same_transaction lo compara con la
-  /// transacción en curso para aceptar una cuota solo dentro de la transacción que creó su factura,
-  /// incluso bajo un SAVEPOINT (a diferencia de xmin, pg_current_xact_id() no cambia con ellos).
-  creatingXactId   Unsupported("xid8")  @default(dbgenerated("pg_current_xact_id()")) @map("creating_xact_id")
-  createdAt        DateTime             @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt        DateTime             @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(3)
+  /// cliente) e invoices_guard lo congela; invoice_installments_same_transaction lo compara, junto
+  /// con creatingXactStart, con la transacción en curso para aceptar una cuota solo dentro de la
+  /// transacción que creó su factura, incluso bajo un SAVEPOINT (a diferencia de xmin,
+  /// pg_current_xact_id() no cambia con ellos).
+  creatingXactId    Unsupported("xid8")  @default(dbgenerated("pg_current_xact_id()")) @map("creating_xact_id")
+  /// Inicio de esa misma transacción (transaction_timestamp(), con microsegundos), forzado y congelado
+  /// como creatingXactId. El xid solo no identifica la transacción fuera de este clúster: una copia
+  /// lógica (pg_dump o replicación lógica) lo lleva tal cual a un clúster cuyo contador de xid va por
+  /// detrás, donde una transacción cualquiera podría recibirlo. El instante en que empezó la
+  /// transacción que creó la factura es anterior a toda copia, así que ninguna transacción posterior
+  /// empieza en él. Solo lo usa la base: la app nunca lo escribe ni decide nada con él.
+  creatingXactStart DateTime             @default(dbgenerated("transaction_timestamp()")) @map("creating_xact_start") @db.Timestamptz(6)
+  createdAt         DateTime             @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt         DateTime             @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(3)
   /// Misma solicitud, mismo estado, misma moneda, emisor = proveedor y receptor = pagador.
-  advanceRequest   AdvanceRequest       @relation(fields: [advanceRequestId, requestStatus, currency, issuerRuc, recipientRuc], references: [id, status, currency, supplierRuc, payerRuc], onDelete: Restrict, onUpdate: Cascade, map: "invoices_request_scope_fkey")
-  xmlFile          StoredFile           @relation("InvoiceXml", fields: [xmlFileId, xmlFilePurpose], references: [id, purpose], onDelete: Restrict, onUpdate: Restrict, map: "invoices_xml_file_fkey")
-  pdfFile          StoredFile?          @relation("InvoicePdf", fields: [pdfFileId, pdfFilePurpose], references: [id, purpose], onDelete: Restrict, onUpdate: Restrict, map: "invoices_pdf_file_fkey")
-  installments     InvoiceInstallment[]
+  advanceRequest    AdvanceRequest       @relation(fields: [advanceRequestId, requestStatus, currency, issuerRuc, recipientRuc], references: [id, status, currency, supplierRuc, payerRuc], onDelete: Restrict, onUpdate: Cascade, map: "invoices_request_scope_fkey")
+  xmlFile           StoredFile           @relation("InvoiceXml", fields: [xmlFileId, xmlFilePurpose], references: [id, purpose], onDelete: Restrict, onUpdate: Restrict, map: "invoices_xml_file_fkey")
+  pdfFile           StoredFile?          @relation("InvoicePdf", fields: [pdfFileId, pdfFilePurpose], references: [id, purpose], onDelete: Restrict, onUpdate: Restrict, map: "invoices_pdf_file_fkey")
+  installments      InvoiceInstallment[]
 
   /// Un archivo XML, una factura; ídem el PDF. Incluyen el propósito para cubrir la FK compuesta;
   /// como la FK fija el propósito por el id del archivo, equivalen a la unicidad del id.
