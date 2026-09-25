@@ -1,0 +1,59 @@
+{
+  "parsed": {
+    "documentType": "01",
+    "seriesNumber": "F001-123",
+    "issueDate": "2026-09-01",
+    "currency": "PEN",
+    "issuerRuc": "20100070970",
+    "issuerName": "PROVEEDOR EJEMPLO S.A.C.",
+    "recipientRuc": "20131312955",
+    "recipientName": "SERVICIOS ENERGETICOS AMBIENTALES S.A.",
+    "total": "11800.00",
+    "paymentTerms": "CREDIT",
+    "netPendingAmount": "10620.00",
+    "installments": [
+      {
+        "id": "Cuota001",
+        "amount": "5000.00",
+        "dueDate": "2026-08-31"
+      },
+      {
+        "id": "Cuota002",
+        "amount": "5620.00",
+        "dueDate": "2026-11-30"
+      }
+    ],
+    "detraction": {
+      "percent": 10,
+      "amount": "1180.00"
+    },
+    "signed": true
+  },
+  "validation": {
+    "problems": [
+      {
+        "code": "INSTALLMENT_OVERDUE",
+        "message": "La cuota Cuota001 venció el 2026-08-31.",
+        "params": {
+          "installment": "Cuota001",
+          "date": "2026-08-31"
+        },
+        "invoice": "F001-123",
+        "rule": "installments-due-in-future"
+      },
+      {
+        "code": "ISSUE_DATE_AFTER_DUE_DATE",
+        "message": "La factura F001-123 vence antes de su fecha de emisión.",
+        "params": {
+          "invoice": "F001-123"
+        },
+        "invoice": "F001-123",
+        "rule": "issue-date-before-due"
+      }
+    ],
+    "validInvoices": [],
+    "currency": null,
+    "totalNetPending": "0.00",
+    "maxAmount": "0.00"
+  }
+}

@@ -19,6 +19,12 @@ export const PROBLEM_CODES = [
   'CURRENCY_NOT_ALLOWED',
   'INSTALLMENT_OVERDUE',
   'INSUFFICIENT_TERM',
+  'ISSUE_DATE_IN_FUTURE',
+  // reglas por factura gemelas de una restricción CHECK de la base (D49): con ellas un dato
+  // inválido del XML es un 422 con su problema, nunca un 503 por la restricción
+  'ISSUE_DATE_AFTER_DUE_DATE',
+  'INSTALLMENT_AMOUNT_ZERO',
+  'NET_PENDING_EXCEEDS_TOTAL',
   // reglas del conjunto
   'NO_INVOICES',
   'TOO_MANY_INVOICES',
@@ -37,6 +43,13 @@ export const PROBLEM_CODES = [
   'CLOSE_REASON_NOT_VALID',
   'CLOSE_REASON_NOT_APPLICABLE',
   'CLOSE_REASON_DETAIL_REQUIRED',
+  // recepción de una solicitud en la API
+  'PAYER_NOT_AVAILABLE',
+  'FILE_TOO_LARGE',
+  'INVALID_PDF',
+  'PDF_WITHOUT_XML',
+  'INVOICE_ALREADY_IN_OPEN_REQUEST',
+  'CONSENT_VERSION_OUTDATED',
 ] as const
 
 export type ProblemCode = (typeof PROBLEM_CODES)[number]

@@ -1,4 +1,5 @@
-import type { ProblemCode } from './codes.js'
+import { z } from 'zod'
+import { PROBLEM_CODES, type ProblemCode } from './codes.js'
 import { MESSAGES_ES } from './messages.es.js'
 
 export type Problem = {
@@ -8,6 +9,11 @@ export type Problem = {
   invoice?: string
   /** Campo al que se refiere (del formulario o de la factura leída), si aplica. */
   field?: string
+  /**
+   * Nombre del archivo subido (XML o PDF) al que se refiere, si aplica. Con él la landing marca la
+   * fila del archivo exacto, también cuando el XML no se pudo leer y no hay serie-número.
+   */
+  file?: string
   /** Identificador de la regla que lo produjo, si aplica (para métricas). */
   rule?: string
   /**
@@ -20,6 +26,7 @@ export type Problem = {
 export type ProblemExtra = {
   invoice?: string
   field?: string
+  file?: string
   rule?: string
   data?: Record<string, string | number>
 }
@@ -42,9 +49,27 @@ export function createProblem(code: ProblemCode, extra: ProblemExtra = {}): Prob
   const problem: Problem = { code, message: formatMessage(MESSAGES_ES[code], extra.data) }
   if (extra.invoice !== undefined) problem.invoice = extra.invoice
   if (extra.field !== undefined) problem.field = extra.field
+  if (extra.file !== undefined) problem.file = extra.file
   if (extra.rule !== undefined) problem.rule = extra.rule
   if (extra.data !== undefined && Object.keys(extra.data).length > 0) {
     problem.params = { ...extra.data }
   }
   return problem
 }
+
+/**
+ * Forma exacta de un `Problem` que viaja en una respuesta (`details.problems` del sobre de error de
+ * la API). Estricta: una propiedad que `createProblem` no produce es un error del contrato. Valida
+ * respuestas propias (tests de contrato y clientes de la API), no entrada de personas: sus issues
+ * nunca se muestran al usuario, por eso usan los mensajes por defecto de Zod. `file` es el nombre tal
+ * como llegó en el envío, así que admite cualquier texto; el resto lo produce el código y no es vacío.
+ */
+export const problemSchema = z.strictObject({
+  code: z.enum(PROBLEM_CODES),
+  message: z.string().min(1),
+  invoice: z.string().min(1).exactOptional(),
+  field: z.string().min(1).exactOptional(),
+  file: z.string().exactOptional(),
+  rule: z.string().min(1).exactOptional(),
+  params: z.record(z.string(), z.union([z.string(), z.number()])).exactOptional(),
+})

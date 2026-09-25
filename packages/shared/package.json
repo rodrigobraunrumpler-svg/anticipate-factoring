@@ -48,6 +48,10 @@
       "types": "./dist/user/index.d.ts",
       "default": "./dist/user/index.js"
     },
+    "./api": {
+      "types": "./dist/api/index.d.ts",
+      "default": "./dist/api/index.js"
+    },
     "./testing": {
       "types": "./dist/testing/index.d.ts",
       "default": "./dist/testing/index.js"

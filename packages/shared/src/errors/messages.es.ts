@@ -21,6 +21,10 @@ export const MESSAGES_ES: Readonly<Record<ProblemCode, string>> = {
   CURRENCY_NOT_ALLOWED: 'No trabajamos con la moneda {currency}.',
   INSTALLMENT_OVERDUE: 'La cuota {installment} venció el {date}.',
   INSUFFICIENT_TERM: 'La cuota {installment} vence en menos de {days} días.',
+  ISSUE_DATE_IN_FUTURE: 'La factura {invoice} tiene fecha de emisión futura.',
+  ISSUE_DATE_AFTER_DUE_DATE: 'La factura {invoice} vence antes de su fecha de emisión.',
+  INSTALLMENT_AMOUNT_ZERO: 'La cuota {installment} de la factura {invoice} tiene monto cero.',
+  NET_PENDING_EXCEEDS_TOTAL: 'El neto pendiente de la factura {invoice} supera su total.',
   NO_INVOICES: 'Adjunta al menos una factura.',
   TOO_MANY_INVOICES: 'Puedes enviar como máximo {max} facturas por solicitud.',
   MIXED_ISSUERS: 'Todas las facturas deben ser de la misma empresa emisora.',
@@ -36,4 +40,11 @@ export const MESSAGES_ES: Readonly<Record<ProblemCode, string>> = {
   CLOSE_REASON_NOT_VALID: 'El motivo elegido no corresponde a este cierre.',
   CLOSE_REASON_NOT_APPLICABLE: 'Solo el rechazo y el desistimiento llevan motivo de cierre.',
   CLOSE_REASON_DETAIL_REQUIRED: 'Describe el motivo cuando eliges «Otro motivo».',
+  PAYER_NOT_AVAILABLE: 'El programa de adelanto «{payer}» no está disponible.',
+  FILE_TOO_LARGE: 'El archivo {file} supera el máximo de {max} MB.',
+  INVALID_PDF: 'El archivo {file} no es un PDF válido.',
+  PDF_WITHOUT_XML: 'El PDF {file} no corresponde a ninguna factura XML adjunta.',
+  INVOICE_ALREADY_IN_OPEN_REQUEST: 'La factura {invoice} ya está en otra solicitud en curso.',
+  CONSENT_VERSION_OUTDATED:
+    'Los términos o la política de privacidad cambiaron. Recarga la página y acéptalos de nuevo.',
 }

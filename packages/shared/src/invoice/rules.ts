@@ -36,6 +36,10 @@ export const RULE_IDS = [
   'credit-with-pending-amount',
   'currency-allowed',
   'installments-due-in-future',
+  'issue-date-not-in-future',
+  'issue-date-before-due',
+  'installment-amounts-positive',
+  'net-pending-within-total',
   'no-invoices',
   'max-invoices',
   'duplicate-invoice',
@@ -175,6 +179,82 @@ export const installmentsDueInFutureRule: InvoiceRule = {
   },
 }
 
+/**
+ * Una factura no puede estar emitida después de hoy. No tiene CHECK gemela (una restricción no
+ * conoce "hoy"): `ctx.today` lo calcula quien valida; la API, una vez por petición, con
+ * `todayIn(LIMA_TIME_ZONE, clock.now())`.
+ */
+export const issueDateNotInFutureRule: InvoiceRule = {
+  id: 'issue-date-not-in-future',
+  run: (inv, ctx) =>
+    daysBetween(ctx.today, inv.issueDate) <= 0
+      ? []
+      : [
+          problemFor(
+            'issue-date-not-in-future',
+            inv,
+            createProblem('ISSUE_DATE_IN_FUTURE', { data: { invoice: inv.seriesNumber } }),
+          ),
+        ],
+}
+
+/*
+ * Reglas gemelas de una restricción CHECK de la base (D49). Cada una es la misma condición que su
+ * CHECK, escrita sobre la factura leída: una factura que las pasa nunca hace fallar el INSERT, así
+ * que un dato inválido del XML llega al proveedor como un 422 con su problema, nunca como un 503.
+ * Si cambia una, cambia su CHECK en la misma versión, y al revés.
+ */
+
+/** Gemela de la CHECK `due_date >= issue_date` de `invoices`, sobre cada cuota: un problema por factura. */
+export const issueDateBeforeDueRule: InvoiceRule = {
+  id: 'issue-date-before-due',
+  run: (inv) =>
+    inv.installments.every((installment) => daysBetween(inv.issueDate, installment.dueDate) >= 0)
+      ? []
+      : [
+          problemFor(
+            'issue-date-before-due',
+            inv,
+            createProblem('ISSUE_DATE_AFTER_DUE_DATE', { data: { invoice: inv.seriesNumber } }),
+          ),
+        ],
+}
+
+/** Gemela de la CHECK `amount > 0` de `invoice_installments`: un problema por cada cuota en cero. */
+export const installmentAmountsPositiveRule: InvoiceRule = {
+  id: 'installment-amounts-positive',
+  run: (inv) =>
+    inv.installments
+      .filter((installment) => toCents(installment.amount) === 0n)
+      .map((installment) =>
+        problemFor(
+          'installment-amounts-positive',
+          inv,
+          createProblem('INSTALLMENT_AMOUNT_ZERO', {
+            data: { installment: installment.id, invoice: inv.seriesNumber },
+          }),
+        ),
+      ),
+}
+
+/**
+ * Gemela de la CHECK `net_pending_amount <= total` de `invoices`. Su otra mitad,
+ * `net_pending_amount > 0`, es `credit-with-pending-amount`, que también informa el neto ausente.
+ */
+export const netPendingWithinTotalRule: InvoiceRule = {
+  id: 'net-pending-within-total',
+  run: (inv) =>
+    inv.netPendingAmount === null || toCents(inv.netPendingAmount) <= toCents(inv.total)
+      ? []
+      : [
+          problemFor(
+            'net-pending-within-total',
+            inv,
+            createProblem('NET_PENDING_EXCEEDS_TOTAL', { data: { invoice: inv.seriesNumber } }),
+          ),
+        ],
+}
+
 /** Orden de evaluación. Agregar una regla = agregar su id a RULE_IDS, un objeto aquí y su test. */
 export const INVOICE_RULES: readonly Readonly<InvoiceRule>[] = [
   documentTypeRule,
@@ -183,6 +263,10 @@ export const INVOICE_RULES: readonly Readonly<InvoiceRule>[] = [
   creditWithPendingAmountRule,
   currencyAllowedRule,
   installmentsDueInFutureRule,
+  issueDateNotInFutureRule,
+  issueDateBeforeDueRule,
+  installmentAmountsPositiveRule,
+  netPendingWithinTotalRule,
 ]
 
 export type ValidationResult = {

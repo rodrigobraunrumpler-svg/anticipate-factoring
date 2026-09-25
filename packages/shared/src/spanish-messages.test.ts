@@ -2,7 +2,8 @@ import fc from 'fast-check'
 import { describe, expect, it } from 'vitest'
 import type { z } from 'zod'
 import { advanceRequestFormSchema, statusChangeSchema } from './advance-request/index.js'
-import { MESSAGES_ES, VALIDATION_MESSAGES_ES } from './errors/index.js'
+import { API_ERROR_MESSAGES_ES, DEFAULT_SUCCESS_MESSAGE, SUCCESS_MESSAGES_ES } from './api/index.js'
+import { API_MESSAGES_ES, MESSAGES_ES, VALIDATION_MESSAGES_ES } from './errors/index.js'
 import { publicPayerSchema } from './payer/index.js'
 
 /**
@@ -184,5 +185,40 @@ describe.each(CASES)('$name solo devuelve mensajes en español', ({ schema, samp
       }),
       { numRuns: 300 },
     )
+  })
+})
+
+/**
+ * Los textos que la API y la landing muestran tal cual (problemas de negocio y respuestas de la API)
+ * son frases completas en español: empiezan con mayúscula, terminan en punto, sin espacios de más, y
+ * sus marcadores `{nombre}` están bien cerrados. Los de la API no llevan marcadores: nadie los
+ * completa antes de enviarlos.
+ */
+describe('textos de los problemas y de las respuestas de la API', () => {
+  const problemTexts = Object.entries(MESSAGES_ES)
+  const apiTexts: [string, string][] = [
+    ...Object.entries(API_ERROR_MESSAGES_ES),
+    ['DEFAULT_SUCCESS_MESSAGE', DEFAULT_SUCCESS_MESSAGE],
+    ...Object.entries(SUCCESS_MESSAGES_ES),
+  ]
+
+  it('son frases completas', () => {
+    for (const [key, text] of [...problemTexts, ...apiTexts]) {
+      expect(text, key).toBe(text.trim())
+      expect(text, key).toMatch(/^\p{Lu}/u)
+      expect(text.endsWith('.'), key).toBe(true)
+      expect(text, key).not.toMatch(/ {2}/)
+    }
+  })
+
+  it('los marcadores de los problemas están bien cerrados', () => {
+    for (const [key, text] of problemTexts) {
+      expect(text.replace(/\{\w+\}/g, ''), key).not.toMatch(/[{}]/)
+    }
+  })
+
+  it('los de la API no llevan marcadores y son exactamente los de errors', () => {
+    for (const [key, text] of apiTexts) expect(text, key).not.toMatch(/[{}]/)
+    expect(collectTexts(API_MESSAGES_ES).sort()).toEqual(apiTexts.map(([, text]) => text).sort())
   })
 })

@@ -20,6 +20,8 @@ const ALLOWED: Record<string, readonly string[]> = {
   'advance-request': ['errors', 'identity', 'money', 'dates', 'user', 'payer'],
   'supplier-document': ['errors', 'dates'],
   payer: ['errors', 'identity', 'money'],
+  // Contrato HTTP de la API (sobres, códigos de error y su estado): solo necesita `Problem` y el texto.
+  api: ['errors'],
   // Fábrica de XML de prueba (`@anticipate/shared/testing`): no depende de nadie y ningún dominio de
   // producción la importa.
   testing: [],
@@ -41,6 +43,7 @@ const packageJson = JSON.parse(
   readFileSync(new URL('../package.json', import.meta.url), 'utf8'),
 ) as {
   dependencies?: Record<string, string>
+  exports?: Record<string, { types?: string; default?: string }>
 }
 const DEPENDENCIES = new Set(Object.keys(packageJson.dependencies ?? {}))
 
@@ -202,6 +205,21 @@ describe('arquitectura de shared', () => {
     const assigned = new Set([...PACKAGES_FOR_ALL, ...Object.values(ALLOWED_PACKAGES).flat()])
     expect([...DEPENDENCIES].filter((d) => !assigned.has(d))).toEqual([])
     expect(Object.keys(ALLOWED_PACKAGES).every((d) => Object.hasOwn(ALLOWED, d))).toBe(true)
+  })
+
+  it('todo dominio se publica en su subpath de package.json, con tipos y código en dist', () => {
+    // tsdown genera `dist/<dominio>/index.*` desde su lista de dominios: si falta la entrada, el
+    // subpath apunta a un archivo inexistente y `check:package` falla en CI.
+    const exported = Object.keys(ALLOWED).map((domain) => ({
+      domain,
+      entry: packageJson.exports?.[`./${domain}`],
+    }))
+    const bad = exported.filter(
+      ({ domain, entry }) =>
+        entry?.types !== `./dist/${domain}/index.d.ts` ||
+        entry.default !== `./dist/${domain}/index.js`,
+    )
+    expect(bad, JSON.stringify(bad, null, 2)).toEqual([])
   })
 
   it('la tabla no tiene ciclos', () => {

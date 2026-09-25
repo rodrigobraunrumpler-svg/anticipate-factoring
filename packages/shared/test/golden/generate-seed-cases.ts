@@ -27,6 +27,32 @@ const cases: Record<string, SeedCase> = {
   'seed-other-recipient.xml': utf8(buildInvoiceXml({ recipientRuc: '20100070970' })),
   'seed-legacy-ruc-path.xml': utf8(buildInvoiceXml({ legacyRucPath: true })),
   'seed-cdr.xml': utf8(buildCdrXml()),
+  // Uno por cada regla nueva de fecha y de gemela de una restricción CHECK de la base (D49): el XML
+  // se lee y termina en un 422 con su problema, nunca en un INSERT que la base rechaza. "Hoy" es
+  // 2026-09-23 en la suite.
+  'seed-issue-date-in-future.xml': utf8(buildInvoiceXml({ issueDate: '2026-09-30' })),
+  'seed-due-before-issue.xml': utf8(
+    buildInvoiceXml({
+      installments: [
+        { id: 'Cuota001', amount: '5000.00', dueDate: '2026-08-31' },
+        { id: 'Cuota002', amount: '5620.00', dueDate: '2026-11-30' },
+      ],
+    }),
+  ),
+  'seed-installment-zero.xml': utf8(
+    buildInvoiceXml({
+      installments: [
+        { id: 'Cuota001', amount: '0.00', dueDate: '2026-10-30' },
+        { id: 'Cuota002', amount: '10620.00', dueDate: '2026-11-30' },
+      ],
+    }),
+  ),
+  'seed-net-exceeds-total.xml': utf8(
+    buildInvoiceXml({
+      netPendingAmount: '11800.01',
+      installments: [{ id: 'Cuota001', amount: '11800.01', dueDate: '2026-11-30' }],
+    }),
+  ),
   // Lo que más se parece a un XML real de SUNAT sin serlo: dos UBLExtension con la firma en la
   // segunda, cac:Signature de primer nivel, razón social en CDATA con "Ñ" y "&", finales CRLF,
   // bytes ISO-8859-1 y detracción al 12 % (neto = 11800.00 - 1416.00 = 10384.00).

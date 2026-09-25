@@ -32,6 +32,7 @@ export {
   parsePublicCode,
   publicCodeSchema,
 } from './public-code.js'
+export { type AdvanceRequestCreated, advanceRequestCreatedSchema } from './responses.js'
 export {
   ADVANCE_REQUEST_STATUSES,
   type AdvanceRequestStatus,

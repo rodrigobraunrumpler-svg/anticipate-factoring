@@ -1,12 +1,16 @@
 import fc from 'fast-check'
 import { describe, expect, it } from 'vitest'
-import type { IsoDate } from '../dates/index.js'
-import { type Amount, type Currency, fromCents } from '../money/index.js'
+import { addDaysIso, type IsoDate } from '../dates/index.js'
+import { type Amount, type Currency, fromCents, toCents } from '../money/index.js'
 import { buildInvoiceXml, type TestXmlOptions } from '../testing/index.js'
 import { type ParsedInvoice, parsedInvoiceSchema } from './parsed-invoice.js'
 import {
   INVOICE_RULES,
+  installmentAmountsPositiveRule,
   invoiceKey,
+  issueDateBeforeDueRule,
+  issueDateNotInFutureRule,
+  netPendingWithinTotalRule,
   RULE_IDS,
   type ValidationContext,
   validateInvoices,
@@ -312,7 +316,7 @@ describe('validateInvoices · montos fuera de rango', () => {
   })
 })
 
-describe('validateInvoices · propiedad: nunca lanza', () => {
+describe('validateInvoices · propiedades', () => {
   const rucs = ['20100070970', '20131312955', '10467286736'] as const
   const amount = fc.oneof(
     fc.bigInt({ min: 0n, max: 10n ** 14n - 1n }).map((c) => fromCents(c)),
@@ -328,11 +332,10 @@ describe('validateInvoices · propiedad: nunca lanza', () => {
   const seriesNumber = fc
     .tuple(fc.stringMatching(/^[A-Z0-9]{4}$/), fc.integer({ min: 0, max: 99_999_999 }))
     .map(([series, n]) => `${series}-${n}`)
-  const installment = fc.record({
-    id: fc.integer({ min: 1, max: 999 }).map((n) => `Cuota${String(n).padStart(3, '0')}`),
-    amount,
-    dueDate: isoDate,
-  })
+  const installmentId = fc
+    .integer({ min: 1, max: 999 })
+    .map((n) => `Cuota${String(n).padStart(3, '0')}`)
+  const installment = fc.record({ id: installmentId, amount, dueDate: isoDate })
 
   const context: fc.Arbitrary<ValidationContext> = fc.record(
     {
@@ -378,32 +381,58 @@ describe('validateInvoices · propiedad: nunca lanza', () => {
     signed: fc.boolean(),
   })
 
-  /** Factura que pasa las reglas individuales del contexto, para llegar a la suma y al máximo. */
+  /**
+   * Factura alineada con el contexto y coherente (emitida hasta hoy, cuotas desde la emisión y con
+   * monto, neto hasta el total), para que muchas pasen las reglas individuales y lleguen a la suma y
+   * al máximo. Las cuotas pueden seguir vencidas o cortas para el plazo mínimo.
+   */
   const alignedInvoice = (c: ValidationContext) =>
-    fc.record({
-      documentType: fc.constant('01'),
-      seriesNumber,
-      issueDate: isoDate,
-      currency: fc.constantFrom(
-        ...(c.allowedCurrencies.length > 0 ? c.allowedCurrencies : ['PEN']),
-      ),
-      issuerRuc: fc.constant(c.supplierRuc ?? rucs[0]),
-      issuerName: fc.string({ maxLength: 40 }),
-      recipientRuc: fc.constant(c.payerRuc),
-      recipientName: fc.constant(null),
-      total: amount,
-      paymentTerms: fc.constant('CREDIT'),
-      netPendingAmount: amount,
-      installments: fc.array(installment, { minLength: 1, maxLength: 3 }),
-      detraction: fc.constant(null),
-      signed: fc.constant(true),
-    })
+    fc
+      .record({
+        seriesNumber,
+        issuedDaysAgo: fc.integer({ min: 0, max: 3650 }),
+        currency: fc.constantFrom(
+          ...(c.allowedCurrencies.length > 0 ? c.allowedCurrencies : ['PEN']),
+        ),
+        issuerName: fc.string({ maxLength: 40 }),
+        amounts: fc.tuple(amount, amount),
+        installments: fc.array(
+          fc.record({
+            id: installmentId,
+            amount: fc.bigInt({ min: 1n, max: 10n ** 14n - 1n }).map((cents) => fromCents(cents)),
+            daysAfterIssue: fc.integer({ min: 0, max: 3650 }),
+          }),
+          { minLength: 1, maxLength: 3 },
+        ),
+      })
+      .map(({ issuedDaysAgo, amounts: [a, b], installments, ...rest }) => {
+        const issueDate = addDaysIso(c.today, -issuedDaysAgo)
+        const [netPendingAmount, total] = toCents(a) <= toCents(b) ? [a, b] : [b, a]
+        return {
+          ...rest,
+          documentType: '01',
+          issueDate,
+          issuerRuc: c.supplierRuc ?? rucs[0],
+          recipientRuc: c.payerRuc,
+          recipientName: null,
+          total,
+          paymentTerms: 'CREDIT',
+          netPendingAmount,
+          installments: installments.map(({ id, amount: installmentAmount, daysAfterIssue }) => ({
+            id,
+            amount: installmentAmount,
+            dueDate: addDaysIso(issueDate, daysAfterIssue),
+          })),
+          detraction: null,
+          signed: true,
+        }
+      })
 
   const scenario = context.chain((c) =>
     fc.tuple(fc.constant(c), fc.array(fc.oneof(anyInvoice, alignedInvoice(c)), { maxLength: 12 })),
   )
 
-  it('para facturas válidas según parsedInvoiceSchema y un contexto válido', () => {
+  it('nunca lanza, para facturas válidas según parsedInvoiceSchema y un contexto válido', () => {
     fc.assert(
       fc.property(scenario, ([c, candidates]) => {
         const invoices = candidates.flatMap((candidate) => {
@@ -415,5 +444,210 @@ describe('validateInvoices · propiedad: nunca lanza', () => {
       }),
       { numRuns: 500 },
     )
+  })
+
+  it('las facturas alineadas llegan a la suma: ninguna regla nueva las filtra', () => {
+    const newRules = new Set([
+      'issue-date-not-in-future',
+      'issue-date-before-due',
+      'installment-amounts-positive',
+      'net-pending-within-total',
+    ])
+    fc.assert(
+      fc.property(
+        context.chain((c) => fc.tuple(fc.constant(c), alignedInvoice(c))),
+        ([c, candidate]) => {
+          const parsed = parsedInvoiceSchema.parse(candidate) as ParsedInvoice
+          const r = validateInvoices([parsed], c)
+          return r.problems.every((p) => !newRules.has(p.rule ?? ''))
+        },
+      ),
+      { numRuns: 300 },
+    )
+  })
+
+  /*
+   * Cada regla nueva es exactamente su condición de referencia: la de su CHECK en la base, o
+   * `issueDate <= today`. Las fechas ISO `AAAA-MM-DD` de cuatro dígitos se ordenan igual como texto
+   * que como fecha, así que la comparación de texto es una referencia independiente de `daysBetween`.
+   * `anyParsed` mezcla facturas cualesquiera con coherentes, para que salgan los dos resultados.
+   */
+  const anyParsed: fc.Arbitrary<ParsedInvoice> = fc
+    .oneof(anyInvoice, alignedInvoice(ctx))
+    .filter((candidate) => parsedInvoiceSchema.safeParse(candidate).success)
+    .map((candidate) => parsedInvoiceSchema.parse(candidate) as ParsedInvoice)
+
+  it('issue-date-not-in-future: problema si y solo si issueDate > today', () => {
+    fc.assert(
+      fc.property(anyParsed, isoDate, (inv, today) => {
+        const problems = issueDateNotInFutureRule.run(inv, { ...ctx, today })
+        expect(problems.length > 0).toBe(inv.issueDate > today)
+      }),
+      { numRuns: 500 },
+    )
+  })
+
+  it('issue-date-before-due: problema si y solo si alguna cuota vence antes de la emisión', () => {
+    fc.assert(
+      fc.property(anyParsed, (inv) => {
+        const problems = issueDateBeforeDueRule.run(inv, ctx)
+        expect(problems.length > 0).toBe(inv.installments.some((i) => i.dueDate < inv.issueDate))
+        expect(problems.length).toBeLessThanOrEqual(1)
+      }),
+      { numRuns: 500 },
+    )
+  })
+
+  it('installment-amounts-positive: un problema por cada cuota en cero', () => {
+    fc.assert(
+      fc.property(anyParsed, (inv) => {
+        const problems = installmentAmountsPositiveRule.run(inv, ctx)
+        expect(problems.length).toBe(
+          inv.installments.filter((i) => toCents(i.amount) === 0n).length,
+        )
+      }),
+      { numRuns: 500 },
+    )
+  })
+
+  it('net-pending-within-total: problema si y solo si hay neto y supera al total', () => {
+    fc.assert(
+      fc.property(anyParsed, (inv) => {
+        const problems = netPendingWithinTotalRule.run(inv, ctx)
+        const exceeds =
+          inv.netPendingAmount !== null && toCents(inv.netPendingAmount) > toCents(inv.total)
+        expect(problems.length > 0).toBe(exceeds)
+      }),
+      { numRuns: 500 },
+    )
+  })
+})
+
+describe('validateInvoices · reglas nuevas: fecha de emisión y gemelas de las CHECK de la base', () => {
+  it('rechaza una factura emitida después de hoy, y acepta la emitida hoy', () => {
+    const r = validateInvoices([invoice({ issueDate: '2026-09-24' })], ctx)
+    expect(codes(r)).toEqual(['ISSUE_DATE_IN_FUTURE'])
+    expect(r.problems[0]).toEqual({
+      code: 'ISSUE_DATE_IN_FUTURE',
+      message: 'La factura F001-123 tiene fecha de emisión futura.',
+      params: { invoice: 'F001-123' },
+      invoice: 'F001-123',
+      rule: 'issue-date-not-in-future',
+    })
+    expect(codes(validateInvoices([invoice({ issueDate: '2026-09-23' })], ctx))).toEqual([])
+  })
+
+  it('"hoy" sale del contexto, no del reloj de la máquina', () => {
+    const inv = invoice({ issueDate: '2026-09-24' })
+    expect(issueDateNotInFutureRule.run(inv, { ...ctx, today: '2026-09-24' })).toEqual([])
+    expect(issueDateNotInFutureRule.run(inv, { ...ctx, today: '2026-09-23' })).toHaveLength(1)
+  })
+
+  it('rechaza una cuota que vence antes de la emisión, con un solo problema por factura', () => {
+    const r = validateInvoices(
+      [
+        invoice({
+          issueDate: '2026-12-15',
+          installments: [
+            { id: 'Cuota001', amount: '5000.00', dueDate: '2026-12-01' },
+            { id: 'Cuota002', amount: '5620.00', dueDate: '2026-12-10' },
+          ],
+        }),
+      ],
+      { ...ctx, today: '2026-12-20' },
+    )
+    expect(r.problems.filter((p) => p.rule === 'issue-date-before-due')).toEqual([
+      {
+        code: 'ISSUE_DATE_AFTER_DUE_DATE',
+        message: 'La factura F001-123 vence antes de su fecha de emisión.',
+        params: { invoice: 'F001-123' },
+        invoice: 'F001-123',
+        rule: 'issue-date-before-due',
+      },
+    ])
+    expect(r.validInvoices).toEqual([])
+  })
+
+  it('una cuota que vence el mismo día de la emisión no es un problema de fechas', () => {
+    const inv = invoice({
+      issueDate: '2026-11-30',
+      installments: [{ id: 'Cuota001', amount: '10620.00', dueDate: '2026-11-30' }],
+    })
+    expect(issueDateBeforeDueRule.run(inv, ctx)).toEqual([])
+  })
+
+  it('rechaza cada cuota con monto cero, con la cuota y la factura en el mensaje', () => {
+    const r = validateInvoices(
+      [
+        invoice({
+          installments: [
+            { id: 'Cuota001', amount: '0.00', dueDate: '2026-10-30' },
+            { id: 'Cuota002', amount: '10620.00', dueDate: '2026-11-30' },
+          ],
+        }),
+      ],
+      ctx,
+    )
+    expect(codes(r)).toEqual(['INSTALLMENT_AMOUNT_ZERO'])
+    expect(r.problems[0]).toMatchObject({
+      message: 'La cuota Cuota001 de la factura F001-123 tiene monto cero.',
+      params: { installment: 'Cuota001', invoice: 'F001-123' },
+      rule: 'installment-amounts-positive',
+    })
+  })
+
+  it('rechaza un neto pendiente mayor que el total, y acepta uno igual', () => {
+    const r = validateInvoices(
+      [
+        invoice({
+          netPendingAmount: '11800.01',
+          installments: [{ id: 'Cuota001', amount: '11800.01', dueDate: '2026-11-30' }],
+        }),
+      ],
+      ctx,
+    )
+    expect(codes(r)).toEqual(['NET_PENDING_EXCEEDS_TOTAL'])
+    expect(r.problems[0]?.message).toBe('El neto pendiente de la factura F001-123 supera su total.')
+    const equal = invoice({
+      netPendingAmount: '11800.00',
+      installments: [{ id: 'Cuota001', amount: '11800.00', dueDate: '2026-11-30' }],
+    })
+    expect(codes(validateInvoices([equal], ctx))).toEqual([])
+  })
+
+  it('sin neto pendiente la regla del total no aplica: lo informa credit-with-pending-amount', () => {
+    const r = validateInvoices([invoice({ netPendingAmount: null })], ctx)
+    expect(codes(r)).toEqual(['NO_PENDING_AMOUNT'])
+  })
+
+  it('una factura con varios defectos los informa todos, en el orden de INVOICE_RULES', () => {
+    const r = validateInvoices(
+      [
+        invoice({
+          issueDate: '2026-12-01',
+          netPendingAmount: '11800.01',
+          installments: [{ id: 'Cuota001', amount: '0.00', dueDate: '2026-11-30' }],
+        }),
+      ],
+      ctx,
+    )
+    expect(codes(r)).toEqual([
+      'ISSUE_DATE_IN_FUTURE',
+      'ISSUE_DATE_AFTER_DUE_DATE',
+      'INSTALLMENT_AMOUNT_ZERO',
+      'NET_PENDING_EXCEEDS_TOTAL',
+    ])
+  })
+
+  it('las cuatro reglas están registradas en RULE_IDS y al final de INVOICE_RULES, en ese orden', () => {
+    const ids = [
+      'issue-date-not-in-future',
+      'issue-date-before-due',
+      'installment-amounts-positive',
+      'net-pending-within-total',
+    ]
+    expect(INVOICE_RULES.map((rule) => rule.id).slice(-4)).toEqual(ids)
+    for (const id of ids) expect(RULE_IDS).toContain(id)
+    expect(new Set(INVOICE_RULES.map((rule) => rule.id)).size).toBe(INVOICE_RULES.length)
   })
 })

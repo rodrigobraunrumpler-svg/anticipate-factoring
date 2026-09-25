@@ -4,6 +4,8 @@ Cada archivo de `cases/` se lee como bytes con `decodeXml` (igual que la API), p
 
 Hoy la suite solo tiene casos semilla (`seed-*.xml`), generados con la fábrica de XML de prueba (`@anticipate/shared/testing`) por `pnpm --filter @anticipate/shared exec tsx test/golden/generate-seed-cases.ts`. El más cercano a un XML real es `seed-sunat-realistic.xml`: dos `UBLExtension` con la firma en la segunda, `cac:Signature` de primer nivel, razón social en CDATA, finales CRLF, bytes ISO-8859-1 y detracción al 12 %. Los XML reales de proveedores se agregan con el procedimiento de abajo; todo caso que no empieza con `seed-` se trata como real.
 
+Cuatro semillas fijan las reglas de fecha y las gemelas de las restricciones CHECK de la base (D49): `seed-issue-date-in-future.xml` (emisión posterior a "hoy"), `seed-due-before-issue.xml` (una cuota vence antes de la emisión), `seed-installment-zero.xml` (una cuota con monto cero) y `seed-net-exceeds-total.xml` (neto pendiente mayor que el total). El XML de cada una se lee bien y termina en su problema; `golden.test.ts` lo comprueba además del snapshot. Ninguna semilla anterior cambió de resultado con esas reglas.
+
 ## Agregar un XML real
 
 1. Guardar el original en `private/` (ignorado por git; nunca se commitea).

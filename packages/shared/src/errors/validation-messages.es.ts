@@ -1,6 +1,7 @@
 /**
  * Mensajes de validación para personas (esquemas Zod y lectura del XML), agrupados por dominio.
- * Junto con `MESSAGES_ES` son el único lugar de `shared` con texto en español para el usuario final:
+ * Junto con `MESSAGES_ES` (problemas de negocio) y `API_MESSAGES_ES` (respuestas de la API) son el
+ * único lugar de `shared` con texto en español para el usuario final:
  * los dominios toman sus mensajes de aquí, así ninguna validación deja pasar el inglés por defecto de
  * Zod (`zodResolver` lo mostraría tal cual en un formulario en español) y traducir la interfaz es
  * cambiar esta tabla, no buscar textos por el código.

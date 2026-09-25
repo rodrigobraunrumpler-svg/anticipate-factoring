@@ -10,6 +10,7 @@ const domains = [
   'supplier-document',
   'payer',
   'user',
+  'api',
   // Fábrica de XML de prueba: fuera del índice raíz, solo por `@anticipate/shared/testing`.
   'testing',
 ] as const

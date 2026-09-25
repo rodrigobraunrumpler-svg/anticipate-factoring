@@ -41,6 +41,21 @@ describe('suite dorada', () => {
     )
   })
 
+  it.each([
+    ['seed-issue-date-in-future.xml', ['ISSUE_DATE_IN_FUTURE']],
+    ['seed-due-before-issue.xml', ['INSTALLMENT_OVERDUE', 'ISSUE_DATE_AFTER_DUE_DATE']],
+    ['seed-installment-zero.xml', ['INSTALLMENT_AMOUNT_ZERO']],
+    ['seed-net-exceeds-total.xml', ['NET_PENDING_EXCEEDS_TOTAL']],
+  ])('%s se lee y termina en su regla: %j', (file, expected) => {
+    const parsed = parseUblInvoice(readCase(file))
+    expect(parsed.ok).toBe(true)
+    if (parsed.ok) {
+      const result = validateInvoices([parsed.invoice], ctx)
+      expect(result.problems.map((p) => p.code)).toEqual(expected)
+      expect(result.validInvoices).toEqual([])
+    }
+  })
+
   it('el caso realista (ISO-8859-1, CRLF, CDATA, dos extensiones) se lee firmado y con el neto correcto', () => {
     const parsed = parseUblInvoice(readCase('seed-sunat-realistic.xml'))
     expect(parsed.ok).toBe(true)
