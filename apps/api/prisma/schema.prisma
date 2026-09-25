@@ -1,0 +1,595 @@
+generator client {
+  provider               = "prisma-client"
+  output                 = "../src/infrastructure/prisma/generated"
+  runtime                = "nodejs"
+  moduleFormat           = "esm"
+  generatedFileExtension = "ts"
+  importFileExtension    = "js"
+  previewFeatures        = ["partialIndexes"]
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// Convenciones (docs/database/migrations.md y STACK §9):
+// - Ids UUIDv7: la base los genera con uuidv7() (PostgreSQL 18) y la API los asigna con newId()
+//   cuando necesita el id antes de insertar. Por eso el orden de `id` es el orden de creación.
+// - Tiempos en timestamptz(3). `updated_at` tiene DEFAULT y además lo mantiene el trigger
+//   set_updated_at de la migración integrity, para que el SQL crudo también lo actualice.
+// - Toda relación declara onDelete: Restrict. Todo índice declara su nombre con map.
+// - Toda FK tiene un índice no parcial cuya primera columna es la primera de la FK (o un unique o
+//   una PK que la cubre). Excepciones, sin borrado del padre ni consulta inversa:
+//   supplier_documents.reviewed_by_id y status_history.user_id (lista del test estructural).
+// - Los índices (parciales, BRIN, GIN, descendentes) se declaran aquí y nunca a mano en SQL:
+//   Prisma borra en la migración siguiente cualquier índice que el esquema no declare.
+// - Un índice parcial que consulta el query builder solo usa booleanos o IS [NOT] NULL en su
+//   predicado; los que nombran un enum solo se consultan con $queryRaw y el literal en el texto.
+// - Los CHECK, triggers y funciones viven en la migración integrity (Prisma no los representa).
+// - Los enums que existen en @anticipate/shared se comparan en src/infrastructure/prisma/enums.test.ts.
+
+enum AdvanceRequestStatus {
+  NEW
+  NO_ANSWER
+  CONTACTED
+  DOCUMENTS_PENDING
+  UNDER_REVIEW
+  QUOTE_SENT
+  APPROVED
+  DISBURSED
+  REJECTED
+  WITHDRAWN
+
+  @@map("advance_request_status")
+}
+
+enum CloseReason {
+  NO_RESPONSE
+  SPAM_OR_INVALID
+  SUPPLIER_WITHDREW
+  INVALID_DOCUMENTS
+  INVOICE_NOT_ELIGIBLE
+  UNACCEPTABLE_RISK
+  OTHER
+
+  @@map("close_reason")
+}
+
+enum Currency {
+  PEN
+  USD
+
+  @@map("currency")
+}
+
+enum PaymentTerms {
+  CASH
+  CREDIT
+
+  @@map("payment_terms")
+}
+
+enum CavaliRegistration {
+  YES
+  NO
+  UNKNOWN
+
+  @@map("cavali_registration")
+}
+
+enum ContactTimeSlot {
+  MORNING
+  AFTERNOON
+  ANY
+
+  @@map("contact_time_slot")
+}
+
+enum SupplierDocumentType {
+  REPRESENTATIVE_ID
+  POWER_OF_ATTORNEY_CERTIFICATE
+  MASTER_AGREEMENT
+  OTHER
+
+  @@map("supplier_document_type")
+}
+
+enum SupplierDocumentStatus {
+  PENDING_REVIEW
+  APPROVED
+  REJECTED
+
+  @@map("supplier_document_status")
+}
+
+enum FollowUpChannel {
+  CALL
+  WHATSAPP
+  EMAIL
+  OTHER
+
+  @@map("follow_up_channel")
+}
+
+enum ConsentType {
+  TERMS
+  PERSONAL_DATA
+
+  @@map("consent_type")
+}
+
+enum Role {
+  AGENT
+  ADMIN
+
+  @@map("role")
+}
+
+enum OutboxStatus {
+  PENDING
+  PROCESSING
+  PUBLISHED
+  DEAD_LETTER
+
+  @@map("outbox_status")
+}
+
+enum StoredFilePurpose {
+  INVOICE_XML
+  INVOICE_PDF
+  SUPPLIER_DOCUMENT
+
+  @@map("stored_file_purpose")
+}
+
+enum StoredFileStatus {
+  PENDING
+  ATTACHED
+  DELETED
+
+  @@map("stored_file_status")
+}
+
+/// Pagador con programa de adelanto. Sus condiciones se editan en la base, nunca en el código.
+model Payer {
+  id                String           @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  slug              String           @unique(map: "payers_slug_key") @db.VarChar(60)
+  ruc               String           @unique(map: "payers_ruc_key") @db.Char(11)
+  legalName         String           @map("legal_name") @db.VarChar(200)
+  shortName         String           @map("short_name") @db.VarChar(40)
+  advancePercent    Decimal          @map("advance_percent") @db.Decimal(5, 2)
+  minTermDays       Int              @map("min_term_days")
+  maxInvoices       Int              @map("max_invoices")
+  allowedCurrencies Currency[]       @map("allowed_currencies")
+  accentColor       String           @map("accent_color") @db.VarChar(7)
+  logoUrl           String?          @map("logo_url")
+  texts             Json             @default("{}")
+  active            Boolean          @default(true)
+  createdAt         DateTime         @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt         DateTime         @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(3)
+  advanceRequests   AdvanceRequest[]
+
+  /// Destino de la FK (payer_id, payer_ruc) de advance_requests: el RUC de la solicitud es el del pagador.
+  @@unique([id, ruc], map: "payers_id_ruc_key")
+  @@map("payers")
+}
+
+model Supplier {
+  id                   String                @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  ruc                  String                @unique(map: "suppliers_ruc_key") @db.Char(11)
+  legalName            String                @map("legal_name") @db.VarChar(200)
+  createdAt            DateTime              @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt            DateTime              @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(3)
+  advanceRequests      AdvanceRequest[]
+  legalRepresentatives LegalRepresentative[]
+  documents            SupplierDocument[]
+
+  /// Destino de la FK (supplier_id, supplier_ruc) de advance_requests.
+  @@unique([id, ruc], map: "suppliers_id_ruc_key")
+  /// Búsqueda por razón social del admin (paso 4).
+  @@index([legalName(ops: raw("gin_trgm_ops"))], type: Gin, map: "suppliers_legal_name_trgm_idx")
+  @@map("suppliers")
+}
+
+model LegalRepresentative {
+  id              String             @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  supplierId      String             @map("supplier_id") @db.Uuid
+  fullName        String             @map("full_name") @db.VarChar(120)
+  dni             String             @db.VarChar(8)
+  jobTitle        String?            @map("job_title") @db.VarChar(80)
+  active          Boolean            @default(true)
+  createdAt       DateTime           @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt       DateTime           @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(3)
+  supplier        Supplier           @relation(fields: [supplierId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  documents       SupplierDocument[]
+  advanceRequests AdvanceRequest[]
+
+  @@unique([supplierId, dni], map: "legal_representatives_supplier_id_dni_key")
+  /// Destino de las FK compuestas que exigen que el representante sea del mismo proveedor.
+  @@unique([id, supplierId], map: "legal_representatives_id_supplier_key")
+  @@map("legal_representatives")
+}
+
+model SupplierDocument {
+  id               String                 @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  supplierId       String                 @map("supplier_id") @db.Uuid
+  representativeId String?                @map("representative_id") @db.Uuid
+  type             SupplierDocumentType
+  status           SupplierDocumentStatus @default(PENDING_REVIEW)
+  fileId           String                 @map("file_id") @db.Uuid
+  /// Siempre SUPPLIER_DOCUMENT: con la FK a stored_files(id, purpose) el archivo no puede ser una factura.
+  filePurpose      StoredFilePurpose      @default(SUPPLIER_DOCUMENT) @map("file_purpose")
+  issuedOn         DateTime?              @map("issued_on") @db.Date
+  validUntil       DateTime?              @map("valid_until") @db.Date
+  /// Se fija al aprobar otro documento del mismo proveedor, tipo y representante.
+  supersededAt     DateTime?              @map("superseded_at") @db.Timestamptz(3)
+  reviewedById     String?                @map("reviewed_by_id") @db.Uuid
+  reviewedAt       DateTime?              @map("reviewed_at") @db.Timestamptz(3)
+  createdAt        DateTime               @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt        DateTime               @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(3)
+  supplier         Supplier               @relation(fields: [supplierId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  representative   LegalRepresentative?   @relation(fields: [representativeId, supplierId], references: [id, supplierId], onDelete: Restrict, onUpdate: Restrict, map: "supplier_documents_representative_fkey")
+  file             StoredFile             @relation(fields: [fileId, filePurpose], references: [id, purpose], onDelete: Restrict, onUpdate: Restrict, map: "supplier_documents_file_fkey")
+  reviewedBy       User?                  @relation(fields: [reviewedById], references: [id], onDelete: Restrict, onUpdate: Restrict)
+
+  /// Un archivo, un documento. Incluye el propósito para cubrir la FK compuesta; como la FK fija
+  /// el propósito por el id del archivo, equivale a la unicidad de file_id.
+  @@unique([fileId, filePurpose], map: "supplier_documents_file_key")
+  @@index([supplierId, type, status], map: "supplier_documents_supplier_type_status_idx")
+  @@index([representativeId, supplierId], map: "supplier_documents_representative_idx")
+  /// Documentos por vencer: solo los vigentes (no reemplazados); el estado se filtra al recorrer.
+  @@index([validUntil], where: { supersededAt: null }, map: "supplier_documents_valid_until_current_idx")
+  @@map("supplier_documents")
+}
+
+model AdvanceRequest {
+  id                    String               @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  /// ANT-2026-000123: prefijo de 2 a 6 letras, año y secuencia de 6 a 15 dígitos (publicCodeSchema de shared).
+  publicCode            String               @unique(map: "advance_requests_public_code_key") @map("public_code") @db.VarChar(27)
+  /// Cabecera Idempotency-Key del envío: un reintento con la misma clave devuelve la misma solicitud.
+  idempotencyKey        String               @unique(map: "advance_requests_idempotency_key_key") @map("idempotency_key") @db.Uuid
+  /// sha256 hex del formulario normalizado y de los archivos: distingue un reintento de otro envío.
+  requestFingerprint    String               @map("request_fingerprint") @db.Char(64)
+  payerId               String               @map("payer_id") @db.Uuid
+  payerRuc              String               @map("payer_ruc") @db.Char(11)
+  supplierId            String               @map("supplier_id") @db.Uuid
+  supplierRuc           String               @map("supplier_ruc") @db.Char(11)
+  /// Razón social tal como la escribió el proveedor en este envío.
+  supplierLegalName     String               @map("supplier_legal_name") @db.VarChar(200)
+  status                AdvanceRequestStatus @default(NEW)
+  contactFullName       String               @map("contact_full_name") @db.VarChar(120)
+  contactDni            String               @map("contact_dni") @db.VarChar(8)
+  contactMobile         String               @map("contact_mobile") @db.VarChar(9)
+  contactEmail          String               @map("contact_email") @db.VarChar(254)
+  isLegalRepresentative Boolean              @map("is_legal_representative")
+  /// El representante creado con la solicitud cuando el contacto declara serlo.
+  legalRepresentativeId String?              @map("legal_representative_id") @db.Uuid
+  contactJobTitle       String?              @map("contact_job_title") @db.VarChar(80)
+  contactTimeSlot       ContactTimeSlot      @map("contact_time_slot")
+  requestedAmount       Decimal              @map("requested_amount") @db.Decimal(14, 2)
+  currency              Currency
+  /// Foto de las condiciones del pagador al crear la solicitud.
+  appliedAdvancePercent Decimal              @map("applied_advance_percent") @db.Decimal(5, 2)
+  appliedMinTermDays    Int                  @map("applied_min_term_days")
+  totalNetPending       Decimal              @map("total_net_pending") @db.Decimal(14, 2)
+  maxAmount             Decimal              @map("max_amount") @db.Decimal(14, 2)
+  purpose               String?              @db.VarChar(500)
+  cavaliRegistration    CavaliRegistration   @map("cavali_registration")
+  utm                   Json?
+  referrer              String?              @db.VarChar(2000)
+  correlationId         String?              @map("correlation_id") @db.VarChar(128)
+  closeReason           CloseReason?         @map("close_reason")
+  closeReasonDetail     String?              @map("close_reason_detail") @db.VarChar(500)
+  /// Se fija al pasar a DISBURSED, REJECTED o WITHDRAWN. Sostiene los índices parciales de abiertas.
+  closedAt              DateTime?            @map("closed_at") @db.Timestamptz(3)
+  /// Fotos al crear: la bandeja no cuenta facturas ni busca la cuota más próxima.
+  invoiceCount          Int                  @map("invoice_count") @db.SmallInt
+  earliestDueDate       DateTime             @map("earliest_due_date") @db.Date
+  /// Próxima acción del último seguimiento; queda en NULL al cerrar.
+  nextActionAt          DateTime?            @map("next_action_at") @db.Timestamptz(3)
+  assignedToId          String?              @map("assigned_to_id") @db.Uuid
+  version               Int                  @default(1)
+  createdAt             DateTime             @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt             DateTime             @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(3)
+  payer                 Payer                @relation(fields: [payerId, payerRuc], references: [id, ruc], onDelete: Restrict, onUpdate: Restrict, map: "advance_requests_payer_fkey")
+  supplier              Supplier             @relation(fields: [supplierId, supplierRuc], references: [id, ruc], onDelete: Restrict, onUpdate: Restrict, map: "advance_requests_supplier_fkey")
+  legalRepresentative   LegalRepresentative? @relation(fields: [legalRepresentativeId, supplierId], references: [id, supplierId], onDelete: Restrict, onUpdate: Restrict, map: "advance_requests_legal_representative_fkey")
+  /// MATCH SIMPLE: sin motivo de cierre no se comprueba; con motivo, la pareja debe existir.
+  closeRule             CloseReasonRule?     @relation(fields: [status, closeReason], references: [status, reason], onDelete: Restrict, onUpdate: Restrict, map: "advance_requests_close_rule_fkey")
+  assignedTo            User?                @relation("AssignedAdvanceRequests", fields: [assignedToId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  invoices              Invoice[]
+  followUps             FollowUp[]
+  statusHistory         StatusHistory[]
+  consents              Consent[]
+  outboxEvents          OutboxEvent[]
+
+  /// Destino de la FK de alcance de invoices: estado, moneda, emisor y receptor de cada factura.
+  @@unique([id, status, currency, supplierRuc, payerRuc], map: "advance_requests_invoice_scope_key")
+  // Listas del admin ordenadas por id DESC (UUIDv7 = orden de creación); «todas» usa la PK.
+  @@index([id(sort: Desc)], where: { closedAt: null }, map: "advance_requests_open_idx")
+  @@index([status, id(sort: Desc)], map: "advance_requests_status_id_idx")
+  @@index([payerId, id(sort: Desc)], map: "advance_requests_payer_id_id_idx")
+  @@index([supplierId, id(sort: Desc)], map: "advance_requests_supplier_id_id_idx")
+  /// Cubre la FK de assigned_to_id (el parcial de abajo no sirve para eso).
+  @@index([assignedToId, id(sort: Desc)], map: "advance_requests_assigned_to_id_id_idx")
+  @@index([assignedToId, id(sort: Desc)], where: { closedAt: null }, map: "advance_requests_open_assigned_idx")
+  // Agenda de próximas acciones.
+  @@index([nextActionAt], where: { closedAt: null, nextActionAt: { not: null } }, map: "advance_requests_next_action_idx")
+  @@index([assignedToId, nextActionAt], where: { closedAt: null, nextActionAt: { not: null } }, map: "advance_requests_assigned_next_action_idx")
+  @@index([legalRepresentativeId, supplierId], map: "advance_requests_legal_representative_idx")
+  // Búsqueda de la bandeja: cada forma reconocida va a una igualdad; el texto libre, a trigramas.
+  @@index([contactDni], map: "advance_requests_contact_dni_idx")
+  @@index([contactMobile], map: "advance_requests_contact_mobile_idx")
+  @@index([contactEmail], map: "advance_requests_contact_email_idx")
+  @@index([contactFullName(ops: raw("gin_trgm_ops"))], type: Gin, map: "advance_requests_contact_full_name_trgm_idx")
+  @@map("advance_requests")
+}
+
+model Invoice {
+  id               String               @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  advanceRequestId String               @map("advance_request_id") @db.Uuid
+  /// Copia del estado de la solicitud que mantiene la FK de alcance con ON UPDATE CASCADE.
+  requestStatus    AdvanceRequestStatus @map("request_status")
+  currency         Currency
+  issuerRuc        String               @map("issuer_ruc") @db.Char(11)
+  recipientRuc     String               @map("recipient_ruc") @db.Char(11)
+  documentType     String               @map("document_type") @db.VarChar(2)
+  seriesNumber     String               @map("series_number") @db.VarChar(20)
+  /// Clave canónica de `invoiceKey` de shared: RUC emisor, barra, serie y correlativo sin ceros a la izquierda.
+  invoiceKey       String               @map("invoice_key") @db.VarChar(40)
+  issuerName       String               @map("issuer_name") @db.VarChar(1500)
+  paymentTerms     PaymentTerms         @map("payment_terms")
+  total            Decimal              @db.Decimal(14, 2)
+  netPendingAmount Decimal              @map("net_pending_amount") @db.Decimal(14, 2)
+  issueDate        DateTime             @map("issue_date") @db.Date
+  dueDate          DateTime             @map("due_date") @db.Date
+  detraction       Json?
+  signed           Boolean
+  xmlFileId        String               @map("xml_file_id") @db.Uuid
+  xmlFilePurpose   StoredFilePurpose    @default(INVOICE_XML) @map("xml_file_purpose")
+  pdfFileId        String?              @map("pdf_file_id") @db.Uuid
+  pdfFilePurpose   StoredFilePurpose    @default(INVOICE_PDF) @map("pdf_file_purpose")
+  createdAt        DateTime             @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt        DateTime             @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(3)
+  /// Misma solicitud, mismo estado, misma moneda, emisor = proveedor y receptor = pagador.
+  advanceRequest   AdvanceRequest       @relation(fields: [advanceRequestId, requestStatus, currency, issuerRuc, recipientRuc], references: [id, status, currency, supplierRuc, payerRuc], onDelete: Restrict, onUpdate: Cascade, map: "invoices_request_scope_fkey")
+  xmlFile          StoredFile           @relation("InvoiceXml", fields: [xmlFileId, xmlFilePurpose], references: [id, purpose], onDelete: Restrict, onUpdate: Restrict, map: "invoices_xml_file_fkey")
+  pdfFile          StoredFile?          @relation("InvoicePdf", fields: [pdfFileId, pdfFilePurpose], references: [id, purpose], onDelete: Restrict, onUpdate: Restrict, map: "invoices_pdf_file_fkey")
+  installments     InvoiceInstallment[]
+
+  /// Un archivo XML, una factura; ídem el PDF. Incluyen el propósito para cubrir la FK compuesta;
+  /// como la FK fija el propósito por el id del archivo, equivalen a la unicidad del id.
+  @@unique([xmlFileId, xmlFilePurpose], map: "invoices_xml_file_key")
+  @@unique([pdfFileId, pdfFilePurpose], map: "invoices_pdf_file_key")
+  /// Una factura no puede estar en dos solicitudes vivas (D26). Una desembolsada la bloquea para
+  /// siempre. Nunca findUnique, upsert ni connect por invoiceKey: Prisma ignora el predicado.
+  @@unique([invoiceKey], where: raw("request_status <> ALL (ARRAY['REJECTED'::advance_request_status, 'WITHDRAWN'::advance_request_status])"), map: "invoices_open_invoice_key_key")
+  @@index([advanceRequestId], map: "invoices_advance_request_id_idx")
+  @@map("invoices")
+}
+
+model InvoiceInstallment {
+  id        String   @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  invoiceId String   @map("invoice_id") @db.Uuid
+  /// Posición de la cuota en el XML, desde 1.
+  number    Int
+  /// Identificador de la cuota en el XML (`Cuota001`).
+  label     String   @db.VarChar(20)
+  amount    Decimal  @db.Decimal(14, 2)
+  dueDate   DateTime @map("due_date") @db.Date
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  invoice   Invoice  @relation(fields: [invoiceId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@unique([invoiceId, number], map: "invoice_installments_invoice_id_number_key")
+  @@index([dueDate], map: "invoice_installments_due_date_idx")
+  @@map("invoice_installments")
+}
+
+/// Todo objeto del almacenamiento. Sin nombre original (dato personal): se deriva del código y del tipo.
+model StoredFile {
+  id               String            @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  storageBucket    String            @map("storage_bucket") @db.VarChar(63)
+  key              String            @db.VarChar(512)
+  purpose          StoredFilePurpose
+  contentType      String            @map("content_type") @db.VarChar(100)
+  sizeBytes        Int               @map("size_bytes")
+  sha256           String            @db.Char(64)
+  /// PENDING al reservar (antes de subir), ATTACHED al confirmar la transacción, DELETED al liberar.
+  status           StoredFileStatus  @default(PENDING)
+  attachedAt       DateTime?         @map("attached_at") @db.Timestamptz(3)
+  deletedAt        DateTime?         @map("deleted_at") @db.Timestamptz(3)
+  /// Desde cuándo se puede borrar el objeto (más allá de la ventana de PITR si estuvo ATTACHED).
+  purgeAfter       DateTime?         @map("purge_after") @db.Timestamptz(3)
+  purgedAt         DateTime?         @map("purged_at") @db.Timestamptz(3)
+  createdAt        DateTime          @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt        DateTime          @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(3)
+  invoiceXml       Invoice?          @relation("InvoiceXml")
+  invoicePdf       Invoice?          @relation("InvoicePdf")
+  supplierDocument SupplierDocument?
+
+  @@unique([storageBucket, key], map: "stored_files_storage_bucket_key_key")
+  /// Destino de las FK compuestas (archivo, propósito) de invoices y supplier_documents.
+  @@unique([id, purpose], map: "stored_files_id_purpose_key")
+  /// Barrido de huérfanos: solo con $queryRaw y el literal 'PENDING' en el texto.
+  @@index([createdAt], where: raw("status = 'PENDING'::stored_file_status"), map: "stored_files_pending_created_at_idx")
+  /// Borrado físico diferido.
+  @@index([purgeAfter], where: { purgedAt: null, deletedAt: { not: null } }, map: "stored_files_purge_after_idx")
+  @@map("stored_files")
+}
+
+model FollowUp {
+  id               String          @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  advanceRequestId String          @map("advance_request_id") @db.Uuid
+  userId           String          @map("user_id") @db.Uuid
+  channel          FollowUpChannel
+  note             String          @db.VarChar(2000)
+  nextActionAt     DateTime?       @map("next_action_at") @db.Timestamptz(3)
+  createdAt        DateTime        @default(now()) @map("created_at") @db.Timestamptz(3)
+  advanceRequest   AdvanceRequest  @relation(fields: [advanceRequestId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  user             User            @relation(fields: [userId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@index([advanceRequestId, createdAt], map: "follow_ups_advance_request_id_created_at_idx")
+  /// La agenda de próximas acciones se consulta en advance_requests.next_action_at, no aquí.
+  @@index([userId, createdAt(sort: Desc)], map: "follow_ups_user_id_created_at_idx")
+  @@map("follow_ups")
+}
+
+/// Máquina de estados como datos: la migración integrity la llena desde TRANSITIONS de shared.
+model AdvanceRequestTransition {
+  fromStatus AdvanceRequestStatus @map("from_status")
+  toStatus   AdvanceRequestStatus @map("to_status")
+  minRole    Role                 @map("min_role")
+  history    StatusHistory[]
+
+  @@id([fromStatus, toStatus])
+  @@map("advance_request_transitions")
+}
+
+/// Motivos de cierre válidos por estado: la migración integrity la llena desde CLOSE_REASONS_BY_STATUS.
+model CloseReasonRule {
+  status          AdvanceRequestStatus
+  reason          CloseReason
+  advanceRequests AdvanceRequest[]
+  statusHistory   StatusHistory[]
+
+  @@id([status, reason])
+  @@map("close_reason_rules")
+}
+
+model StatusHistory {
+  id                String                    @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  advanceRequestId  String                    @map("advance_request_id") @db.Uuid
+  /// NULL solo en la fila inicial (versión 1, estado NEW).
+  fromStatus        AdvanceRequestStatus?     @map("from_status")
+  toStatus          AdvanceRequestStatus      @map("to_status")
+  /// Versión de la solicitud después del cambio.
+  version           Int
+  /// NULL cuando el cambio lo hace el sistema; entonces actor_role también es NULL.
+  userId            String?                   @map("user_id") @db.Uuid
+  actorRole         Role?                     @map("actor_role")
+  closeReason       CloseReason?              @map("close_reason")
+  closeReasonDetail String?                   @map("close_reason_detail") @db.VarChar(500)
+  correlationId     String?                   @map("correlation_id") @db.VarChar(128)
+  createdAt         DateTime                  @default(now()) @map("created_at") @db.Timestamptz(3)
+  advanceRequest    AdvanceRequest            @relation(fields: [advanceRequestId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  user              User?                     @relation(fields: [userId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  /// MATCH SIMPLE: la fila inicial (from_status NULL) no se comprueba.
+  transition        AdvanceRequestTransition? @relation(fields: [fromStatus, toStatus], references: [fromStatus, toStatus], onDelete: Restrict, onUpdate: Restrict, map: "status_history_transition_fkey")
+  closeRule         CloseReasonRule?          @relation(fields: [toStatus, closeReason], references: [status, reason], onDelete: Restrict, onUpdate: Restrict, map: "status_history_close_rule_fkey")
+
+  @@unique([advanceRequestId, version], map: "status_history_advance_request_id_version_key")
+  @@unique([advanceRequestId], where: raw("from_status IS NULL"), map: "status_history_one_initial_key")
+  @@index([userId], map: "status_history_user_id_idx")
+  /// Cubren las FK a los catálogos de transiciones y de motivos de cierre.
+  @@index([fromStatus, toStatus], map: "status_history_transition_idx")
+  @@index([toStatus, closeReason], map: "status_history_close_rule_idx")
+  @@map("status_history")
+}
+
+/// Versiones publicadas de los términos y de la política de datos personales (Ley 29733).
+model LegalDocumentVersion {
+  type        ConsentType
+  version     String      @db.VarChar(20)
+  url         String      @db.VarChar(500)
+  /// sha256 hex del texto publicado: prueba qué texto se aceptó.
+  sha256      String      @db.Char(64)
+  publishedAt DateTime    @map("published_at") @db.Timestamptz(3)
+  /// Una versión retirada ya no se acepta en solicitudes nuevas.
+  retiredAt   DateTime?   @map("retired_at") @db.Timestamptz(3)
+  consents    Consent[]
+
+  @@id([type, version])
+  @@map("legal_document_versions")
+}
+
+model Consent {
+  id               String               @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  advanceRequestId String               @map("advance_request_id") @db.Uuid
+  type             ConsentType
+  documentVersion  String               @map("document_version") @db.VarChar(20)
+  ip               String               @db.Inet
+  userAgent        String?              @map("user_agent") @db.VarChar(512)
+  acceptedAt       DateTime             @map("accepted_at") @db.Timestamptz(3)
+  /// Revocación (derechos ARCO): lo único que puede cambiar en la fila.
+  revokedAt        DateTime?            @map("revoked_at") @db.Timestamptz(3)
+  advanceRequest   AdvanceRequest       @relation(fields: [advanceRequestId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  legalDocument    LegalDocumentVersion @relation(fields: [type, documentVersion], references: [type, version], onDelete: Restrict, onUpdate: Restrict, map: "consents_legal_document_fkey")
+
+  @@unique([advanceRequestId, type], map: "consents_advance_request_id_type_key")
+  @@index([type, documentVersion], map: "consents_legal_document_idx")
+  @@map("consents")
+}
+
+model User {
+  id                String             @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  email             String             @unique(map: "users_email_key") @db.VarChar(254)
+  fullName          String             @map("full_name") @db.VarChar(120)
+  /// El cliente de Prisma la omite por defecto; el login la pide con omit: { passwordHash: false }.
+  passwordHash      String             @map("password_hash")
+  role              Role
+  active            Boolean            @default(true)
+  createdAt         DateTime           @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt         DateTime           @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(3)
+  assignedRequests  AdvanceRequest[]   @relation("AssignedAdvanceRequests")
+  followUps         FollowUp[]
+  statusChanges     StatusHistory[]
+  reviewedDocuments SupplierDocument[]
+  auditLogs         AuditLog[]
+
+  @@map("users")
+}
+
+/// Solo inserción (trigger de la migración integrity). No se particiona todavía: se decide en el paso 4.
+model AuditLog {
+  id            String   @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  userId        String?  @map("user_id") @db.Uuid
+  actorRole     Role?    @map("actor_role")
+  action        String   @db.VarChar(60)
+  entity        String   @db.VarChar(60)
+  entityId      String?  @map("entity_id") @db.Uuid
+  detail        Json?
+  ip            String?  @db.Inet
+  correlationId String?  @map("correlation_id") @db.VarChar(128)
+  user          User?    @relation(fields: [userId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@index([entityId, createdAt(sort: Desc)], map: "audit_logs_entity_id_created_at_idx")
+  @@index([userId, createdAt(sort: Desc)], map: "audit_logs_user_id_created_at_idx")
+  @@index([createdAt], type: Brin, map: "audit_logs_created_brin_idx")
+  @@map("audit_logs")
+}
+
+/// Una fila por handler y evento. Todos sus tiempos los pone la base con now(); sus índices
+/// parciales se consultan solo con $queryRaw y el estado escrito como literal.
+model OutboxEvent {
+  id                String          @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  /// Nombre del consumidor (`email.supplier-confirmation`): texto, no enum.
+  handler           String          @db.VarChar(60)
+  dedupeKey         String          @unique(map: "outbox_events_dedupe_key_key") @map("dedupe_key") @db.VarChar(200)
+  eventType         String          @map("event_type") @db.VarChar(60)
+  /// Solo ids, tipo y versión: nunca datos personales.
+  payload           Json
+  /// Agregado de origen como FK tipada; un agregado nuevo agrega su propia columna.
+  advanceRequestId  String?         @map("advance_request_id") @db.Uuid
+  status            OutboxStatus    @default(PENDING)
+  attempts          Int             @default(0)
+  maxAttempts       Int             @map("max_attempts")
+  availableAt       DateTime        @default(now()) @map("available_at") @db.Timestamptz(3)
+  leaseToken        String?         @map("lease_token") @db.Uuid
+  lockedAt          DateTime?       @map("locked_at") @db.Timestamptz(3)
+  lockExpiresAt     DateTime?       @map("lock_expires_at") @db.Timestamptz(3)
+  publishedAt       DateTime?       @map("published_at") @db.Timestamptz(3)
+  /// Código cerrado de OUTBOX_FAILURE_CODES, nunca el mensaje del proveedor.
+  lastError         String?         @map("last_error") @db.VarChar(64)
+  providerMessageId String?         @map("provider_message_id") @db.VarChar(255)
+  correlationId     String?         @map("correlation_id") @db.VarChar(128)
+  createdAt         DateTime        @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt         DateTime        @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(3)
+  advanceRequest    AdvanceRequest? @relation(fields: [advanceRequestId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@index([handler, availableAt], where: raw("status = 'PENDING'::outbox_status"), map: "outbox_events_pending_idx")
+  @@index([lockExpiresAt], where: raw("status = 'PROCESSING'::outbox_status"), map: "outbox_events_processing_idx")
+  @@index([advanceRequestId], map: "outbox_events_advance_request_id_idx")
+  @@index([createdAt(sort: Desc)], where: raw("status = 'DEAD_LETTER'::outbox_status"), map: "outbox_events_dead_letter_idx")
+  @@map("outbox_events")
+}

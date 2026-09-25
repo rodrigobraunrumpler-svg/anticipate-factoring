@@ -7,6 +7,7 @@ import { type AppConfig, AppConfigModule } from '#/common/config/index.js'
 import { AllExceptionsFilter } from '#/common/filters/index.js'
 import { AppThrottlerGuard, createThrottlerOptions } from '#/common/guards/app-throttler.guard.js'
 import { ResponseEnvelopeInterceptor } from '#/common/interceptors/response-envelope.interceptor.js'
+import { PrismaModule } from '#/infrastructure/prisma/index.js'
 import { TimeModule } from '#/infrastructure/time/index.js'
 import { HealthChecksModule } from '#/modules/health-checks/index.js'
 
@@ -28,6 +29,7 @@ export class AppModule {
         LoggerModule.forRoot(createPinoHttpOptions(config)),
         ThrottlerModule.forRoot(createThrottlerOptions(config.throttle)),
         TimeModule,
+        PrismaModule,
         HealthChecksModule,
         ...extraModules,
       ],

@@ -14,11 +14,17 @@
   },
   "scripts": {
     "build": "nest build",
+    "db:check-drift": "prisma migrate diff --from-migrations prisma/migrations --to-schema prisma/schema.prisma --exit-code",
+    "db:generate": "prisma generate",
+    "db:migrate": "prisma migrate dev",
+    "db:migrate:create": "prisma migrate dev --create-only",
+    "db:migrate:deploy": "prisma migrate deploy",
+    "db:seed": "prisma db seed",
     "dev": "nest start --watch",
     "start": "node dist/main.js",
-    "typecheck": "tsc --noEmit",
     "test": "vitest run --project api:unit",
-    "test:integration": "vitest run --project api:integration"
+    "test:integration": "vitest run --project api:integration",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@anticipate/emails": "workspace:*",
@@ -29,13 +35,17 @@
     "@nestjs/swagger": "catalog:",
     "@nestjs/terminus": "catalog:",
     "@nestjs/throttler": "catalog:",
+    "@prisma/adapter-pg": "catalog:",
+    "@prisma/client": "catalog:",
     "helmet": "catalog:",
     "multer": "catalog:",
     "nestjs-pino": "catalog:",
+    "pg": "catalog:",
     "pino": "catalog:",
     "pino-http": "catalog:",
     "reflect-metadata": "catalog:",
     "rxjs": "catalog:",
+    "uuid": "catalog:",
     "zod": "catalog:"
   },
   "devDependencies": {
@@ -46,10 +56,14 @@
     "@types/express": "catalog:",
     "@types/multer": "catalog:",
     "@types/node": "catalog:",
+    "@types/pg": "catalog:",
     "@types/supertest": "catalog:",
+    "argon2": "catalog:",
     "fast-check": "catalog:",
     "pino-pretty": "catalog:",
+    "prisma": "catalog:",
     "supertest": "catalog:",
+    "tsx": "catalog:",
     "typescript": "catalog:",
     "vite": "catalog:",
     "vitest": "catalog:"
