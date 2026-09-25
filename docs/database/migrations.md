@@ -101,6 +101,14 @@ empezar de cero en local, `pnpm infra:reset && pnpm infra:up` y luego `pnpm db:m
   nunca 503.
 - **Toda FK tiene un índice no parcial** cuya primera columna es la primera de la FK (o un unique o
   una PK que la cubre). Las excepciones están en la lista blanca del test estructural.
+- **Toda función PL/pgSQL fija su `search_path`** en su definición:
+  `SET search_path = pg_catalog, public, pg_temp`, también en cada `CREATE OR REPLACE FUNCTION`, que
+  lo borra si no lo repite. PL/pgSQL resuelve los nombres al correr, y si el `search_path` no nombra
+  `pg_temp`, PostgreSQL busca las tablas primero en el esquema temporal de la sesión: cualquier rol
+  con `TEMP` (PUBLIC lo tiene por defecto) tapaba la tabla que lee un trigger con una tabla temporal
+  del mismo nombre y se saltaba la regla. `pg_temp` va nombrado y al final; `pg_catalog, public` solo
+  no basta. Las funciones SQL con cuerpo estándar (`RETURN` o `BEGIN ATOMIC`) resuelven sus nombres al
+  crearse y no lo necesitan. El test estructural lo exige en todas las funciones de la base.
 
 ## Producción
 

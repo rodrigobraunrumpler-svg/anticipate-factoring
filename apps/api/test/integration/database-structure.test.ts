@@ -745,6 +745,50 @@ async function raceForeignInstallment(
   }
 }
 
+/**
+ * Una tabla temporal con el nombre de una tabla real la tapa para todo nombre sin esquema de la
+ * sesión: si el search_path no nombra pg_temp, PostgreSQL busca las relaciones primero en el esquema
+ * temporal de la sesión, y TEMP se concede a PUBLIC por defecto. En una sesión propia (un pg.Client
+ * suelto, así la tabla temporal nunca queda en una conexión del pool), `shadow` crea esa tabla con sus
+ * filas falsas (ON COMMIT DROP) y `attack` corre con ella puesta, en una transacción que se confirma.
+ * Devuelve si `table` sin esquema resolvía de verdad a la temporal justo antes del ataque (así un test
+ * no puede pasar porque la tabla falsa nunca tapó nada) y el error de la transacción, o null si
+ * confirmó.
+ */
+async function commitWithShadowTable(
+  table: string,
+  shadow: (client: pg.ClientBase) => Promise<unknown>,
+  attack: (client: pg.ClientBase) => Promise<unknown>,
+): Promise<{ shadowed: boolean | undefined; error: SqlError | null }> {
+  const client = new pg.Client({ connectionString: testConfig().database.url })
+  await client.connect()
+  let shadowed: boolean | undefined
+  try {
+    await client.query('BEGIN')
+    await shadow(client)
+    const { rows } = await client.query<{ shadowed: boolean }>(
+      "SELECT relpersistence = 't' AS shadowed FROM pg_class WHERE oid = to_regclass($1)",
+      [table],
+    )
+    shadowed = rows[0]?.shadowed
+    await attack(client)
+    await client.query('COMMIT')
+    return { shadowed, error: null }
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => undefined)
+    return { shadowed, error: error as SqlError }
+  } finally {
+    await client.end()
+  }
+}
+
+/** El id de la única factura de una solicitud creada por la fábrica. */
+function onlyInvoiceId(request: CompleteAdvanceRequest): string {
+  const [invoice, ...rest] = request.invoices
+  if (!invoice || rest.length > 0) throw new Error('La solicitud no tiene exactamente una factura.')
+  return invoice.id
+}
+
 describe('estructura de la base', () => {
   it('(a) toda FK tiene un índice no parcial que empieza por su primera columna', async () => {
     const WHITELIST = ['supplier_documents.reviewed_by_id', 'status_history.user_id']
@@ -1068,6 +1112,48 @@ describe('estructura de la base', () => {
       FROM pg_trigger WHERE tgname = 'invoice_installments_same_transaction'`)
     expect(gate).toEqual({ per_row: true, constraint_trigger: false, deferrable: false })
     expect(volatility.invoice_installments_same_transaction).toBe('v')
+  })
+
+  // Una función PL/pgSQL resuelve los nombres de su cuerpo al correr, con el search_path vigente; sin
+  // uno propio, una tabla temporal con el nombre de la tabla que lee un trigger la tapa (ver en (i)
+  // los tests de tablas temporales). Toda función de la base que no sea de una extensión fija
+  // search_path = pg_catalog, public, pg_temp: nombrar pg_temp, y al final, es lo único que evita que
+  // se busque primero (`pg_catalog, public` solo no basta). Las funciones SQL con cuerpo estándar
+  // (RETURN) guardan sus nombres ya resueltos al crearse y no lo necesitan. Un CREATE OR REPLACE sin el
+  // SET borra el search_path fijado: este test lo detecta, sea cual sea la función.
+  it('(d) toda función de la base fija su search_path con pg_temp al final (D49)', async () => {
+    const functions = await queryRows<{
+      name: string
+      language: string
+      standard_body: boolean
+      config: string[] | null
+    }>(`
+      SELECT p.proname AS name, l.lanname AS language, p.prosqlbody IS NOT NULL AS standard_body,
+             p.proconfig AS config
+      FROM pg_proc p
+      JOIN pg_namespace n ON n.oid = p.pronamespace
+      JOIN pg_language l ON l.oid = p.prolang
+      WHERE n.nspname = 'public'
+        AND NOT EXISTS (
+          SELECT 1 FROM pg_depend d
+          WHERE d.classid = 'pg_proc'::regclass AND d.objid = p.oid AND d.deptype = 'e'
+        )`)
+    const pinned = (config: string[] | null) =>
+      config?.length === 1 && config[0] === 'search_path=pg_catalog, public, pg_temp'
+    expect(
+      functions
+        .filter((f) => !(f.language === 'sql' && f.standard_body) && !pinned(f.config))
+        .map((f) => `${f.name} (${f.language}): ${f.config?.join('; ') ?? 'sin search_path'}`),
+    ).toEqual([])
+    // La consulta sí ve las funciones de los triggers (todas PL/pgSQL, ninguna de una extensión).
+    expect(functions.filter((f) => f.language === 'plpgsql').map((f) => f.name)).toEqual(
+      expect.arrayContaining([
+        'invoice_installments_same_transaction',
+        'assert_advance_request_complete',
+        'advance_requests_guard',
+        'invoices_purge_requires_request_purge',
+      ]),
+    )
   })
 })
 
@@ -2112,6 +2198,159 @@ describe('comportamiento de los triggers', () => {
       })
     }, 'COMMIT')
     expect(error).toMatchObject({ constraint: 'advance_requests_complete' })
+  })
+
+  // Las funciones de los triggers nombran las tablas sin esquema (`FROM invoices i`), y hasta
+  // pin_function_search_path no fijaban su search_path: una sesión con TEMP (PUBLIC lo tiene por
+  // defecto) tapaba la tabla que lee un trigger con una tabla temporal del mismo nombre y filas
+  // falsas, y el trigger leía esas filas. La FK no se enteraba: sus consultas nombran
+  // public.<tabla>. Reproducido en la revisión de integrity_hardening_4, también como un rol sin
+  // superusuario, con solo SELECT e INSERT: una cuota ajena confirmada sobre una factura ya confirmada
+  // (suma 10720.00 contra un neto de 10620.00) y una segunda factura en una solicitud que declara una.
+  // Estos cuatro casos cubren cada forma de regla (el gate, el agregado diferido, la máquina de estados
+  // y la purga); el test estructural (d) exige el search_path fijo en todas las funciones.
+  it('(i) una tabla temporal llamada invoices no abre el gate de las cuotas (D49)', async () => {
+    const request = await createCompleteAdvanceRequest(db.prisma)
+    const invoiceId = onlyInvoiceId(request)
+    const { shadowed, error } = await commitWithShadowTable(
+      'invoices',
+      async (client) => {
+        // La factura falsa dice que la creó esta transacción y que no es de ninguna solicitud (así
+        // el trigger diferido de las cuotas tampoco tiene un agregado que revisar).
+        await client.query(
+          'CREATE TEMP TABLE invoices (id uuid, creating_xact_id xid8, advance_request_id uuid) ON COMMIT DROP',
+        )
+        await client.query('INSERT INTO pg_temp.invoices VALUES ($1, pg_current_xact_id(), NULL)', [
+          invoiceId,
+        ])
+      },
+      (client) =>
+        client.query(
+          `INSERT INTO invoice_installments (invoice_id, number, label, amount, due_date)
+           VALUES ($1, 2, 'Cuota002', '100.00', '2026-12-15')`,
+          [invoiceId],
+        ),
+    )
+    expect({
+      shadowed,
+      code: error?.code,
+      constraint: error?.constraint,
+      installments: await installmentsOf(invoiceId),
+    }).toEqual({
+      shadowed: true,
+      code: '23000',
+      constraint: 'invoice_installments_same_transaction',
+      installments: [{ number: 1, amount: '10620.00' }],
+    })
+  })
+
+  it('(i) una tabla temporal llamada advance_requests no deja agregar una factura a una solicitud confirmada (D49)', async () => {
+    const request = await createCompleteAdvanceRequest(db.prisma)
+    const fileId = newId()
+    // La fábrica solo usa la serie F001: esta factura nunca choca con la de la solicitud.
+    const seriesNumber = 'F002-00000999'
+    const { shadowed, error } = await commitWithShadowTable(
+      'advance_requests',
+      // Vacía: para el trigger diferido del agregado la solicitud no existe, así que no cuenta nada.
+      (client) =>
+        client.query(
+          'CREATE TEMP TABLE advance_requests (id uuid, invoice_count integer, earliest_due_date date, total_net_pending numeric) ON COMMIT DROP',
+        ),
+      async (client) => {
+        await insert(client, 'stored_files', {
+          ...BASE.stored_files?.(),
+          id: fileId,
+          status: 'ATTACHED',
+          attached_at: NOW,
+        })
+        await insert(client, 'invoices', {
+          ...BASE.invoices?.(),
+          advance_request_id: request.id,
+          issuer_ruc: request.supplierRuc,
+          recipient_ruc: request.payerRuc,
+          series_number: seriesNumber,
+          invoice_key: invoiceKey({ issuerRuc: request.supplierRuc, seriesNumber }),
+          xml_file_id: fileId,
+        })
+      },
+    )
+    const [invoices] = await queryRows<{ total: number; net_pending: string }>(
+      `SELECT count(*)::int AS total, sum(net_pending_amount)::text AS net_pending
+       FROM invoices WHERE advance_request_id = $1`,
+      [request.id],
+    )
+    expect({ shadowed, code: error?.code, constraint: error?.constraint, invoices }).toEqual({
+      shadowed: true,
+      code: '23000',
+      constraint: 'advance_requests_complete',
+      invoices: { total: 1, net_pending: '10620.00' },
+    })
+  })
+
+  it('(i) una tabla temporal llamada advance_request_transitions no abre una transición prohibida (D49)', async () => {
+    const request = await createCompleteAdvanceRequest(db.prisma)
+    const { shadowed, error } = await commitWithShadowTable(
+      'advance_request_transitions',
+      async (client) => {
+        await client.query(
+          'CREATE TEMP TABLE advance_request_transitions (LIKE public.advance_request_transitions) ON COMMIT DROP',
+        )
+        // NEW -> DISBURSED no está en el catálogo real: desembolsar sin revisión ni aprobación.
+        await client.query(
+          "INSERT INTO pg_temp.advance_request_transitions VALUES ('NEW', 'DISBURSED', 'AGENT')",
+        )
+      },
+      (client) =>
+        client.query(
+          "UPDATE advance_requests SET status = 'DISBURSED', version = version + 1, closed_at = now() WHERE id = $1",
+          [request.id],
+        ),
+    )
+    const [state] = await queryRows<{ status: string; version: number }>(
+      'SELECT status::text AS status, version FROM advance_requests WHERE id = $1',
+      [request.id],
+    )
+    expect({ shadowed, code: error?.code, constraint: error?.constraint, state }).toEqual({
+      shadowed: true,
+      code: '23000',
+      constraint: 'advance_requests_transition_allowed',
+      state: { status: 'NEW', version: 1 },
+    })
+  })
+
+  it('(i) una tabla temporal llamada advance_requests no deja purgar solo las facturas de una solicitud viva (D49)', async () => {
+    const request = await createCompleteAdvanceRequest(db.prisma)
+    const { shadowed, error } = await commitWithShadowTable(
+      'advance_requests',
+      // Vacía: para la regla diferida de la purga, la solicitud ya se borró.
+      (client) => client.query('CREATE TEMP TABLE advance_requests (id uuid) ON COMMIT DROP'),
+      async (client) => {
+        await client.query("SET LOCAL app.retention_purge = 'on'")
+        await client.query(
+          'DELETE FROM invoice_installments WHERE invoice_id IN (SELECT id FROM invoices WHERE advance_request_id = $1)',
+          [request.id],
+        )
+        await client.query('DELETE FROM invoices WHERE advance_request_id = $1', [request.id])
+      },
+    )
+    expect({
+      shadowed,
+      code: error?.code,
+      constraint: error?.constraint,
+      leftovers: await aggregateLeftovers(request.id, [onlyInvoiceId(request)], request.fileIds),
+    }).toEqual({
+      shadowed: true,
+      code: '23000',
+      constraint: 'invoices_purge_requires_request_purge',
+      leftovers: {
+        advance_requests: 1,
+        invoices: 1,
+        invoice_installments: 1,
+        consents: 2,
+        status_history: 1,
+        stored_files: 1,
+      },
+    })
   })
 
   it('(i) una solicitud no se puede insertar ya fuera de NEW o con otra versión (D49)', async () => {
