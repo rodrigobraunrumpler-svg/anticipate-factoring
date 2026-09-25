@@ -1,6 +1,7 @@
 import { CLOSE_REASONS_BY_STATUS, TRANSITIONS } from '@anticipate/shared/advance-request'
 import { isValidRuc } from '@anticipate/shared/identity'
 import { invoiceKey } from '@anticipate/shared/invoice'
+import { publicPayerSchema } from '@anticipate/shared/payer'
 import fc from 'fast-check'
 import pg from 'pg'
 import { afterAll, beforeEach, describe, expect, it } from 'vitest'
@@ -188,8 +189,14 @@ const BASE: Record<string, () => Row> = {
   }),
 }
 
-/** Cada CHECK de la migración integrity con una fila que rompe solo esa regla. */
-const CHECK_CASES: { constraint: string; table: string; row: Row }[] = [
+/**
+ * Cada CHECK de la migración integrity con una fila que rompe solo esa regla. `disableTrigger`
+ * es para los tres casos que, desde integrity_hardening, también rompen
+ * advance_requests_initial_state (status o version fuera de NEW/1): ese trigger BEFORE INSERT
+ * corre antes que las CHECK de la fila y la taparía. `sqlError` deshace la transacción, así que
+ * desactivar el trigger ahí nunca se filtra a otro test (DDL transaccional).
+ */
+const CHECK_CASES: { constraint: string; table: string; row: Row; disableTrigger?: string }[] = [
   { constraint: 'payers_slug_check', table: 'payers', row: { slug: 'Sea' } },
   { constraint: 'payers_ruc_check', table: 'payers', row: { ruc: '20131312956' } },
   {
@@ -330,7 +337,12 @@ const CHECK_CASES: { constraint: string; table: string; row: Row }[] = [
     table: 'advance_requests',
     row: { max_amount: '8496.01' },
   },
-  { constraint: 'advance_requests_version_check', table: 'advance_requests', row: { version: 0 } },
+  {
+    constraint: 'advance_requests_version_check',
+    table: 'advance_requests',
+    row: { version: 0 },
+    disableTrigger: 'advance_requests_initial_state',
+  },
   {
     constraint: 'advance_requests_close_reason_check',
     table: 'advance_requests',
@@ -340,6 +352,7 @@ const CHECK_CASES: { constraint: string; table: string; row: Row }[] = [
     constraint: 'advance_requests_close_reason_detail_check',
     table: 'advance_requests',
     row: { status: 'WITHDRAWN', close_reason: 'OTHER', closed_at: NOW },
+    disableTrigger: 'advance_requests_initial_state',
   },
   {
     constraint: 'advance_requests_closed_at_check',
@@ -350,6 +363,7 @@ const CHECK_CASES: { constraint: string; table: string; row: Row }[] = [
     constraint: 'advance_requests_next_action_check',
     table: 'advance_requests',
     row: { status: 'DISBURSED', closed_at: NOW, next_action_at: NOW },
+    disableTrigger: 'advance_requests_initial_state',
   },
   {
     constraint: 'advance_requests_utm_check',
@@ -619,7 +633,6 @@ describe('estructura de la base', () => {
     const volatility = Object.fromEntries(functions.map((f) => [f.name, f.volatility]))
     for (const name of [
       'js_trim',
-      'js_length',
       'is_valid_ruc',
       'is_valid_payer_texts',
       'canonical_invoice_key',
@@ -627,11 +640,18 @@ describe('estructura de la base', () => {
     ]) {
       expect(volatility[name], name).toBe('i')
     }
+    // js_length medía unidades UTF-16 y Zod 4 mide puntos de código (util.codePointLength): se
+    // reemplazó por char_length (que ya cuenta puntos de código) y se eliminó (integrity_hardening).
+    expect(volatility.js_length).toBeUndefined()
     for (const name of [
       'set_updated_at',
       'advance_requests_guard',
+      'advance_requests_initial_state',
       'advance_requests_complete',
+      'assert_advance_request_complete',
       'invoices_guard',
+      'invoices_complete',
+      'invoice_installments_complete',
       'stored_files_guard',
       'reject_append_only_mutation',
       'outbox_events_guard',
@@ -672,11 +692,40 @@ describe('estructura de la base', () => {
         },
         {
           table: 'advance_requests',
+          name: 'advance_requests_initial_state',
+          timing: 'BEFORE',
+          events: 'INSERT',
+        },
+        {
+          table: 'advance_requests',
           name: 'advance_requests_complete',
           timing: 'AFTER',
           events: 'INSERT',
         },
-        { table: 'invoices', name: 'invoices_guard', timing: 'BEFORE', events: 'UPDATE' },
+        {
+          table: 'invoices',
+          name: 'invoices_guard',
+          timing: 'BEFORE',
+          events: 'DELETE,UPDATE',
+        },
+        {
+          table: 'invoices',
+          name: 'invoices_complete',
+          timing: 'AFTER',
+          events: 'INSERT',
+        },
+        {
+          table: 'invoice_installments',
+          name: 'invoice_installments_append_only',
+          timing: 'BEFORE',
+          events: 'DELETE,UPDATE',
+        },
+        {
+          table: 'invoice_installments',
+          name: 'invoice_installments_complete',
+          timing: 'AFTER',
+          events: 'INSERT',
+        },
         { table: 'stored_files', name: 'stored_files_guard', timing: 'BEFORE', events: 'UPDATE' },
         {
           table: 'status_history',
@@ -706,10 +755,21 @@ describe('estructura de la base', () => {
         .map(key)
         .sort(),
     )
-    const [complete] = await queryRows<{ deferrable: boolean; deferred: boolean }>(`
-      SELECT tgdeferrable AS deferrable, tginitdeferred AS deferred FROM pg_trigger
-      WHERE tgname = 'advance_requests_complete'`)
-    expect(complete).toEqual({ deferrable: true, deferred: true })
+    // Las tres se disparan AFTER INSERT y diferidas: una solicitud puede insertar sus facturas y
+    // cuotas después de sí misma, todo en la misma transacción, y solo se comprueba al confirmar.
+    const deferredTriggers = await queryRows<{
+      name: string
+      deferrable: boolean
+      deferred: boolean
+    }>(`
+      SELECT tgname AS name, tgdeferrable AS deferrable, tginitdeferred AS deferred FROM pg_trigger
+      WHERE tgname IN ('advance_requests_complete', 'invoices_complete', 'invoice_installments_complete')
+      ORDER BY tgname`)
+    expect(deferredTriggers).toEqual([
+      { name: 'advance_requests_complete', deferrable: true, deferred: true },
+      { name: 'invoice_installments_complete', deferrable: true, deferred: true },
+      { name: 'invoices_complete', deferrable: true, deferred: true },
+    ])
   })
 })
 
@@ -719,8 +779,12 @@ describe('(e) cada CHECK rechaza la fila que la rompe', () => {
     expect([undefined, '23503']).toContain(error?.code)
   })
 
-  it.each(CHECK_CASES)('$constraint', async ({ constraint, table, row }) => {
-    const error = await sqlError((client) => insert(client, table, { ...BASE[table]?.(), ...row }))
+  it.each(CHECK_CASES)('$constraint', async ({ constraint, table, row, disableTrigger }) => {
+    const error = await sqlError(async (client) => {
+      if (disableTrigger)
+        await client.query(`ALTER TABLE ${table} DISABLE TRIGGER ${disableTrigger}`)
+      await insert(client, table, { ...BASE[table]?.(), ...row })
+    })
     expect({ code: error?.code, constraint: error?.constraint }).toEqual({
       code: '23514',
       constraint,
@@ -777,6 +841,107 @@ describe('reglas espejo de shared', () => {
     expect(rows.map((row) => row.key)).toEqual(
       invoices.map(([issuerRuc, series]) => invoiceKey({ issuerRuc, seriesNumber: series })),
     )
+  })
+
+  // Zod 4 mide `.min()`/`.max()` en puntos de código Unicode (no en unidades UTF-16, como medía el
+  // js_length que integrity_hardening eliminó): char_length() de PostgreSQL ya cuenta puntos de
+  // código, así que las CHECK que antes llamaban a js_length ahora lo usan directamente. Estos dos
+  // tests comparan esa cuenta con publicPayerSchema en textos con emoji y con los 25 espacios que
+  // reconoce js_trim, para que este espejo no se pueda romper otra vez en silencio.
+  const jsWhitespace = [
+    '\u0009',
+    '\u000A',
+    '\u000B',
+    '\u000C',
+    '\u000D',
+    ' ',
+    ' ',
+    ' ',
+    ' ',
+    ' ',
+    ' ',
+    ' ',
+    ' ',
+    ' ',
+    ' ',
+    ' ',
+    ' ',
+    ' ',
+    ' ',
+    ' ',
+    ' ',
+    ' ',
+    ' ',
+    '　',
+    '﻿',
+  ]
+  const astralChars = ['😀', '🚀', '𝔘', '🧪', '🎉', '𠀀']
+  const lengthMirrorUnit = fc.oneof(
+    {
+      weight: 6,
+      arbitrary: fc.constantFrom(
+        ...'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 ',
+      ),
+    },
+    { weight: 2, arbitrary: fc.constantFrom(...jsWhitespace) },
+    { weight: 2, arbitrary: fc.constantFrom(...astralChars) },
+  )
+  const basePayer = {
+    slug: 'sea',
+    ruc: '20131312955',
+    legalName: 'Pagador válido',
+    shortName: 'SEA',
+    advancePercent: 80,
+    minTermDays: 15,
+    maxInvoices: 10,
+    allowedCurrencies: ['PEN'],
+    accentColor: '#0E7C86',
+    logoUrl: null,
+  }
+
+  it('(f) legalName y shortName miden puntos de código como publicPayerSchema (con emoji y espacios de JS)', async () => {
+    const values = fc
+      .sample(fc.string({ unit: lengthMirrorUnit, minLength: 0, maxLength: 205 }), {
+        numRuns: 4000,
+        seed: 20260925,
+      })
+      .filter((value) => !value.includes('\u0000'))
+
+    const legalNameExpected = values.map(
+      (value) => publicPayerSchema.safeParse({ ...basePayer, legalName: value, texts: {} }).success,
+    )
+    const legalNameRows = await queryRows<{ ok: boolean }>(
+      'SELECT char_length(js_trim(v)) BETWEEN 3 AND 200 AS ok FROM unnest($1::text[]) WITH ORDINALITY AS t(v, n) ORDER BY n',
+      [values],
+    )
+    expect(legalNameRows.map((row) => row.ok)).toEqual(legalNameExpected)
+
+    const shortNameExpected = values.map(
+      (value) => publicPayerSchema.safeParse({ ...basePayer, shortName: value, texts: {} }).success,
+    )
+    const shortNameRows = await queryRows<{ ok: boolean }>(
+      'SELECT char_length(js_trim(v)) BETWEEN 2 AND 40 AS ok FROM unnest($1::text[]) WITH ORDINALITY AS t(v, n) ORDER BY n',
+      [values],
+    )
+    expect(shortNameRows.map((row) => row.ok)).toEqual(shortNameExpected)
+  })
+
+  it('(f) el valor de un texto de payers mide puntos de código como publicPayerSchema (con emoji y espacios de JS)', async () => {
+    const values = fc
+      .sample(fc.string({ unit: lengthMirrorUnit, minLength: 0, maxLength: 2010 }), {
+        numRuns: 2000,
+        seed: 20260925,
+      })
+      .filter((value) => !value.includes('\u0000'))
+
+    const expected = values.map(
+      (value) => publicPayerSchema.safeParse({ ...basePayer, texts: { title: value } }).success,
+    )
+    const rows = await queryRows<{ ok: boolean }>(
+      "SELECT is_valid_payer_texts(jsonb_build_object('title', v)) AS ok FROM unnest($1::text[]) WITH ORDINALITY AS t(v, n) ORDER BY n",
+      [values],
+    )
+    expect(rows.map((row) => row.ok)).toEqual(expected)
   })
 
   it('(g) transiciones y reglas de cierre de la base = TRANSITIONS y CLOSE_REASONS_BY_STATUS', async () => {
@@ -1046,6 +1211,97 @@ describe('comportamiento de los triggers', () => {
       'SELECT count(*)::int AS total FROM advance_requests',
     )
     expect(count).toEqual({ total: 1 })
+  })
+
+  // D49: el agregado ya confirmado solo se protegía al crearlo. Estos cuatro casos son los caminos
+  // que quedaban abiertos para dejarlo en un estado imposible o liberar la clave de una factura ya
+  // desembolsada (doble financiamiento) sin pasar por ninguna CHECK.
+  it('(i) una factura no se borra fuera de la purga por retención (D49)', async () => {
+    const request = await createCompleteAdvanceRequest(db.prisma)
+    expect(
+      await updateError('DELETE FROM invoices WHERE id = $1', [request.invoices[0]?.id]),
+    ).toMatchObject({ constraint: 'invoices_delete_restricted' })
+  })
+
+  it('(i) una cuota es de solo inserción fuera de la purga por retención (D49)', async () => {
+    const request = await createCompleteAdvanceRequest(db.prisma)
+    const invoiceId = request.invoices[0]?.id
+    expect(
+      await updateError("UPDATE invoice_installments SET label = 'Otra' WHERE invoice_id = $1", [
+        invoiceId,
+      ]),
+    ).toMatchObject({ constraint: 'invoice_installments_append_only' })
+    expect(
+      await updateError('DELETE FROM invoice_installments WHERE invoice_id = $1', [invoiceId]),
+    ).toMatchObject({ constraint: 'invoice_installments_append_only' })
+  })
+
+  it('(i) la purga por retención sí borra facturas y cuotas', async () => {
+    const request = await createCompleteAdvanceRequest(db.prisma)
+    const invoiceId = request.invoices[0]?.id
+    const purge = await sqlError(async (client) => {
+      await client.query("SET LOCAL app.retention_purge = 'on'")
+      await client.query('DELETE FROM invoice_installments WHERE invoice_id = $1', [invoiceId])
+      await client.query('DELETE FROM invoices WHERE id = $1', [invoiceId])
+    })
+    expect(purge).toBeNull()
+  })
+
+  it('(i) una cuota nueva que rompe la fecha más próxima se rechaza al confirmar (D49)', async () => {
+    const request = await createCompleteAdvanceRequest(db.prisma)
+    const error = await sqlError(
+      (client) =>
+        client.query(
+          `INSERT INTO invoice_installments (invoice_id, number, label, amount, due_date)
+           VALUES ($1, 2, 'Cuota002', '100.00', '2026-10-01')`,
+          [request.invoices[0]?.id],
+        ),
+      'COMMIT',
+    )
+    expect(error).toMatchObject({ constraint: 'advance_requests_complete' })
+  })
+
+  it('(i) una factura nueva en una solicitud existente rompe el conteo y se rechaza al confirmar (D49)', async () => {
+    const request = await createCompleteAdvanceRequest(db.prisma)
+    const error = await sqlError(async (client) => {
+      const fileId = newId()
+      await insert(client, 'stored_files', {
+        id: fileId,
+        storage_bucket: 'anticipate-test',
+        key: `extra/${fileId}`,
+        purpose: 'INVOICE_XML',
+        content_type: 'application/xml',
+        size_bytes: 1024,
+        sha256: HEX_64,
+        status: 'ATTACHED',
+        attached_at: NOW,
+      })
+      await insert(client, 'invoices', {
+        ...BASE.invoices?.(),
+        advance_request_id: request.id,
+        issuer_ruc: request.supplierRuc,
+        recipient_ruc: request.payerRuc,
+        series_number: 'F001-00000999',
+        invoice_key: `${request.supplierRuc}|F001-999`,
+        xml_file_id: fileId,
+      })
+    }, 'COMMIT')
+    expect(error).toMatchObject({ constraint: 'advance_requests_complete' })
+  })
+
+  it('(i) una solicitud no se puede insertar ya fuera de NEW o con otra versión (D49)', async () => {
+    for (const [rule, patch] of [
+      ['status', { status: 'APPROVED' }],
+      ['version', { version: 7 }],
+    ] as const) {
+      const error = await sqlError((client) =>
+        insert(client, 'advance_requests', { ...BASE.advance_requests?.(), ...patch }),
+      )
+      expect({ code: error?.code, constraint: error?.constraint }, rule).toEqual({
+        code: '23000',
+        constraint: 'advance_requests_initial_state',
+      })
+    }
   })
 
   it('(j) la base fija los tres timeouts y la app los recibe por su pool', async () => {
