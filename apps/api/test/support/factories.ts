@@ -317,3 +317,43 @@ export async function createCompleteAdvanceRequest(
     }
   })
 }
+
+/**
+ * Una fila del outbox en `PENDING`, `PUBLISHED` o `DEAD_LETTER` (a `PROCESSING` solo se llega
+ * reclamando). `id` permite fijar un UUIDv7 del pasado para probar la purga.
+ */
+export function createOutboxEvent(
+  prisma: FactoryPrisma,
+  input: {
+    advanceRequestId: string
+    id?: string
+    handler?: string
+    status?: 'PENDING' | 'PUBLISHED' | 'DEAD_LETTER'
+    maxAttempts?: number
+  },
+) {
+  const eventId = newId()
+  const handler = input.handler ?? 'email.test'
+  const status = input.status ?? 'PENDING'
+  return prisma.outboxEvent.create({
+    data: {
+      ...(input.id === undefined ? {} : { id: input.id }),
+      handler,
+      dedupeKey: `${eventId}:${handler}`,
+      eventType: 'advance-request.created',
+      payload: {
+        id: eventId,
+        type: 'advance-request.created',
+        version: 1,
+        occurredAt: new Date().toISOString(),
+        aggregateId: input.advanceRequestId,
+      },
+      advanceRequestId: input.advanceRequestId,
+      status,
+      attempts: status === 'PENDING' ? 0 : 1,
+      maxAttempts: input.maxAttempts ?? 8,
+      publishedAt: status === 'PUBLISHED' ? new Date() : null,
+      lastError: status === 'DEAD_LETTER' ? 'EMAIL_PERMANENT' : null,
+    },
+  })
+}

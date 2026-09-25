@@ -263,6 +263,9 @@ catalogs:
     nestjs-pino:
       specifier: ^5.2.0
       version: 5.2.0
+    nodemailer:
+      specifier: ^10.0.10
+      version: 10.0.10
     pino:
       specifier: ^10.3.1
       version: 10.3.1
@@ -404,6 +407,9 @@ importers:
       nestjs-pino:
         specifier: 'catalog:'
         version: 5.2.0(@nestjs/common@12.1.0(reflect-metadata@0.2.2)(rxjs@7.8.2)(supports-color@7.2.0))(@nestjs/core@12.1.0)(pino-http@11.0.0)(pino@10.3.1)(rxjs@7.8.2)
+      nodemailer:
+        specifier: 'catalog:'
+        version: 10.0.10
       pg:
         specifier: ^8.23.0
         version: 8.23.0
@@ -3376,6 +3382,10 @@ packages:
               libc: musl
     version: 24.21.0
     hasBin: true
+
+  nodemailer@10.0.10:
+    resolution: {integrity: sha512-He9XskOFms62SyAKkLu8CcGcYHAo+BSHSsORI8s4PJH8qZgZY4L4lDfvyN0twvmbpyG+eGrxpyBlskj9d9rJ8A==}
+    engines: {node: '>=20.0.0'}
 
   normalize-path@3.0.0:
     resolution: {integrity: sha512-6eZs5Ls3WtCisHWp9S2GUy8dqkpGi4BVSz3GaqiE6ezub0512ESztXUwUB6C6IKbQkY2Pnb/mD4WYojCRwcwLA==}
@@ -6803,6 +6813,8 @@ snapshots:
   node-gyp-build@4.8.4: {}
 
   node@runtime:24.21.0: {}
+
+  nodemailer@10.0.10: {}
 
   normalize-path@3.0.0: {}
 

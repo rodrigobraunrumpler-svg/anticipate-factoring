@@ -7,11 +7,14 @@ import { type AppConfig, AppConfigModule } from '#/common/config/index.js'
 import { AllExceptionsFilter } from '#/common/filters/index.js'
 import { AppThrottlerGuard, createThrottlerOptions } from '#/common/guards/app-throttler.guard.js'
 import { ResponseEnvelopeInterceptor } from '#/common/interceptors/response-envelope.interceptor.js'
+import { NotificationsInfrastructureModule } from '#/infrastructure/notifications/index.js'
 import { PrismaModule } from '#/infrastructure/prisma/index.js'
 import { StorageModule } from '#/infrastructure/storage/s3/index.js'
 import { TimeModule } from '#/infrastructure/time/index.js'
 import { HealthChecksModule } from '#/modules/health-checks/index.js'
+import { OutboxModule } from '#/modules/outbox/index.js'
 import { PayersModule } from '#/modules/payers/payers.module.js'
+import { OutboxPublisherModule } from '#/workers/outbox-publisher/outbox-publisher.module.js'
 
 /** Módulos que un test agrega a la app (controladores de prueba, raíces de composición). */
 export type ExtraModules = ReadonlyArray<Type | DynamicModule>
@@ -35,6 +38,10 @@ export class AppModule {
         StorageModule,
         HealthChecksModule,
         PayersModule,
+        NotificationsInfrastructureModule,
+        OutboxModule,
+        // La Tarea 12 pasa AdvanceRequestsModule, sus dos handlers y ADVANCE_REQUEST_OUTBOX_HANDLERS.
+        OutboxPublisherModule.forRoot({ imports: [], handlers: [], requiredHandlers: [] }),
         ...extraModules,
       ],
       providers: [

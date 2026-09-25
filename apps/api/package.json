@@ -42,6 +42,7 @@
     "helmet": "catalog:",
     "multer": "catalog:",
     "nestjs-pino": "catalog:",
+    "nodemailer": "catalog:",
     "pg": "catalog:",
     "pino": "catalog:",
     "pino-http": "catalog:",
