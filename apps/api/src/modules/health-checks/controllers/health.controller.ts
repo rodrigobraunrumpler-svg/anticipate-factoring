@@ -1,9 +1,10 @@
-import { Controller, Get, VERSION_NEUTRAL } from '@nestjs/common'
+import { Controller, Get, Inject, VERSION_NEUTRAL } from '@nestjs/common'
 import { HealthCheck, type HealthCheckResult, HealthCheckService } from '@nestjs/terminus'
 import { SkipThrottle } from '@nestjs/throttler'
 import { HEALTH_PATHS } from '#/bootstrap/constants.js'
 import { SkipResponseEnvelope } from '#/common/decorators/skip-response-envelope.decorator.js'
 import { PrismaReadinessIndicator } from '#/infrastructure/prisma/index.js'
+import { S3ReadinessIndicator } from '#/infrastructure/storage/s3/index.js'
 
 /**
  * Sondas del orquestador y del monitoreo externo: fuera del prefijo `api`, sin versión
@@ -17,6 +18,7 @@ export class HealthController {
   constructor(
     private readonly health: HealthCheckService,
     private readonly database: PrismaReadinessIndicator,
+    @Inject(S3ReadinessIndicator) private readonly storageReadiness: S3ReadinessIndicator,
   ) {}
 
   /**
@@ -31,12 +33,15 @@ export class HealthController {
 
   /**
    * Readiness: la API puede atender. 200 si cada dependencia responde; si no, 503 con el cuerpo de
-   * Terminus y el orquestador deja de mandarle tráfico sin reiniciarla. El almacenamiento y el
-   * backlog del outbox se agregan en sus tareas.
+   * Terminus y el orquestador deja de mandarle tráfico sin reiniciarla. El backlog del outbox se
+   * agrega en su tarea.
    */
   @Get(HEALTH_PATHS.readiness)
   @HealthCheck()
   readiness(): Promise<HealthCheckResult> {
-    return this.health.check([() => this.database.isHealthy()])
+    return this.health.check([
+      () => this.database.isHealthy(),
+      () => this.storageReadiness.check('storage'),
+    ])
   }
 }

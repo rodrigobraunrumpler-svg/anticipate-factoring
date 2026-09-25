@@ -29,6 +29,8 @@
   "dependencies": {
     "@anticipate/emails": "workspace:*",
     "@anticipate/shared": "workspace:*",
+    "@aws-sdk/client-s3": "catalog:",
+    "@aws-sdk/s3-request-presigner": "catalog:",
     "@nestjs/common": "catalog:",
     "@nestjs/core": "catalog:",
     "@nestjs/platform-express": "catalog:",
