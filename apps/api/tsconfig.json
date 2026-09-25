@@ -1,0 +1,14 @@
+{
+  "extends": "@anticipate/config/tsconfig.node.json",
+  "compilerOptions": {
+    "target": "ES2023",
+    "lib": ["ES2023"],
+    "strictPropertyInitialization": false,
+    "sourceMap": true,
+    "outDir": "./dist",
+    "types": ["node", "multer"],
+    "customConditions": ["@anticipate/source"],
+    "noEmit": true
+  },
+  "include": ["src", "test", "prisma", "prisma.config.ts", "vitest.config.ts"]
+}

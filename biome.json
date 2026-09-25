@@ -17,7 +17,42 @@
   "formatter": { "enabled": true, "indentStyle": "space", "indentWidth": 2, "lineWidth": 100 },
   "linter": { "enabled": true, "rules": { "preset": "recommended" } },
   "javascript": {
-    "formatter": { "quoteStyle": "single", "semicolons": "asNeeded", "trailingCommas": "all" }
+    "formatter": { "quoteStyle": "single", "semicolons": "asNeeded", "trailingCommas": "all" },
+    "parser": { "unsafeParameterDecoratorsEnabled": true }
   },
-  "assist": { "actions": { "source": { "organizeImports": "on" } } }
+  "assist": { "actions": { "source": { "organizeImports": "on" } } },
+  "overrides": [
+    {
+      "includes": ["apps/api/**"],
+      "linter": { "rules": { "style": { "useImportType": "off" } } }
+    },
+    {
+      "includes": ["apps/api/src/**/*.module.ts"],
+      "linter": { "rules": { "complexity": { "noStaticOnlyClass": "off" } } }
+    },
+    {
+      "includes": ["apps/api/src/**", "!apps/api/src/common/utils/correlation-id.ts"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedImports": {
+              "level": "error",
+              "options": {
+                "paths": {
+                  "node:crypto": {
+                    "importNames": ["randomUUID", "default", "*"],
+                    "message": "Las claves primarias de la API son UUIDv7: usa newId() de infrastructure/prisma/id.ts. randomUUID solo genera el id de correlación (common/utils/correlation-id.ts). Importa de node:crypto solo lo que usas, por nombre."
+                  },
+                  "crypto": {
+                    "importNames": ["randomUUID", "default", "*"],
+                    "message": "Las claves primarias de la API son UUIDv7: usa newId() de infrastructure/prisma/id.ts. randomUUID solo genera el id de correlación (common/utils/correlation-id.ts). Importa de node:crypto solo lo que usas, por nombre."
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
 }

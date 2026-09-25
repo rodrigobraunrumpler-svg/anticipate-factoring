@@ -1,0 +1,55 @@
+{
+  "name": "@anticipate/api",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "files": [
+    "dist"
+  ],
+  "imports": {
+    "#/*": {
+      "@anticipate/source": "./src/*",
+      "default": "./dist/*"
+    }
+  },
+  "scripts": {
+    "build": "nest build",
+    "dev": "nest start --watch",
+    "start": "node dist/main.js",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --project api:unit",
+    "test:integration": "vitest run --project api:integration"
+  },
+  "dependencies": {
+    "@anticipate/emails": "workspace:*",
+    "@anticipate/shared": "workspace:*",
+    "@nestjs/common": "catalog:",
+    "@nestjs/core": "catalog:",
+    "@nestjs/platform-express": "catalog:",
+    "@nestjs/swagger": "catalog:",
+    "@nestjs/terminus": "catalog:",
+    "@nestjs/throttler": "catalog:",
+    "helmet": "catalog:",
+    "nestjs-pino": "catalog:",
+    "pino": "catalog:",
+    "pino-http": "catalog:",
+    "reflect-metadata": "catalog:",
+    "rxjs": "catalog:",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@anticipate/config": "workspace:*",
+    "@nestjs/cli": "catalog:",
+    "@nestjs/schematics": "catalog:",
+    "@nestjs/testing": "catalog:",
+    "@types/express": "catalog:",
+    "@types/multer": "catalog:",
+    "@types/node": "catalog:",
+    "@types/supertest": "catalog:",
+    "pino-pretty": "catalog:",
+    "supertest": "catalog:",
+    "typescript": "catalog:",
+    "vite": "catalog:",
+    "vitest": "catalog:"
+  }
+}

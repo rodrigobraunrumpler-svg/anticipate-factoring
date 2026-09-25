@@ -1,0 +1,33 @@
+import { defaultServerConditions } from 'vite'
+import { defineConfig } from 'vitest/config'
+
+export default defineConfig({
+  // `#/*` resuelve a src con la condición `@anticipate/source`. En entorno node la condición va en
+  // `ssr.resolve`: `resolve.conditions` en la raíz no llega a los tests.
+  ssr: { resolve: { conditions: ['@anticipate/source', ...defaultServerConditions] } },
+  test: {
+    projects: [
+      {
+        extends: true,
+        test: {
+          name: 'api:unit',
+          include: ['src/**/*.test.ts'],
+          environment: 'node',
+        },
+      },
+      {
+        extends: true,
+        test: {
+          name: 'api:integration',
+          include: ['test/integration/**/*.test.ts'],
+          environment: 'node',
+          globalSetup: ['./test/integration/global-setup.ts'],
+          // Una sola base anticipate_test: los archivos corren en serie y se trunca entre tests.
+          fileParallelism: false,
+          testTimeout: 30_000,
+          hookTimeout: 60_000,
+        },
+      },
+    ],
+  },
+})
