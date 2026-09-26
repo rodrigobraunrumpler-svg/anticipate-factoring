@@ -1,5 +1,6 @@
+import { Logger } from '@nestjs/common'
 import { Test, type TestingModule } from '@nestjs/testing'
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AppConfigModule } from '#/common/config/index.js'
 import { PrismaModule } from '#/infrastructure/prisma/prisma.module.js'
 import { PrismaService } from '#/infrastructure/prisma/prisma.service.js'
@@ -110,6 +111,48 @@ describe('PrismaLegalDocumentReader', () => {
       data: legalVersion('TERMS', 'it-retirada', new Date('2026-09-01T00:00:00.000Z')),
     })
     await expect(legalDocuments.isCurrent('TERMS', 'it-retirada')).resolves.toBe(false)
+  })
+
+  it('mientras la landing cambia de versión, la nueva y la anterior están vigentes a la vez', async () => {
+    // El orden de STACK §14 (Legal): se carga la nueva, se publica la landing con ella y recién
+    // después se retira la anterior. Mientras tanto la landing vieja y la nueva envían versiones
+    // distintas y las dos valen.
+    await db.prisma.legalDocumentVersion.createMany({
+      data: [legalVersion('TERMS', 'it-2026-09', null), legalVersion('TERMS', 'it-2026-10', null)],
+    })
+    await expect(legalDocuments.isCurrent('TERMS', 'it-2026-09')).resolves.toBe(true)
+    await expect(legalDocuments.isCurrent('TERMS', 'it-2026-10')).resolves.toBe(true)
+    await db.prisma.legalDocumentVersion.update({
+      where: { type_version: { type: 'TERMS', version: 'it-2026-09' } },
+      data: { retiredAt: new Date('2026-10-02T00:00:00.000Z') },
+    })
+    await expect(legalDocuments.isCurrent('TERMS', 'it-2026-09')).resolves.toBe(false)
+    await expect(legalDocuments.isCurrent('TERMS', 'it-2026-10')).resolves.toBe(true)
+  })
+
+  it('registra como error cada versión que no está vigente, con el motivo: si se repite, la landing y la base no coinciden', async () => {
+    const errors = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined)
+    try {
+      await db.prisma.legalDocumentVersion.createMany({
+        data: [
+          legalVersion('TERMS', 'it-vigente', null),
+          legalVersion('TERMS', 'it-retirada', new Date('2026-09-01T00:00:00.000Z')),
+        ],
+      })
+      await legalDocuments.isCurrent('TERMS', 'it-vigente')
+      expect(errors).not.toHaveBeenCalled()
+      await legalDocuments.isCurrent('TERMS', 'it-retirada')
+      await legalDocuments.isCurrent('PERSONAL_DATA', 'it-no-existe')
+      await legalDocuments.isCurrent('TERMS', '2026\u000009')
+      expect(errors.mock.calls.map(([context]) => context)).toEqual([
+        { type: 'TERMS', version: 'it-retirada', status: 'retired' },
+        { type: 'PERSONAL_DATA', version: 'it-no-existe', status: 'unknown' },
+        { type: 'TERMS', version: '2026\u000009', status: 'unknown' },
+      ])
+      expect(String(errors.mock.calls[0]?.[1])).toContain('CONSENT_VERSION_OUTDATED')
+    } finally {
+      errors.mockRestore()
+    }
   })
 
   it('una versión que no existe, o que existe solo para el otro documento, no está vigente', async () => {
