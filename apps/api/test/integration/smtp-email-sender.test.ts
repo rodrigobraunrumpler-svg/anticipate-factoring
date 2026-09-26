@@ -5,15 +5,21 @@ import { SmtpEmailSender } from '#/infrastructure/notifications/index.js'
 import { newId } from '#/infrastructure/prisma/id.js'
 import { RetryableEmailError } from '#/modules/notifications/index.js'
 import { testConfig } from '../support/config.js'
-import { clearMailbox, findMailsTo, readMail, readMailHeaders } from '../support/mailpit.js'
+import { findMailsTo, readMail, readMailHeaders } from '../support/mailpit.js'
 
-const email = {
-  to: { email: 'ana@proveedor.pe', name: 'Ana Pérez' },
+/**
+ * Mailpit es compartido (otros tests y otras copias del repositorio lo usan a la vez): nunca se
+ * vacía. Cada test envía a un destinatario propio y busca solo los suyos.
+ */
+let recipient: string
+
+const emailTo = (address: string) => ({
+  to: { email: address, name: 'Ana Pérez' },
   subject: 'Recibimos tu solicitud ANT-2026-000001',
   html: '<p>Hola, Ana</p>',
   text: 'Hola, Ana',
   tags: ['email.supplier-confirmation'],
-}
+})
 
 /** Una señal que nadie aborta. */
 const live = () => new AbortController().signal
@@ -50,7 +56,9 @@ async function stallingServer(): Promise<{
 }
 
 describe('SmtpEmailSender contra Mailpit', () => {
-  beforeEach(clearMailbox)
+  beforeEach(() => {
+    recipient = `ana.${newId()}@proveedor.pe`
+  })
 
   let stalling: Awaited<ReturnType<typeof stallingServer>> | undefined
   afterEach(async () => {
@@ -63,10 +71,10 @@ describe('SmtpEmailSender contra Mailpit', () => {
   it('el correo llega con asunto, HTML, texto, clave de idempotencia y etiqueta', async () => {
     const sender = mailpitSender()
     const idempotencyKey = newId()
-    await sender.send({ ...email, idempotencyKey }, live())
+    await sender.send({ ...emailTo(recipient), idempotencyKey }, live())
     sender.close()
 
-    const [message] = await findMailsTo('ana@proveedor.pe')
+    const [message] = await findMailsTo(recipient)
     expect(message?.Subject).toBe('Recibimos tu solicitud ANT-2026-000001')
     expect(message?.Tags).toEqual(['email.supplier-confirmation'])
     const full = await readMail(message?.ID ?? '')
@@ -86,11 +94,11 @@ describe('SmtpEmailSender contra Mailpit', () => {
       timeoutMs: 2_000,
     })
     const error = await sender
-      .send({ ...email, idempotencyKey: newId() }, live())
+      .send({ ...emailTo(recipient), idempotencyKey: newId() }, live())
       .catch((e: unknown) => e)
     sender.close()
     expect(error).toBeInstanceOf(RetryableEmailError)
-    expect((error as Error).message).not.toContain('ana@proveedor.pe')
+    expect((error as Error).message).not.toContain(recipient)
   })
 
   it('con la señal ya abortada no abre conexión ni envía', async () => {
@@ -99,10 +107,10 @@ describe('SmtpEmailSender contra Mailpit', () => {
     const reason = new Error('tope del handler')
     controller.abort(reason)
     await expect(
-      sender.send({ ...email, idempotencyKey: newId() }, controller.signal),
+      sender.send({ ...emailTo(recipient), idempotencyKey: newId() }, controller.signal),
     ).rejects.toBe(reason)
     await sleep(200)
-    await expect(findMailsTo('ana@proveedor.pe')).resolves.toEqual([])
+    await expect(findMailsTo(recipient)).resolves.toEqual([])
   })
 
   it('abortar corta la conexión en curso: rechaza con el motivo y no queda ningún socket vivo', async () => {
@@ -116,7 +124,10 @@ describe('SmtpEmailSender contra Mailpit', () => {
     })
     const controller = new AbortController()
     const reason = new Error('tope del handler')
-    const sending = sender.send({ ...email, idempotencyKey: newId() }, controller.signal)
+    const sending = sender.send(
+      { ...emailTo(recipient), idempotencyKey: newId() },
+      controller.signal,
+    )
     const outcome = sending.then(
       () => 'enviado',
       (error: unknown) => error,
@@ -139,9 +150,9 @@ describe('SmtpEmailSender contra Mailpit', () => {
       timeoutMs: 300,
     })
     const startedAt = performance.now()
-    await expect(sender.send({ ...email, idempotencyKey: newId() }, live())).rejects.toBeInstanceOf(
-      RetryableEmailError,
-    )
+    await expect(
+      sender.send({ ...emailTo(recipient), idempotencyKey: newId() }, live()),
+    ).rejects.toBeInstanceOf(RetryableEmailError)
     expect(performance.now() - startedAt).toBeLessThan(2_000)
     await Promise.all(stalling.closed)
   })
@@ -149,10 +160,10 @@ describe('SmtpEmailSender contra Mailpit', () => {
   it('después de close() no envía: rechaza como reintentable', async () => {
     const sender = mailpitSender()
     sender.close()
-    await expect(sender.send({ ...email, idempotencyKey: newId() }, live())).rejects.toBeInstanceOf(
-      RetryableEmailError,
-    )
+    await expect(
+      sender.send({ ...emailTo(recipient), idempotencyKey: newId() }, live()),
+    ).rejects.toBeInstanceOf(RetryableEmailError)
     await sleep(200)
-    await expect(findMailsTo('ana@proveedor.pe')).resolves.toEqual([])
+    await expect(findMailsTo(recipient)).resolves.toEqual([])
   })
 })

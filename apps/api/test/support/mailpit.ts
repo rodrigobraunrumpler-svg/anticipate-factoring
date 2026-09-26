@@ -1,4 +1,8 @@
-/** API de Mailpit: `MAILPIT_API_URL` de `.env.test` (en CI, del job). */
+/**
+ * API de Mailpit: `MAILPIT_API_URL` de `.env.test` (en CI, del job). El buzón es compartido (otros
+ * tests, otras copias del repositorio y quien lo mira en el navegador): nunca se vacía. Cada test
+ * envía a destinatarios propios, con un id único, y busca solo los suyos con `findMailsTo`.
+ */
 const MAILPIT_API_URL = process.env.MAILPIT_API_URL ?? 'http://127.0.0.1:8025'
 
 export type MailpitMessage = {
@@ -9,14 +13,10 @@ export type MailpitMessage = {
 }
 export type MailpitMessageDetail = { Subject: string; HTML: string; Text: string; Tags: string[] }
 
-async function mailpit(path: string, method = 'GET'): Promise<Response> {
-  const response = await fetch(`${MAILPIT_API_URL}${path}`, { method })
-  if (!response.ok) throw new Error(`Mailpit ${method} ${path}: ${response.status}`)
+async function mailpit(path: string): Promise<Response> {
+  const response = await fetch(`${MAILPIT_API_URL}${path}`)
+  if (!response.ok) throw new Error(`Mailpit GET ${path}: ${response.status}`)
   return response
-}
-
-export async function clearMailbox(): Promise<void> {
-  await mailpit('/api/v1/messages', 'DELETE')
 }
 
 export async function findMailsTo(email: string): Promise<MailpitMessage[]> {
