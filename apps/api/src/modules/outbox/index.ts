@@ -4,6 +4,7 @@ export {
 } from './application/ports/outbox-event-handler.port.js'
 export {
   OUTBOX_EVENT_REPOSITORY,
+  type OutboxClaim,
   type OutboxEventRepositoryPort,
 } from './application/ports/outbox-event-repository.port.js'
 export { OUTBOX_WAKE_UP, OutboxWakeUpSignal } from './application/services/outbox-wake-up.signal.js'

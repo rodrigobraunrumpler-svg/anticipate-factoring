@@ -10,7 +10,12 @@ export class FakeEmailSender implements EmailSenderPort {
     for (let i = 0; i < times; i++) this.failures.push(error)
   }
 
-  async send(email: OutgoingEmail): Promise<{ providerMessageId: string | null }> {
+  /** Como un adaptador real: con la señal ya abortada no envía y rechaza con su motivo. */
+  async send(
+    email: OutgoingEmail,
+    signal: AbortSignal,
+  ): Promise<{ providerMessageId: string | null }> {
+    signal.throwIfAborted()
     const failure = this.failures.shift()
     if (failure !== undefined) throw failure
     this.sent.push(email)

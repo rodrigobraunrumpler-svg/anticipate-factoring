@@ -1,6 +1,7 @@
 import { PrismaService } from '#/infrastructure/prisma/prisma.service.js'
 import type {
   ClaimedOutboxEvent,
+  OutboxClaim,
   OutboxEventRepositoryPort,
   OutboxFailureCode,
 } from '#/modules/outbox/index.js'
@@ -10,18 +11,20 @@ import { type OutboxEventRow, toClaimedOutboxEvent } from './mappers/outbox-even
 const BACKLOG_COUNT_CAP = 1000
 /** Largo de `outbox_events.provider_message_id`. */
 const PROVIDER_MESSAGE_ID_MAX_LENGTH = 200
-/** Un evento cuyo último intento nunca informó su resultado (el proceso cayó con el arriendo tomado). */
+/** Un evento cuyo último intento empezó y nunca informó su resultado (el proceso cayó con el arriendo tomado). */
 const LAST_ATTEMPT_WITHOUT_RESULT: OutboxFailureCode = 'UNEXPECTED'
 
 /**
  * El SQL del outbox. Los tiempos los pone la base (`now()`). Los predicados usan el literal del estado
  * (`status = 'PENDING'`), para que el planificador use los índices parciales (con un parámetro de enum
  * no los usa). Toda escritura de vuelta exige `id` y `lease_token`, y al salir de `PROCESSING` limpia
- * el arriendo.
+ * el arriendo. `attempts` cuenta intentos empezados (`startAttempt`), no reclamos: la CHECK
+ * `attempts BETWEEN 0 AND max_attempts` impide además empezar uno de más.
  */
 export class PrismaOutboxEventRepository implements OutboxEventRepositoryPort {
   constructor(private readonly prisma: PrismaService) {}
 
+  /** Reserva sin contar el intento: `attempts` del resultado es el número que tendrá al empezar. */
   async claimDue(p: {
     handlers: readonly string[]
     leaseSeconds: number
@@ -33,8 +36,7 @@ export class PrismaOutboxEventRepository implements OutboxEventRepositoryPort {
          SET status = 'PROCESSING',
              lease_token = gen_random_uuid(),
              locked_at = now(),
-             lock_expires_at = now() + make_interval(secs => ${p.leaseSeconds}::int),
-             attempts = o.attempts + 1
+             lock_expires_at = now() + make_interval(secs => ${p.leaseSeconds}::int)
        WHERE o.id IN (
              SELECT id FROM outbox_events
               WHERE handler = ANY(${[...p.handlers]}::text[])
@@ -46,16 +48,42 @@ export class PrismaOutboxEventRepository implements OutboxEventRepositoryPort {
                 FOR UPDATE SKIP LOCKED)
       RETURNING o.id, o.handler, o.dedupe_key AS "dedupeKey", o.event_type AS "eventType", o.payload,
                 o.advance_request_id AS "advanceRequestId", o.correlation_id AS "correlationId",
-                o.lease_token AS "leaseToken", o.attempts, o.max_attempts AS "maxAttempts"`
+                o.lease_token AS "leaseToken", o.attempts + 1 AS attempts,
+                o.max_attempts AS "maxAttempts"`
     return rows.map(toClaimedOutboxEvent)
   }
 
-  async renewLease(p: { id: string; leaseToken: string; leaseSeconds: number }): Promise<boolean> {
-    const updated = await this.prisma.$executeRaw`
+  /**
+   * Cuenta el intento, renueva el arriendo y cambia el token: el del reclamo deja de servir (no se
+   * empieza dos veces ni se devuelve un intento empezado) y las escrituras de vuelta usan el nuevo.
+   * Extiende también un arriendo vencido que nadie retomó: el token sigue siendo de quien llama.
+   */
+  async startAttempt(p: {
+    id: string
+    leaseToken: string
+    leaseSeconds: number
+  }): Promise<string | null> {
+    const [row] = await this.prisma.$queryRaw<{ leaseToken: string }[]>`
       UPDATE outbox_events
-         SET lock_expires_at = now() + make_interval(secs => ${p.leaseSeconds}::int)
-       WHERE id = ${p.id}::uuid AND lease_token = ${p.leaseToken}::uuid`
-    return updated === 1
+         SET attempts = attempts + 1,
+             lease_token = gen_random_uuid(),
+             locked_at = now(),
+             lock_expires_at = now() + make_interval(secs => ${p.leaseSeconds}::int)
+       WHERE id = ${p.id}::uuid AND lease_token = ${p.leaseToken}::uuid
+      RETURNING lease_token AS "leaseToken"`
+    return row?.leaseToken ?? null
+  }
+
+  /** `available_at` no cambia: lo devuelto sigue vencido y en su orden, listo para otro proceso. */
+  releaseClaims(p: { claims: readonly OutboxClaim[] }): Promise<number> {
+    if (p.claims.length === 0) return Promise.resolve(0)
+    const ids = p.claims.map(({ id }) => id)
+    const tokens = p.claims.map(({ leaseToken }) => leaseToken)
+    return this.prisma.$executeRaw`
+      UPDATE outbox_events AS o
+         SET status = 'PENDING', lease_token = NULL, locked_at = NULL, lock_expires_at = NULL
+        FROM unnest(${ids}::uuid[], ${tokens}::uuid[]) AS c(id, lease_token)
+       WHERE o.id = c.id AND o.lease_token = c.lease_token`
   }
 
   async markPublished(p: {

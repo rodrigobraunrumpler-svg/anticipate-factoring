@@ -7,8 +7,10 @@ import { SmtpEmailSender } from './smtp/smtp-email-sender.adapter.js'
 
 /**
  * El adaptador según `MAIL_TRANSPORT`. La configuración ya exige `BREVO_API_KEY` con `brevo` y
- * `SMTP_HOST` con `smtp`; aquí solo se hace explícito. El tope de cada envío es el del handler del
- * outbox: ninguna petición sigue viva después de que el publicador la dio por vencida.
+ * `SMTP_HOST` con `smtp`; aquí solo se hace explícito. Quien corta un envío es la señal que recibe
+ * `send` (el publicador la aborta al vencer el tope del handler, medido desde que el handler empezó, y
+ * espera a que termine antes de soltar la fila). El tope propio de cada adaptador, el mismo valor, es
+ * un respaldo para una señal que nunca avisa.
  */
 export function createEmailSender(config: AppConfig): EmailSenderPort {
   const { mail } = config

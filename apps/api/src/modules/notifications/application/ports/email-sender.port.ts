@@ -15,9 +15,15 @@ export type OutgoingEmail = {
 /**
  * Envío de un correo. Los errores que lanza un adaptador son `RetryableEmailError` o
  * `PermanentEmailError`, y su mensaje nunca lleva datos personales (queda en los logs).
+ *
+ * `signal` es el tope de quien envía (el publicador del outbox lo aborta al vencer el tope del
+ * handler, medido desde que el handler empezó). Con la señal ya abortada el adaptador no abre
+ * conexión; si aborta durante el envío, corta la conexión o la petición en curso y rechaza con
+ * `signal.reason`, como `fetch`. Así, cuando `send` termina no queda nada suyo en vuelo. El adaptador
+ * tiene además su propio tope, que vale aunque la señal nunca avise.
  */
 export interface EmailSenderPort {
-  send(email: OutgoingEmail): Promise<{ providerMessageId: string | null }>
+  send(email: OutgoingEmail, signal: AbortSignal): Promise<{ providerMessageId: string | null }>
 }
 
 export const EMAIL_SENDER = Symbol('EMAIL_SENDER')

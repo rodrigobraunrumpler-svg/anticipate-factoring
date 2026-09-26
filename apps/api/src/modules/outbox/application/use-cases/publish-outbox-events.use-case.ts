@@ -26,6 +26,10 @@ export type PublishOutboxEventsResult = {
   published: number
   retried: number
   deadLettered: number
+  /**
+   * Eventos cuyo resultado este proceso no escribió: otro proceso los retomó, o su handler no terminó
+   * tras el aviso de tope mientras el arriendo daba margen. En los dos casos decide el arriendo.
+   */
   leaseLost: number
 }
 
@@ -40,6 +44,12 @@ type Failure = {
   retryAfterSeconds: number | undefined
 }
 
+/** Cómo terminó un handler. */
+type HandlerOutcome =
+  | { kind: 'sent'; sent: { providerMessageId: string | null } }
+  | { kind: 'failed'; error: unknown }
+
+/** Motivo con el que se aborta la señal del handler al vencer su tope: se clasifica `HANDLER_TIMEOUT`. */
 class HandlerTimeoutError extends Error {
   constructor(timeoutMs: number) {
     super(`El handler no terminó en ${timeoutMs} ms`)
@@ -48,9 +58,10 @@ class HandlerTimeoutError extends Error {
 }
 
 /**
- * Publica los eventos vencidos de los handlers registrados. Por cada evento: renueva el arriendo (si
- * otro proceso lo tomó, lo salta), busca su handler, valida el payload, ejecuta el handler con tope
- * de tiempo y escribe el resultado con el token de su reclamo.
+ * Publica los eventos vencidos de los handlers registrados. Por cada evento: empieza el intento (lo
+ * cuenta, renueva el arriendo y toma el token del intento; si otro proceso lo retomó, lo salta), busca
+ * su handler, valida el payload, ejecuta el handler con tope de tiempo y escribe el resultado con el
+ * token del intento. Lo reclamado que no llega a empezar se devuelve sin gastar intento.
  */
 export class PublishOutboxEventsUseCase {
   /** Los nombres registrados, ordenados: esta versión solo reclama estos. */
@@ -68,10 +79,17 @@ export class PublishOutboxEventsUseCase {
     this.handlerNames = [...this.handlers.keys()].sort()
   }
 
+  /**
+   * Una pasada: reclama lotes mientras vengan llenos, hasta `maxBatches`. `signal` es el apagado: al
+   * abortar no reclama más, devuelve lo reclamado sin empezar y solo termina el handler en curso (que
+   * igual corta en su tope).
+   */
   async execute({
     maxBatches = 10,
+    signal,
   }: {
     maxBatches?: number
+    signal?: AbortSignal
   } = {}): Promise<PublishOutboxEventsResult> {
     const result: PublishOutboxEventsResult = {
       published: 0,
@@ -79,17 +97,20 @@ export class PublishOutboxEventsUseCase {
       deadLettered: 0,
       leaseLost: 0,
     }
+    const stopping = () => signal?.aborted === true
     if (this.handlerNames.length > 0) {
-      for (let batch = 0; batch < maxBatches; batch++) {
+      for (let batch = 0; batch < maxBatches && !stopping(); batch++) {
         const events = await this.repository.claimDue({
           handlers: this.handlerNames,
           leaseSeconds: this.options.leaseSeconds,
           batchSize: this.options.batchSize,
         })
-        for (const event of events) await this.publishOne(event, result)
+        await this.publishBatch(events, result, signal)
         if (events.length < this.options.batchSize) break
       }
     }
+    // Al apagar no hace nada más: la próxima pasada de cualquier instancia se encarga.
+    if (stopping()) return result
     const exhausted = await this.repository.deadLetterExhausted()
     if (exhausted > 0) {
       result.deadLettered += exhausted
@@ -107,18 +128,70 @@ export class PublishOutboxEventsUseCase {
     return this.repository.millisecondsUntilNextDue({ handlers: this.handlerNames })
   }
 
-  private async publishOne(
-    event: ClaimedOutboxEvent,
+  /**
+   * Publica un lote en orden. Si llega el apagado o algo lanza a mitad, devuelve lo reclamado que no
+   * empezó: otro proceso lo toma ya, sin esperar a que venza el arriendo y sin gastar un intento.
+   */
+  private async publishBatch(
+    events: readonly ClaimedOutboxEvent[],
     result: PublishOutboxEventsResult,
+    stop: AbortSignal | undefined,
   ): Promise<void> {
-    const lease = { id: event.id, leaseToken: event.leaseToken }
-    // Se renueva justo antes de enviar: un lote lento nunca envía con el arriendo vencido.
-    if (
-      !(await this.repository.renewLease({ ...lease, leaseSeconds: this.options.leaseSeconds }))
-    ) {
-      this.leaseLost(event, 'renewLease', result)
+    let done = 0
+    try {
+      for (const event of events) {
+        if (stop?.aborted === true) break
+        await this.publishOne(event, result, stop)
+        done++
+      }
+    } finally {
+      await this.releaseUnstarted(events.slice(done))
+    }
+  }
+
+  /**
+   * Con el token del reclamo: si el evento en el que algo lanzó ya había empezado, su token cambió y la
+   * base no lo toca. Un fallo aquí no tapa el error original; esos eventos se retoman al vencer su
+   * arriendo.
+   */
+  private async releaseUnstarted(events: readonly ClaimedOutboxEvent[]): Promise<void> {
+    if (events.length === 0) return
+    const claims = events.map(({ id, leaseToken }) => ({ id, leaseToken }))
+    try {
+      const released = await this.repository.releaseClaims({ claims })
+      if (released > 0) {
+        this.logger.warn(
+          { count: released },
+          'eventos del outbox reclamados sin empezar devueltos a PENDING',
+        )
+      }
+    } catch (error) {
+      this.logger.warn(
+        { count: claims.length, err: error },
+        'no se pudieron devolver los eventos reclamados del outbox: se retoman al vencer su arriendo',
+      )
+    }
+  }
+
+  private async publishOne(
+    claimed: ClaimedOutboxEvent,
+    result: PublishOutboxEventsResult,
+    stop: AbortSignal | undefined,
+  ): Promise<void> {
+    // Antes de renovar: la base vence el arriendo como pronto `leaseSeconds` después de este instante.
+    const leaseFrom = performance.now()
+    // Se empieza justo antes de enviar: un lote lento nunca envía con el arriendo vencido, y lo que
+    // otro proceso retomó mientras tanto no se envía.
+    const leaseToken = await this.repository.startAttempt({
+      id: claimed.id,
+      leaseToken: claimed.leaseToken,
+      leaseSeconds: this.options.leaseSeconds,
+    })
+    if (leaseToken === null) {
+      this.leaseLost(claimed, 'startAttempt', result)
       return
     }
+    const event: ClaimedOutboxEvent = { ...claimed, leaseToken }
     const handler = this.handlers.get(event.handler)
     if (handler === undefined) {
       await this.deadLetter(event, 'HANDLER_MISSING', result)
@@ -128,17 +201,33 @@ export class PublishOutboxEventsUseCase {
       await this.deadLetter(event, 'PAYLOAD_INVALID', result)
       return
     }
-    let sent: { providerMessageId: string | null }
-    try {
-      sent = await this.runHandler(handler, event)
-    } catch (error) {
-      await this.fail(event, error, result)
+    const outcome = await this.runHandler(handler, event, leaseFrom, stop)
+    if (outcome === undefined) {
+      result.leaseLost++
+      this.logger.warn(
+        {
+          eventId: event.id,
+          handler: event.handler,
+          attempts: event.attempts,
+          step: 'handlerAbandoned',
+          correlationId: event.correlationId,
+        },
+        'un handler del outbox no terminó tras el aviso de tope: el evento conserva su arriendo y se retoma cuando vence',
+      )
+      return
+    }
+    if (outcome.kind === 'failed') {
+      await this.fail(event, outcome.error, result)
       return
     }
     // Un error de la base aquí no se trata como fallo del handler: el correo ya salió. La fila queda
     // en PROCESSING, se retoma al vencer el arriendo y el proveedor descarta el duplicado por la clave.
     if (
-      await this.repository.markPublished({ ...lease, providerMessageId: sent.providerMessageId })
+      await this.repository.markPublished({
+        id: event.id,
+        leaseToken,
+        providerMessageId: outcome.sent.providerMessageId,
+      })
     ) {
       result.published++
     } else {
@@ -146,20 +235,58 @@ export class PublishOutboxEventsUseCase {
     }
   }
 
+  /**
+   * Ejecuta el handler con tope. Al vencer `handlerTimeoutMs` aborta la señal que le dio y espera a que
+   * termine: el resultado se escribe (y la fila se suelta) recién cuando no queda nada del handler en
+   * curso, así un reintento nunca se superpone con un envío vivo. Si termina bien después del aviso,
+   * el correo salió y se publica. Si no termina mientras al arriendo le quede `handlerTimeoutMs` para
+   * escribir, o si llega el apagado, se abandona: devuelve `undefined` y la fila conserva su arriendo
+   * hasta que vence (la configuración exige `2 × handlerTimeoutMs < leaseSeconds`).
+   */
   private async runHandler(
     handler: OutboxEventHandler,
     event: ClaimedOutboxEvent,
-  ): Promise<{ providerMessageId: string | null }> {
-    const timeoutMs = this.options.handlerTimeoutMs
-    let timer: ReturnType<typeof setTimeout> | undefined
-    const timeout = new Promise<never>((_, reject) => {
-      timer = setTimeout(() => reject(new HandlerTimeoutError(timeoutMs)), timeoutMs)
-    })
+    leaseFrom: number,
+    stop: AbortSignal | undefined,
+  ): Promise<HandlerOutcome | undefined> {
+    const { handlerTimeoutMs, leaseSeconds } = this.options
+    const deadline = new AbortController()
+    const timer = setTimeout(
+      () => deadline.abort(new HandlerTimeoutError(handlerTimeoutMs)),
+      handlerTimeoutMs,
+    )
+    const settled = Promise.resolve()
+      .then(() => handler.handle(event, deadline.signal))
+      .then(
+        (sent): HandlerOutcome => ({ kind: 'sent', sent }),
+        (error: unknown): HandlerOutcome => ({ kind: 'failed', error }),
+      )
     try {
-      return await Promise.race([Promise.resolve().then(() => handler.handle(event)), timeout])
+      const onTime = await settledUnless(settled, { signal: deadline.signal })
+      if (onTime !== undefined) return onTime
+      const graceMs = leaseFrom + leaseSeconds * 1000 - handlerTimeoutMs - performance.now()
+      const late = await settledUnless(settled, { signal: stop, timeoutMs: graceMs })
+      if (late === undefined) this.watchAbandoned(event, settled)
+      return late
     } finally {
       clearTimeout(timer)
     }
+  }
+
+  /** Deja constancia de cómo terminó, si termina, un handler abandonado (un `sent` puede duplicar). */
+  private watchAbandoned(event: ClaimedOutboxEvent, settled: Promise<HandlerOutcome>): void {
+    void settled.then((outcome) => {
+      this.logger.warn(
+        {
+          eventId: event.id,
+          handler: event.handler,
+          attempts: event.attempts,
+          outcome: outcome.kind,
+          correlationId: event.correlationId,
+        },
+        'terminó un handler del outbox que se había abandonado',
+      )
+    })
   }
 
   private async fail(event: ClaimedOutboxEvent, error: unknown, result: PublishOutboxEventsResult) {
@@ -227,6 +354,29 @@ export class PublishOutboxEventsUseCase {
       'arriendo del outbox perdido: otro proceso retomó el evento y este resultado se descarta',
     )
   }
+}
+
+/**
+ * Lo que da `settled` si llega primero; `undefined` si antes aborta `until.signal` o pasan
+ * `until.timeoutMs`. Un `settled` que ya terminó gana siempre: la señal y el plazo se miran después.
+ */
+function settledUnless<T>(
+  settled: Promise<T>,
+  until: { signal?: AbortSignal | undefined; timeoutMs?: number },
+): Promise<T | undefined> {
+  return new Promise((resolve) => {
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const giveUp = () => finish(undefined)
+    const finish = (value: T | undefined) => {
+      clearTimeout(timer)
+      until.signal?.removeEventListener('abort', giveUp)
+      resolve(value)
+    }
+    void settled.then(finish)
+    if (until.timeoutMs !== undefined) timer = setTimeout(giveUp, Math.max(0, until.timeoutMs))
+    if (until.signal?.aborted === true) queueMicrotask(giveUp)
+    else until.signal?.addEventListener('abort', giveUp, { once: true })
+  })
 }
 
 function indexHandlers(

@@ -14,19 +14,27 @@ export type BrevoEmailSenderOptions = {
   apiKey: string
   fromEmail: string
   fromName: string
-  /** Tope de la petición: el mismo que el del handler del outbox. */
+  /**
+   * Tope propio de la petición (el del handler del outbox): vale aunque la señal de quien envía nunca
+   * avise. Con el publicador, la señal corta antes, medida desde que empezó el handler.
+   */
   requestTimeoutMs: number
 }
 
 /**
  * API transaccional de Brevo. La clave de idempotencia (el id de la fila del outbox) va en
  * `headers.idempotencyKey` del cuerpo: un reintento de un envío que sí salió no se repite. Los errores
- * llevan solo el estado y el código de Brevo, nunca el cuerpo (puede repetir la dirección).
+ * llevan solo el estado y el código de Brevo, nunca el cuerpo (puede repetir la dirección). Si la
+ * señal de quien envía aborta, la petición se corta y `send` rechaza con su motivo.
  */
 export class BrevoEmailSender implements EmailSenderPort {
   constructor(private readonly options: BrevoEmailSenderOptions) {}
 
-  async send(email: OutgoingEmail): Promise<{ providerMessageId: string | null }> {
+  async send(
+    email: OutgoingEmail,
+    signal: AbortSignal,
+  ): Promise<{ providerMessageId: string | null }> {
+    signal.throwIfAborted()
     let response: Response
     try {
       response = await fetch(BREVO_SEND_URL, {
@@ -37,9 +45,11 @@ export class BrevoEmailSender implements EmailSenderPort {
           accept: 'application/json',
         },
         body: JSON.stringify(this.toBody(email)),
-        signal: AbortSignal.timeout(this.options.requestTimeoutMs),
+        // Corta también la lectura del cuerpo. Si aborta después del 201, el correo ya salió: vale el estado.
+        signal: AbortSignal.any([signal, AbortSignal.timeout(this.options.requestTimeoutMs)]),
       })
     } catch (error) {
+      signal.throwIfAborted()
       throw new RetryableEmailError(
         `Brevo sin respuesta (${error instanceof Error ? error.name : 'error'})`,
       )

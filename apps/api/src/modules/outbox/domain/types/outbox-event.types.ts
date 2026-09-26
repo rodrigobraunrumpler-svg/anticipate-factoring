@@ -20,7 +20,10 @@ export type NewOutboxMessage = {
   correlationId: string | null
 }
 
-/** Un evento reclamado. `leaseToken` identifica este reclamo en toda escritura de vuelta. */
+/**
+ * Un evento reclamado. `leaseToken` identifica el reclamo y, una vez empezado el intento, el intento
+ * (el handler recibe el del intento). `attempts` es el número de este intento (1 = el primero).
+ */
 export type ClaimedOutboxEvent = NewOutboxMessage & {
   id: string
   leaseToken: string

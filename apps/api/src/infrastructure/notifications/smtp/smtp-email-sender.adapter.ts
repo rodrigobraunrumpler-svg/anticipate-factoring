@@ -1,4 +1,5 @@
-import { createTransport, type Transporter } from 'nodemailer'
+import { connect, type Socket } from 'node:net'
+import { createTransport } from 'nodemailer'
 import {
   type EmailSenderPort,
   type OutgoingEmail,
@@ -11,31 +12,71 @@ export type SmtpEmailSenderOptions = {
   port: number
   fromEmail: string
   fromName: string
-  /** Tope de conexión, saludo y socket: el mismo que el del handler del outbox. */
+  /**
+   * Tope propio de cada envío, conexión incluida (el del handler del outbox): vale aunque la señal de
+   * quien envía nunca avise. Con el publicador, la señal corta antes, medida desde que empezó el handler.
+   */
   timeoutMs: number
 }
 
-/** SMTP hacia Mailpit en desarrollo: ningún correo de prueba le llega a una persona real. */
+/**
+ * SMTP hacia Mailpit en desarrollo: ningún correo de prueba le llega a una persona real. Cada envío
+ * usa su propia conexión (como nodemailer sin pool), pero la abre el adaptador y se la entrega a
+ * nodemailer (`getSocket`): si la señal de quien envía aborta, o vence el tope propio, el socket se
+ * destruye en cualquier etapa y `send` rechaza sin dejar nada en vuelo (con el motivo de la señal,
+ * si fue ella).
+ */
 export class SmtpEmailSender implements EmailSenderPort {
-  private readonly transporter: Transporter
+  private closed = false
 
-  constructor(private readonly options: SmtpEmailSenderOptions) {
-    this.transporter = createTransport({
-      host: options.host,
-      port: options.port,
+  constructor(private readonly options: SmtpEmailSenderOptions) {}
+
+  async send(
+    email: OutgoingEmail,
+    signal: AbortSignal,
+  ): Promise<{ providerMessageId: string | null }> {
+    signal.throwIfAborted()
+    if (this.closed) throw new RetryableEmailError('SMTP cerrado')
+    const { host, port, timeoutMs } = this.options
+    const stop = AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)])
+    let socket: Socket | undefined
+    const transporter = createTransport({
+      host,
+      port,
       secure: false,
       ignoreTLS: true,
-      connectionTimeout: options.timeoutMs,
-      greetingTimeout: options.timeoutMs,
-      socketTimeout: options.timeoutMs,
+      greetingTimeout: timeoutMs,
+      socketTimeout: timeoutMs,
+      getSocket: (_options, callback) => {
+        openSocket(host, port, stop).then(
+          (opened) => {
+            if (stop.aborted) {
+              opened.destroy()
+              callback(asError(stop.reason))
+              return
+            }
+            socket = opened
+            callback(null, { connection: opened })
+          },
+          (error: unknown) => callback(asError(error)),
+        )
+      },
     })
-  }
-
-  async send(email: OutgoingEmail): Promise<{ providerMessageId: string | null }> {
+    // Al abortar: destruye el socket y rechaza ya. Con el socket destruido no sale nada más, y nodemailer
+    // puede tardar en informarlo (un cierre durante el saludo lo reporta recién después de un segundo).
+    let rejectAborted: (reason: unknown) => void = () => {}
+    const aborted = new Promise<never>((_, reject) => {
+      rejectAborted = reject
+    })
+    const cut = () => {
+      socket?.destroy()
+      rejectAborted(stop.reason)
+    }
+    stop.addEventListener('abort', cut, { once: true })
     const headers: Record<string, string> = { 'X-Idempotency-Key': email.idempotencyKey }
     if (email.tags !== undefined && email.tags.length > 0) headers['X-Tags'] = email.tags.join(',')
     try {
-      const info = await this.transporter.sendMail({
+      const sending = transporter.sendMail({
         from: { name: this.options.fromName, address: this.options.fromEmail },
         to:
           email.to.name === undefined
@@ -46,16 +87,64 @@ export class SmtpEmailSender implements EmailSenderPort {
         text: email.text,
         headers,
       })
+      const info = await Promise.race([sending, aborted])
       const messageId: unknown = info.messageId
       return { providerMessageId: typeof messageId === 'string' ? messageId : null }
     } catch (error) {
+      signal.throwIfAborted()
+      if (stop.aborted) throw new RetryableEmailError('SMTP sin respuesta (TimeoutError)')
       throw toEmailError(error)
+    } finally {
+      stop.removeEventListener('abort', cut)
+      socket?.destroy()
+      transporter.close()
     }
   }
 
+  /** No admite envíos nuevos (rechazan como reintentables); los que están en curso terminan. */
   close(): void {
-    this.transporter.close()
+    this.closed = true
   }
+}
+
+/** Abre la conexión TCP; si `signal` aborta antes de conectar, destruye el socket y rechaza con su motivo. */
+function openSocket(host: string, port: number, signal: AbortSignal): Promise<Socket> {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(signal.reason)
+      return
+    }
+    const socket = connect({ host, port })
+    const settle = () => {
+      socket.off('connect', onConnect)
+      socket.off('error', onError)
+      signal.removeEventListener('abort', onAbort)
+    }
+    const onConnect = () => {
+      settle()
+      // nodemailer informa los errores del socket mientras lo usa; este oyente solo evita que un
+      // 'error' tardío, después de que nodemailer lo soltó, tumbe el proceso.
+      socket.on('error', () => {})
+      resolve(socket)
+    }
+    const onError = (error: Error) => {
+      settle()
+      socket.destroy()
+      reject(error)
+    }
+    const onAbort = () => {
+      settle()
+      socket.destroy()
+      reject(signal.reason)
+    }
+    socket.once('connect', onConnect)
+    socket.once('error', onError)
+    signal.addEventListener('abort', onAbort, { once: true })
+  })
+}
+
+function asError(reason: unknown): Error {
+  return reason instanceof Error ? reason : new Error(String(reason))
 }
 
 /**

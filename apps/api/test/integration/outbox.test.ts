@@ -13,6 +13,7 @@ import { insertOutboxMessages } from '#/infrastructure/prisma/repositories/outbo
 import {
   EMAIL_SENDER,
   type EmailSenderPort,
+  type OutgoingEmail,
   PermanentEmailError,
   RetryableEmailError,
 } from '#/modules/notifications/index.js'
@@ -26,6 +27,7 @@ import {
   type OutboxEventRepositoryPort,
   OutboxModule,
   OutboxWakeUpSignal,
+  type PublishOutboxEventsResult,
   PublishOutboxEventsUseCase,
   PurgePublishedEventsUseCase,
 } from '#/modules/outbox/index.js'
@@ -41,28 +43,37 @@ import { createCompleteAdvanceRequest, createOutboxEvent } from '../support/fact
 const TEST_HANDLER = 'email.test'
 const HOUR_MS = '3600000'
 
+/** El correo de prueba de un evento: la clave de idempotencia es el id de la fila. */
+const emailOf = (event: ClaimedOutboxEvent): OutgoingEmail => ({
+  to: { email: 'equipo@anticipate.local' },
+  subject: `Evento ${event.id}`,
+  html: '<p>prueba</p>',
+  text: 'prueba',
+  idempotencyKey: event.id,
+  tags: [event.handler],
+})
+
 /** Handler de prueba: manda un correo por `EMAIL_SENDER`. `before` deja que cada test intervenga. */
 @Injectable()
 class ScriptedEmailHandler implements OutboxEventHandler {
   readonly handler = TEST_HANDLER
   readonly calls: ClaimedOutboxEvent[] = []
-  before: (event: ClaimedOutboxEvent) => Promise<void> = async () => {}
+  before: (event: ClaimedOutboxEvent, signal: AbortSignal) => Promise<void> = async () => {}
 
   constructor(@Inject(EMAIL_SENDER) private readonly sender: EmailSenderPort) {}
 
-  async handle(event: ClaimedOutboxEvent) {
+  async handle(event: ClaimedOutboxEvent, signal: AbortSignal) {
     this.calls.push(event)
-    await this.before(event)
-    return this.sender.send({
-      to: { email: 'equipo@anticipate.local' },
-      subject: `Evento ${event.id}`,
-      html: '<p>prueba</p>',
-      text: 'prueba',
-      idempotencyKey: event.id,
-      tags: [event.handler],
-    })
+    await this.before(event, signal)
+    return this.sender.send(emailOf(event), signal)
   }
 }
+
+/** Un handler que respeta el aviso de tope: rechaza con su motivo, como los adaptadores de correo. */
+const untilAborted = (signal: AbortSignal) =>
+  new Promise<never>((_, reject) => {
+    signal.addEventListener('abort', () => reject(signal.reason), { once: true })
+  })
 
 @Module({ providers: [ScriptedEmailHandler], exports: [ScriptedEmailHandler] })
 class TestHandlersModule {}
@@ -346,10 +357,10 @@ describe('PublishOutboxEventsUseCase contra PostgreSQL', () => {
     })
   })
 
-  it('un handler que excede OUTBOX_HANDLER_TIMEOUT_MS se reprograma con HANDLER_TIMEOUT', async () => {
+  it('un handler que excede OUTBOX_HANDLER_TIMEOUT_MS recibe el aviso y se reprograma con HANDLER_TIMEOUT', async () => {
     const slow = await startPublisher({ OUTBOX_HANDLER_TIMEOUT_MS: '100' })
     try {
-      slow.get(ScriptedEmailHandler).before = () => new Promise(() => {})
+      slow.get(ScriptedEmailHandler).before = (_event, signal) => untilAborted(signal)
       await enqueue([message()])
       await expect(slow.get(PublishOutboxEventsUseCase).execute()).resolves.toMatchObject({
         retried: 1,
@@ -359,6 +370,69 @@ describe('PublishOutboxEventsUseCase contra PostgreSQL', () => {
         attempts: 1,
         lastError: 'HANDLER_TIMEOUT',
       })
+      expect(slow.get<FakeEmailSender>(EMAIL_SENDER).sent).toEqual([])
+    } finally {
+      await slow.close()
+    }
+  })
+
+  it('tras el aviso de tope espera a que el handler termine: el envío tardío no sale y recién entonces reprograma', async () => {
+    const slow = await startPublisher({ OUTBOX_HANDLER_TIMEOUT_MS: '100' })
+    try {
+      let handlerFinished = false
+      // No hace caso del aviso: termina lo suyo y después intenta enviar con la señal ya abortada.
+      slow.get(ScriptedEmailHandler).before = async () => {
+        await sleep(300)
+        handlerFinished = true
+      }
+      await enqueue([message()])
+      await expect(slow.get(PublishOutboxEventsUseCase).execute()).resolves.toMatchObject({
+        retried: 1,
+      })
+      expect(handlerFinished).toBe(true)
+      await sleep(300)
+      expect(slow.get<FakeEmailSender>(EMAIL_SENDER).sent).toEqual([])
+      expect(only(await rows())).toMatchObject({
+        status: 'PENDING',
+        attempts: 1,
+        lastError: 'HANDLER_TIMEOUT',
+        leaseToken: null,
+      })
+    } finally {
+      await slow.close()
+    }
+  })
+
+  it('un handler que no termina tras el aviso queda abandonado: la fila conserva su arriendo hasta que vence', async () => {
+    const slow = await startPublisher({
+      OUTBOX_HANDLER_TIMEOUT_MS: '100',
+      OUTBOX_LEASE_SECONDS: '1',
+    })
+    try {
+      const slowHandler = slow.get(ScriptedEmailHandler)
+      const slowPublisher = slow.get(PublishOutboxEventsUseCase)
+      slowHandler.before = () => new Promise(() => {})
+      await enqueue([message()])
+      const startedAt = performance.now()
+      await expect(slowPublisher.execute()).resolves.toEqual({
+        published: 0,
+        retried: 0,
+        deadLettered: 0,
+        leaseLost: 1,
+      })
+      // Espera mientras al arriendo (1 s) le quede OUTBOX_HANDLER_TIMEOUT_MS para escribir.
+      expect(performance.now() - startedAt).toBeGreaterThanOrEqual(800)
+      const abandoned = only(await rows())
+      expect(abandoned).toMatchObject({ status: 'PROCESSING', attempts: 1, lastError: null })
+      expect(abandoned.leaseToken).not.toBeNull()
+
+      // Vencido el arriendo, otra pasada lo retoma como un intento nuevo.
+      slowHandler.before = async () => {}
+      await vi.waitFor(
+        async () => expect(await slowPublisher.execute()).toMatchObject({ published: 1 }),
+        { timeout: 5_000, interval: 100 },
+      )
+      expect(only(await rows())).toMatchObject({ status: 'PUBLISHED', attempts: 2 })
     } finally {
       await slow.close()
     }
@@ -382,33 +456,120 @@ describe('PublishOutboxEventsUseCase contra PostgreSQL', () => {
     await expect(claim()).resolves.toEqual([])
     await expireLease(first.id)
     const second = only(await claim())
-    expect(second).toMatchObject({ id: first.id, attempts: 2 })
+    // El primero nunca empezó: el segundo es el mismo primer intento.
+    expect(second).toMatchObject({ id: first.id, attempts: 1 })
     expect(second.leaseToken).not.toBe(first.leaseToken)
 
     const stale = { id: first.id, leaseToken: first.leaseToken }
     await expect(
       Promise.all([
-        repository.renewLease({ ...stale, leaseSeconds: 120 }),
+        repository.startAttempt({ ...stale, leaseSeconds: 120 }),
         repository.markPublished({ ...stale, providerMessageId: 'tarde' }),
         repository.reschedule({ ...stale, delaySeconds: 30, failureCode: 'EMAIL_RETRYABLE' }),
         repository.markDeadLetter({ ...stale, failureCode: 'UNEXPECTED' }),
+        repository.releaseClaims({ claims: [stale] }),
       ]),
-    ).resolves.toEqual([false, false, false, false])
+    ).resolves.toEqual([null, false, false, false, 0])
+
+    const attemptToken = await repository.startAttempt({
+      id: second.id,
+      leaseToken: second.leaseToken,
+      leaseSeconds: 120,
+    })
+    expect(attemptToken).not.toBeNull()
+    expect(attemptToken).not.toBe(second.leaseToken)
+    expect(only(await rows())).toMatchObject({ status: 'PROCESSING', attempts: 1 })
+    // El token del reclamo ya no sirve: un intento se empieza una sola vez y no se devuelve.
+    const claimOfSecond = { id: second.id, leaseToken: second.leaseToken }
+    await expect(repository.startAttempt({ ...claimOfSecond, leaseSeconds: 120 })).resolves.toBe(
+      null,
+    )
+    await expect(repository.releaseClaims({ claims: [claimOfSecond] })).resolves.toBe(0)
     await expect(
       repository.markPublished({
         id: second.id,
-        leaseToken: second.leaseToken,
+        leaseToken: attemptToken ?? '',
         providerMessageId: 'msg-b',
       }),
     ).resolves.toBe(true)
     expect(only(await rows())).toMatchObject({
       status: 'PUBLISHED',
+      attempts: 1,
       providerMessageId: 'msg-b',
       leaseToken: null,
     })
   })
 
-  it('renueva el arriendo antes de cada envío: lo que otro proceso retomó no se envía', async () => {
+  it('releaseClaims devuelve a PENDING lo reclamado sin empezar, sin gastar intento', async () => {
+    await enqueue([message(), message()])
+    const [kept, released] = await claim()
+    if (kept === undefined || released === undefined) throw new Error('se esperaban dos reclamos')
+    await repository.startAttempt({ id: kept.id, leaseToken: kept.leaseToken, leaseSeconds: 120 })
+    await expect(
+      repository.releaseClaims({
+        claims: [kept, released].map(({ id, leaseToken }) => ({ id, leaseToken })),
+      }),
+    ).resolves.toBe(1)
+    const byId = new Map((await rows()).map((row) => [row.id, row]))
+    expect(byId.get(released.id)).toMatchObject({
+      status: 'PENDING',
+      attempts: 0,
+      leaseToken: null,
+      lockedAt: null,
+      lockExpiresAt: null,
+    })
+    expect(byId.get(kept.id)).toMatchObject({ status: 'PROCESSING', attempts: 1 })
+    expect(only(await claim())).toMatchObject({ id: released.id, attempts: 1 })
+  })
+
+  it('un reclamo que vence sin empezar no gasta intento ni pasa a DEAD_LETTER', async () => {
+    await enqueue([message()], 1)
+    const first = only(await claim())
+    expect(first.attempts).toBe(1)
+    await expireLease(first.id)
+    await expect(repository.deadLetterExhausted()).resolves.toBe(0)
+    expect(only(await rows())).toMatchObject({ status: 'PROCESSING', attempts: 0 })
+    expect(only(await claim())).toMatchObject({ id: first.id, attempts: 1 })
+  })
+
+  it('un lote lento: lo que otra instancia retoma antes de empezar se envía una vez, sin gastar intentos ni pasar a DEAD_LETTER', async () => {
+    await enqueue([message(), message(), message()], 1)
+    const ids = (await rows()).map((row) => row.id)
+    // Otra réplica, o la versión anterior durante un despliegue, con su propio handler.
+    const other = new PublishOutboxEventsUseCase(
+      repository,
+      [{ handler: TEST_HANDLER, handle: (event, signal) => mailer.send(emailOf(event), signal) }],
+      {
+        leaseSeconds: 120,
+        batchSize: 20,
+        handlerTimeoutMs: 5_000,
+        baseDelayMs: 30_000,
+        maxDelayMs: 3_600_000,
+        requiredHandlers: [TEST_HANDLER],
+      },
+      { warn: () => {} },
+    )
+    let otherResult: PublishOutboxEventsResult | undefined
+    handler.before = async (event) => {
+      if (otherResult !== undefined) return
+      // Mientras se envía el primero, el arriendo del resto del lote vence y pasa la otra instancia.
+      for (const id of ids) if (id !== event.id) await expireLease(id)
+      otherResult = await other.execute()
+    }
+    await expect(publisher.execute()).resolves.toEqual({
+      published: 1,
+      retried: 0,
+      deadLettered: 0,
+      leaseLost: 2,
+    })
+    expect(otherResult).toEqual({ published: 2, retried: 0, deadLettered: 0, leaseLost: 0 })
+    expect(mailer.sent.map((sent) => sent.idempotencyKey).sort()).toEqual([...ids].sort())
+    for (const row of await rows()) {
+      expect(row).toMatchObject({ status: 'PUBLISHED', attempts: 1, lastError: null })
+    }
+  })
+
+  it('empieza cada intento con el token del reclamo: lo que otro proceso retomó no se envía', async () => {
     await enqueue([message(), message()])
     const ids = (await rows()).map((row) => row.id)
     let taken: string | undefined
@@ -425,7 +586,7 @@ describe('PublishOutboxEventsUseCase contra PostgreSQL', () => {
     expect(byId.get(taken ?? '')).toBe('PROCESSING')
   })
 
-  it('renovar extiende un arriendo vencido que nadie retomó', async () => {
+  it('empezar el intento extiende un arriendo vencido que nadie retomó', async () => {
     await enqueue([message(), message()])
     const ids = (await rows()).map((row) => row.id)
     let expired = false
@@ -445,9 +606,14 @@ describe('PublishOutboxEventsUseCase contra PostgreSQL', () => {
     expect(new Set(ids).size).toBe(20)
   })
 
-  it('un evento en PROCESSING sin intentos restantes y con el arriendo vencido pasa a DEAD_LETTER', async () => {
+  it('un evento cuyo último intento empezó y nunca informó (el proceso cayó) pasa a DEAD_LETTER con UNEXPECTED', async () => {
     await enqueue([message()], 1)
     const claimed = only(await claim())
+    await repository.startAttempt({
+      id: claimed.id,
+      leaseToken: claimed.leaseToken,
+      leaseSeconds: 120,
+    })
     await expireLease(claimed.id)
     await expect(publisher.execute()).resolves.toMatchObject({ deadLettered: 1 })
     expect(only(await rows())).toMatchObject({
@@ -530,10 +696,14 @@ describe('OutboxPublisherModule.forRoot', () => {
 
 describe('OutboxPublisherScheduler', () => {
   /** Arranca el publicador con el sondeo encendido y espera a que termine el reclamo de la pasada inicial. */
-  async function startScheduler(before?: (running: TestingModule) => void) {
+  async function startScheduler(
+    before?: (running: TestingModule) => void,
+    env: Record<string, string> = {},
+  ) {
     const running = await compilePublisher({
       OUTBOX_POLLER_ENABLED: 'true',
       OUTBOX_POLL_INTERVAL_MS: HOUR_MS,
+      ...env,
     })
     before?.(running)
     const nextDue = vi.spyOn(running.get(PublishOutboxEventsUseCase), 'nextDueInMs')
@@ -610,5 +780,37 @@ describe('OutboxPublisherScheduler', () => {
     release()
     await closing
     expect(only(await rows())).toMatchObject({ status: 'PUBLISHED' })
+  })
+
+  it('al apagar no reclama más: termina el envío en curso y devuelve a PENDING lo reclamado sin empezar', async () => {
+    let secondStarted = () => {}
+    const second = new Promise<void>((resolve) => {
+      secondStarted = resolve
+    })
+    const running = await startScheduler(
+      (compiled) => {
+        const scripted = compiled.get(ScriptedEmailHandler)
+        scripted.before = async () => {
+          if (scripted.calls.length === 2) secondStarted()
+          await sleep(100)
+        }
+      },
+      { OUTBOX_BATCH_SIZE: '4' },
+    )
+    const runningHandler = running.get(ScriptedEmailHandler)
+    await enqueue(Array.from({ length: 10 }, () => message()))
+    running.get<OutboxWakeUpSignal>(OUTBOX_WAKE_UP).notify()
+    await second
+
+    const closingAt = performance.now()
+    await running.close()
+    expect(performance.now() - closingAt).toBeLessThan(1_000)
+    expect(runningHandler.calls).toHaveLength(2)
+    expect(running.get<FakeEmailSender>(EMAIL_SENDER).sent).toHaveLength(2)
+    const all = await rows()
+    expect(all.filter((row) => row.status === 'PUBLISHED')).toHaveLength(2)
+    for (const row of all.filter((row) => row.status !== 'PUBLISHED')) {
+      expect(row).toMatchObject({ status: 'PENDING', attempts: 0, leaseToken: null })
+    }
   })
 })

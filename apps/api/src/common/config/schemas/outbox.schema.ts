@@ -22,7 +22,8 @@ const outboxSchema = z.object(outboxShape)
 export type OutboxEnvironment = z.output<typeof outboxSchema>
 
 export function refineOutbox(env: OutboxEnvironment, ctx: z.RefinementCtx): void {
-  // El arriendo se renueva antes de cada envío: dos handlers seguidos al tope tienen que caber en él.
+  // El arriendo se renueva al empezar cada intento y tiene que cubrir el tope del handler más la espera
+  // a que termine tras el aviso, dejando OUTBOX_HANDLER_TIMEOUT_MS para escribir el resultado.
   if (env.OUTBOX_HANDLER_TIMEOUT_MS * 2 >= env.OUTBOX_LEASE_SECONDS * 1000) {
     ctx.addIssue({
       code: 'custom',

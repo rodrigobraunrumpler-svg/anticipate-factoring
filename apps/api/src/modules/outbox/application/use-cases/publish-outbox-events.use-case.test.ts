@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { PermanentEmailError, RetryableEmailError } from '#/modules/notifications/index.js'
 import { OutboxAggregateNotFoundError } from '../../domain/exceptions/outbox-failure-code.js'
 import type { ClaimedOutboxEvent } from '../../domain/types/outbox-event.types.js'
@@ -11,11 +11,18 @@ import {
 
 const HANDLER = 'email.test'
 const AGGREGATE_ID = '0192a3b4-c5d6-7e8f-9a0b-1c2d3e4f5a6b'
+const CLAIM_TOKEN = '0192a3b4-c5d6-4e8f-9a0b-00000000aaaa'
+const ID_1 = '0192a3b4-c5d6-7e8f-9a0b-000000000001'
+const ID_2 = '0192a3b4-c5d6-7e8f-9a0b-000000000002'
+const ID_3 = '0192a3b4-c5d6-7e8f-9a0b-000000000003'
+
+/** El token que `startAttempt` entrega para el intento (distinto del token del reclamo). */
+const attemptToken = (id: string) => `intento-${id}`
 
 function claimed(overrides: Partial<ClaimedOutboxEvent> = {}): ClaimedOutboxEvent {
   return {
-    id: '0192a3b4-c5d6-7e8f-9a0b-000000000001',
-    leaseToken: '0192a3b4-c5d6-4e8f-9a0b-00000000aaaa',
+    id: ID_1,
+    leaseToken: CLAIM_TOKEN,
     attempts: 1,
     maxAttempts: 8,
     handler: HANDLER,
@@ -35,16 +42,20 @@ function claimed(overrides: Partial<ClaimedOutboxEvent> = {}): ClaimedOutboxEven
 }
 
 /** Repositorio en memoria: registra el orden de las llamadas y devuelve lo que el test pide. */
-function fakeRepository(batches: ClaimedOutboxEvent[][], options: { renew?: boolean } = {}) {
+function fakeRepository(batches: ClaimedOutboxEvent[][], options: { start?: boolean } = {}) {
   const calls: string[] = []
   const repository = {
     claimDue: vi.fn<OutboxEventRepositoryPort['claimDue']>(async () => {
       calls.push('claimDue')
       return batches.shift() ?? []
     }),
-    renewLease: vi.fn<OutboxEventRepositoryPort['renewLease']>(async ({ id }) => {
-      calls.push(`renewLease:${id}`)
-      return options.renew ?? true
+    startAttempt: vi.fn<OutboxEventRepositoryPort['startAttempt']>(async ({ id }) => {
+      calls.push(`startAttempt:${id}`)
+      return (options.start ?? true) ? attemptToken(id) : null
+    }),
+    releaseClaims: vi.fn<OutboxEventRepositoryPort['releaseClaims']>(async ({ claims }) => {
+      calls.push(`releaseClaims:${claims.map(({ id }) => id).join(',')}`)
+      return claims.length
     }),
     markPublished: vi.fn<OutboxEventRepositoryPort['markPublished']>(async ({ id }) => {
       calls.push(`markPublished:${id}`)
@@ -78,12 +89,20 @@ function handlerThat(
 ): OutboxEventHandler {
   return {
     handler: name,
-    handle: async (event) => {
+    handle: async (event, signal) => {
       calls.push(`handle:${event.id}`)
-      return handle(event)
+      return handle(event, signal)
     },
   }
 }
+
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
+
+/** Rechaza con el motivo del aviso, como un adaptador de correo que respeta la señal. */
+const untilAborted = (signal: AbortSignal) =>
+  new Promise<never>((_, reject) => {
+    signal.addEventListener('abort', () => reject(signal.reason), { once: true })
+  })
 
 const OPTIONS: PublishOutboxEventsOptions = {
   leaseSeconds: 120,
@@ -95,6 +114,7 @@ const OPTIONS: PublishOutboxEventsOptions = {
 }
 const logger = { warn: vi.fn() }
 const noJitter = () => 0.5
+const sent = async () => ({ providerMessageId: null })
 
 function useCase(
   repository: OutboxEventRepositoryPort,
@@ -110,11 +130,19 @@ function useCase(
   )
 }
 
+beforeEach(() => {
+  logger.warn.mockClear()
+})
+
 describe('PublishOutboxEventsUseCase', () => {
-  it('renueva el arriendo antes de ejecutar el handler y publica con el token del reclamo', async () => {
+  it('empieza el intento antes de ejecutar el handler y escribe con el token del intento', async () => {
     const event = claimed()
     const { repository, calls } = fakeRepository([[event]])
-    const handler = handlerThat(async () => ({ providerMessageId: 'msg-1' }), calls)
+    let received: { event: ClaimedOutboxEvent; signal: AbortSignal } | undefined
+    const handler = handlerThat(async (attempt, signal) => {
+      received = { event: attempt, signal }
+      return { providerMessageId: 'msg-1' }
+    }, calls)
     await expect(useCase(repository, [handler]).execute()).resolves.toEqual({
       published: 1,
       retried: 0,
@@ -123,7 +151,7 @@ describe('PublishOutboxEventsUseCase', () => {
     })
     expect(calls).toEqual([
       'claimDue',
-      `renewLease:${event.id}`,
+      `startAttempt:${event.id}`,
       `handle:${event.id}`,
       `markPublished:${event.id}`,
     ])
@@ -132,16 +160,24 @@ describe('PublishOutboxEventsUseCase', () => {
       leaseSeconds: 120,
       batchSize: 20,
     })
+    expect(repository.startAttempt).toHaveBeenCalledWith({
+      id: event.id,
+      leaseToken: CLAIM_TOKEN,
+      leaseSeconds: 120,
+    })
+    expect(received?.event).toEqual({ ...event, leaseToken: attemptToken(event.id) })
+    expect(received?.signal.aborted).toBe(false)
     expect(repository.markPublished).toHaveBeenCalledWith({
       id: event.id,
-      leaseToken: event.leaseToken,
+      leaseToken: attemptToken(event.id),
       providerMessageId: 'msg-1',
     })
+    expect(repository.releaseClaims).not.toHaveBeenCalled()
     expect(repository.deadLetterExhausted).toHaveBeenCalledTimes(1)
   })
 
-  it('si la renovación falla, salta el evento sin ejecutar el handler', async () => {
-    const { repository, calls } = fakeRepository([[claimed()]], { renew: false })
+  it('si el reclamo ya no es de este proceso, salta el evento sin ejecutar el handler', async () => {
+    const { repository, calls } = fakeRepository([[claimed()]], { start: false })
     const handle = vi.fn<OutboxEventHandler['handle']>()
     const result = await useCase(repository, [handlerThat(handle, calls)]).execute()
     expect(result.leaseLost).toBe(1)
@@ -152,13 +188,11 @@ describe('PublishOutboxEventsUseCase', () => {
   it('un handler que no está registrado pasa el evento a DEAD_LETTER con HANDLER_MISSING', async () => {
     const event = claimed({ handler: 'email.other' })
     const { repository } = fakeRepository([[event]])
-    const result = await useCase(repository, [
-      handlerThat(async () => ({ providerMessageId: null })),
-    ]).execute()
+    const result = await useCase(repository, [handlerThat(sent)]).execute()
     expect(result.deadLettered).toBe(1)
     expect(repository.markDeadLetter).toHaveBeenCalledWith({
       id: event.id,
-      leaseToken: event.leaseToken,
+      leaseToken: attemptToken(event.id),
       failureCode: 'HANDLER_MISSING',
     })
   })
@@ -217,13 +251,77 @@ describe('PublishOutboxEventsUseCase', () => {
     expect(asked.repository.reschedule.mock.calls.map(([p]) => p.delaySeconds)).toEqual([7, 5])
   })
 
-  it('un handler que excede handlerTimeoutMs se reprograma con HANDLER_TIMEOUT', async () => {
-    const { repository } = fakeRepository([[claimed()]])
-    const hanging = handlerThat(() => new Promise(() => {}))
-    const result = await useCase(repository, [hanging], { handlerTimeoutMs: 20 }).execute()
+  it('al vencer handlerTimeoutMs avisa al handler y reprograma con HANDLER_TIMEOUT cuando terminó', async () => {
+    const event = claimed()
+    const { repository, calls } = fakeRepository([[event]])
+    const handler = handlerThat(async (_attempt, signal) => {
+      try {
+        return await untilAborted(signal)
+      } finally {
+        calls.push('handler terminó')
+      }
+    }, calls)
+    const result = await useCase(repository, [handler], { handlerTimeoutMs: 20 }).execute()
     expect(result.retried).toBe(1)
     expect(repository.reschedule).toHaveBeenCalledWith(
-      expect.objectContaining({ failureCode: 'HANDLER_TIMEOUT' }),
+      expect.objectContaining({
+        leaseToken: attemptToken(event.id),
+        failureCode: 'HANDLER_TIMEOUT',
+      }),
+    )
+    expect(calls.slice(-2)).toEqual(['handler terminó', `reschedule:${event.id}`])
+  })
+
+  it('un handler que no hace caso del aviso se espera: no se reprograma mientras sigue corriendo', async () => {
+    const event = claimed()
+    const { repository, calls } = fakeRepository([[event]])
+    const handler = handlerThat(async () => {
+      await sleep(80)
+      calls.push('handler terminó')
+      throw new RetryableEmailError('Brevo sin respuesta (TimeoutError)')
+    }, calls)
+    await useCase(repository, [handler], { handlerTimeoutMs: 20 }).execute()
+    expect(calls.slice(-2)).toEqual(['handler terminó', `reschedule:${event.id}`])
+  })
+
+  it('si el handler termina bien después del aviso, el correo salió: se publica y no se reprograma', async () => {
+    const { repository } = fakeRepository([[claimed()]])
+    const late = handlerThat(async () => {
+      await sleep(80)
+      return { providerMessageId: 'tarde' }
+    })
+    await expect(useCase(repository, [late], { handlerTimeoutMs: 20 }).execute()).resolves.toEqual({
+      published: 1,
+      retried: 0,
+      deadLettered: 0,
+      leaseLost: 0,
+    })
+    expect(repository.markPublished).toHaveBeenCalledWith(
+      expect.objectContaining({ providerMessageId: 'tarde' }),
+    )
+    expect(repository.reschedule).not.toHaveBeenCalled()
+  })
+
+  it('un handler que no termina tras el aviso queda abandonado: no escribe nada y decide el vencimiento del arriendo', async () => {
+    const event = claimed()
+    const { repository } = fakeRepository([[event]])
+    const hanging = handlerThat(() => new Promise(() => {}))
+    const startedAt = performance.now()
+    const result = await useCase(repository, [hanging], {
+      leaseSeconds: 1,
+      handlerTimeoutMs: 200,
+    }).execute()
+    const elapsed = performance.now() - startedAt
+    expect(result).toEqual({ published: 0, retried: 0, deadLettered: 0, leaseLost: 1 })
+    // Espera mientras al arriendo le quede handlerTimeoutMs para escribir: 1000 − 200 ms.
+    expect(elapsed).toBeGreaterThanOrEqual(750)
+    expect(elapsed).toBeLessThan(1_000)
+    expect(repository.markPublished).not.toHaveBeenCalled()
+    expect(repository.reschedule).not.toHaveBeenCalled()
+    expect(repository.markDeadLetter).not.toHaveBeenCalled()
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ eventId: event.id, step: 'handlerAbandoned' }),
+      expect.stringMatching(/no terminó/),
     )
   })
 
@@ -241,22 +339,105 @@ describe('PublishOutboxEventsUseCase', () => {
   it('una escritura de vuelta que devuelve false se cuenta como arriendo perdido', async () => {
     const { repository } = fakeRepository([[claimed()]])
     repository.markPublished.mockResolvedValueOnce(false)
-    const result = await useCase(repository, [
-      handlerThat(async () => ({ providerMessageId: null })),
-    ]).execute()
+    const result = await useCase(repository, [handlerThat(sent)]).execute()
     expect(result).toEqual({ published: 0, retried: 0, deadLettered: 0, leaseLost: 1 })
   })
 
   it('reclama lotes mientras vengan llenos, hasta maxBatches', async () => {
-    const full = [
-      claimed({ id: '0192a3b4-c5d6-7e8f-9a0b-000000000011' }),
-      claimed({ id: '0192a3b4-c5d6-7e8f-9a0b-000000000012' }),
-    ]
+    const full = [claimed({ id: ID_1 }), claimed({ id: ID_2 })]
     const { repository } = fakeRepository([full, full, full, full])
-    const handler = handlerThat(async () => ({ providerMessageId: null }))
-    const result = await useCase(repository, [handler], { batchSize: 2 }).execute({ maxBatches: 3 })
+    const result = await useCase(repository, [handlerThat(sent)], { batchSize: 2 }).execute({
+      maxBatches: 3,
+    })
     expect(repository.claimDue).toHaveBeenCalledTimes(3)
     expect(result.published).toBe(6)
+  })
+
+  it('si una escritura falla a mitad de lote, devuelve lo reclamado sin empezar y propaga el error', async () => {
+    const batch = [
+      claimed({ id: ID_1 }),
+      claimed({ id: ID_2, leaseToken: 'reclamo-2' }),
+      claimed({ id: ID_3, leaseToken: 'reclamo-3' }),
+    ]
+    const { repository } = fakeRepository([batch])
+    repository.startAttempt.mockImplementation(async ({ id }) => {
+      if (id === ID_2) throw new Error('base caída')
+      return attemptToken(id)
+    })
+    repository.releaseClaims.mockRejectedValueOnce(new Error('tampoco se pudo devolver'))
+    await expect(useCase(repository, [handlerThat(sent)]).execute()).rejects.toThrow('base caída')
+    // Con el token del reclamo: si el evento ya había empezado, la base no lo toca.
+    expect(repository.releaseClaims).toHaveBeenCalledWith({
+      claims: [
+        { id: ID_2, leaseToken: 'reclamo-2' },
+        { id: ID_3, leaseToken: 'reclamo-3' },
+      ],
+    })
+  })
+
+  describe('al apagar (señal de execute)', () => {
+    it('con el apagado ya avisado no reclama nada', async () => {
+      const stop = new AbortController()
+      stop.abort()
+      const { repository } = fakeRepository([[claimed()]])
+      await expect(
+        useCase(repository, [handlerThat(sent)]).execute({ signal: stop.signal }),
+      ).resolves.toEqual({ published: 0, retried: 0, deadLettered: 0, leaseLost: 0 })
+      expect(repository.claimDue).not.toHaveBeenCalled()
+      expect(repository.deadLetterExhausted).not.toHaveBeenCalled()
+    })
+
+    it('termina el envío en curso, devuelve lo reclamado sin empezar y no reclama más', async () => {
+      const stop = new AbortController()
+      const batch = [
+        claimed({ id: ID_1 }),
+        claimed({ id: ID_2, leaseToken: 'reclamo-2' }),
+        claimed({ id: ID_3, leaseToken: 'reclamo-3' }),
+      ]
+      const { repository, calls } = fakeRepository([batch, [claimed({ id: ID_1 })]])
+      let handlerSignal: AbortSignal | undefined
+      const handler = handlerThat(async (_attempt, signal) => {
+        handlerSignal = signal
+        stop.abort()
+        await sleep(20)
+        return { providerMessageId: 'msg' }
+      }, calls)
+      const result = await useCase(repository, [handler], { batchSize: 3 }).execute({
+        signal: stop.signal,
+      })
+      expect(result).toEqual({ published: 1, retried: 0, deadLettered: 0, leaseLost: 0 })
+      // El apagado no corta el envío en curso.
+      expect(handlerSignal?.aborted).toBe(false)
+      expect(calls).toEqual([
+        'claimDue',
+        `startAttempt:${ID_1}`,
+        `handle:${ID_1}`,
+        `markPublished:${ID_1}`,
+        `releaseClaims:${ID_2},${ID_3}`,
+      ])
+      expect(repository.releaseClaims).toHaveBeenCalledWith({
+        claims: [
+          { id: ID_2, leaseToken: 'reclamo-2' },
+          { id: ID_3, leaseToken: 'reclamo-3' },
+        ],
+      })
+      expect(repository.deadLetterExhausted).not.toHaveBeenCalled()
+    })
+
+    it('si llega mientras espera a un handler que ya pasó su tope, lo abandona sin esperar al arriendo', async () => {
+      const stop = new AbortController()
+      const { repository } = fakeRepository([[claimed()]])
+      const hanging = handlerThat(() => new Promise(() => {}))
+      setTimeout(() => stop.abort(), 60)
+      const startedAt = performance.now()
+      const result = await useCase(repository, [hanging], { handlerTimeoutMs: 20 }).execute({
+        signal: stop.signal,
+      })
+      expect(performance.now() - startedAt).toBeLessThan(500)
+      expect(result.leaseLost).toBe(1)
+      expect(repository.reschedule).not.toHaveBeenCalled()
+      expect(repository.markPublished).not.toHaveBeenCalled()
+    })
   })
 
   it('sin handlers no reclama nada y no consulta el próximo despertar', async () => {
@@ -270,7 +451,7 @@ describe('PublishOutboxEventsUseCase', () => {
 
   it('no se construye con nombres inválidos, repetidos o con un handler requerido que falta', () => {
     const { repository } = fakeRepository([])
-    const ok = handlerThat(async () => ({ providerMessageId: null }))
+    const ok = handlerThat(sent)
     expect(() => useCase(repository, [handlerThat(ok.handle, [], 'Email Prueba')])).toThrow(
       /inválido/,
     )

@@ -32,12 +32,16 @@ export function nextPassDelayMs(input: {
 /**
  * Corre el publicador si `OUTBOX_POLLER_ENABLED`: una pasada al arrancar, otra cuando vence la espera
  * de `nextPassDelayMs` y otra en cuanto `OUTBOX_WAKE_UP` avisa. Nunca hay dos pasadas a la vez: un
- * aviso durante una pasada programa otra al terminar. Al apagar deja de programar y espera la pasada
- * en curso; el pool de la base se cierra después, en `onApplicationShutdown`.
+ * aviso durante una pasada programa otra al terminar. Al apagar deja de programar y avisa a la pasada
+ * en curso, que no reclama más, devuelve a `PENDING` lo reclamado sin empezar y solo termina el envío
+ * en curso (como mucho `OUTBOX_HANDLER_TIMEOUT_MS`); después la espera. El pool de la base se cierra
+ * más tarde, en `onApplicationShutdown`.
  */
 @Injectable()
 export class OutboxPublisherScheduler implements OnApplicationBootstrap, OnModuleDestroy {
   private readonly logger = new Logger(OutboxPublisherScheduler.name)
+  /** Se aborta al apagar: la pasada en curso lo recibe en `execute`. */
+  private readonly stopping = new AbortController()
   private active = false
   private rerun = false
   private current: Promise<void> | null = null
@@ -59,6 +63,7 @@ export class OutboxPublisherScheduler implements OnApplicationBootstrap, OnModul
 
   async onModuleDestroy(): Promise<void> {
     this.active = false
+    this.stopping.abort()
     this.unsubscribe?.()
     this.unsubscribe = null
     this.clearTimer()
@@ -82,7 +87,7 @@ export class OutboxPublisherScheduler implements OnApplicationBootstrap, OnModul
     try {
       do {
         this.rerun = false
-        const result = await this.publish.execute()
+        const result = await this.publish.execute({ signal: this.stopping.signal })
         const count = result.published + result.retried + result.deadLettered + result.leaseLost
         processed += count
         if (count > 0) this.logger.log(result, 'outbox procesado')

@@ -18,6 +18,16 @@ const sender = new BrevoEmailSender({
 })
 const respond = (status: number, body: unknown, headers: Record<string, string> = {}) =>
   vi.fn().mockResolvedValue(new Response(JSON.stringify(body), { status, headers }))
+/** Una señal que nadie aborta. */
+const live = () => new AbortController().signal
+/** Un `fetch` que no responde hasta que su señal aborta y entonces rechaza con el motivo, como undici. */
+const hangingFetch = () =>
+  vi.fn(
+    (_url: string, init: RequestInit) =>
+      new Promise<Response>((_, reject) => {
+        init.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true })
+      }),
+  )
 
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -27,7 +37,7 @@ describe('BrevoEmailSender', () => {
   it('envía con la clave de idempotencia en headers y devuelve el messageId', async () => {
     const fetchMock = respond(201, { messageId: '<abc@smtp-relay.brevo.com>' })
     vi.stubGlobal('fetch', fetchMock)
-    await expect(sender.send(email)).resolves.toEqual({
+    await expect(sender.send(email, live())).resolves.toEqual({
       providerMessageId: '<abc@smtp-relay.brevo.com>',
     })
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
@@ -48,7 +58,7 @@ describe('BrevoEmailSender', () => {
   it('sin nombre ni etiquetas manda solo la dirección', async () => {
     const fetchMock = respond(201, { messageId: '<x@brevo>' })
     vi.stubGlobal('fetch', fetchMock)
-    await sender.send({ ...email, to: { email: 'equipo@anticipate.pe' }, tags: [] })
+    await sender.send({ ...email, to: { email: 'equipo@anticipate.pe' }, tags: [] }, live())
     const body = JSON.parse((fetchMock.mock.calls[0] as [string, RequestInit])[1].body as string)
     expect(body.to).toEqual([{ email: 'equipo@anticipate.pe' }])
     expect(body).not.toHaveProperty('tags')
@@ -59,16 +69,16 @@ describe('BrevoEmailSender', () => {
       'fetch',
       respond(429, { code: 'too_many_requests', message: 'x' }, { 'x-sib-ratelimit-reset': '42' }),
     )
-    const error = await sender.send(email).catch((e: unknown) => e)
+    const error = await sender.send(email, live()).catch((e: unknown) => e)
     expect(error).toBeInstanceOf(RetryableEmailError)
     expect((error as RetryableEmailError).retryAfterSeconds).toBe(42)
   })
 
   it('5xx y errores de red son reintentables', async () => {
     vi.stubGlobal('fetch', respond(502, {}))
-    await expect(sender.send(email)).rejects.toBeInstanceOf(RetryableEmailError)
+    await expect(sender.send(email, live())).rejects.toBeInstanceOf(RetryableEmailError)
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('fetch failed')))
-    await expect(sender.send(email)).rejects.toBeInstanceOf(RetryableEmailError)
+    await expect(sender.send(email, live())).rejects.toBeInstanceOf(RetryableEmailError)
   })
 
   it('otros 4xx son permanentes y el mensaje no repite el cuerpo de Brevo', async () => {
@@ -76,8 +86,43 @@ describe('BrevoEmailSender', () => {
       'fetch',
       respond(400, { code: 'invalid_parameter', message: 'ana@proveedor.pe is not valid' }),
     )
-    const error = await sender.send(email).catch((e: unknown) => e)
+    const error = await sender.send(email, live()).catch((e: unknown) => e)
     expect(error).toBeInstanceOf(PermanentEmailError)
     expect((error as Error).message).toBe('Brevo 400 invalid_parameter')
+  })
+
+  it('con la señal ya abortada no llama a Brevo y rechaza con el motivo', async () => {
+    const fetchMock = respond(201, { messageId: '<x@brevo>' })
+    vi.stubGlobal('fetch', fetchMock)
+    const controller = new AbortController()
+    const reason = new Error('tope del handler')
+    controller.abort(reason)
+    await expect(sender.send(email, controller.signal)).rejects.toBe(reason)
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('abortar corta la petición en curso y rechaza con el motivo de la señal', async () => {
+    const fetchMock = hangingFetch()
+    vi.stubGlobal('fetch', fetchMock)
+    const controller = new AbortController()
+    const reason = new Error('tope del handler')
+    const sending = sender.send(email, controller.signal)
+    controller.abort(reason)
+    await expect(sending).rejects.toBe(reason)
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(init.signal?.aborted).toBe(true)
+  })
+
+  it('el tope propio corta la petición aunque la señal no avise', async () => {
+    vi.stubGlobal('fetch', hangingFetch())
+    const quick = new BrevoEmailSender({
+      apiKey: 'xkeysib-test',
+      fromEmail: 'no-reply@anticipate.pe',
+      fromName: 'Anticipate',
+      requestTimeoutMs: 30,
+    })
+    const error = await quick.send(email, live()).catch((e: unknown) => e)
+    expect(error).toBeInstanceOf(RetryableEmailError)
+    expect((error as Error).message).toBe('Brevo sin respuesta (TimeoutError)')
   })
 })
