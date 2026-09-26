@@ -1,5 +1,5 @@
+import { render } from '@react-email/render'
 import { createElement } from 'react'
-import { render } from 'react-email'
 import {
   AdvanceRequestConfirmation,
   type AdvanceRequestConfirmationData,

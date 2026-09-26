@@ -10,6 +10,9 @@ export default defineConfig({
   // Con `platform: 'node'` tsdown emite `.mjs`/`.d.mts` por defecto; `exports` apunta a `.js`/`.d.ts`.
   fixedExtension: false,
   target: 'es2022',
+  // react-email es devDependency: sus componentes (solo los que usan las plantillas) entran en dist,
+  // y en tiempo de ejecución quedan @react-email/render, react y react-dom, que son dependencies.
+  noExternal: ['react-email'],
   dts: true,
   sourcemap: true,
   clean: true,

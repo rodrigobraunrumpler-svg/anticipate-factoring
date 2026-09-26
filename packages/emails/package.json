@@ -20,14 +20,15 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@react-email/render": "catalog:",
     "react": "catalog:",
-    "react-dom": "catalog:",
-    "react-email": "catalog:"
+    "react-dom": "catalog:"
   },
   "devDependencies": {
     "@anticipate/config": "workspace:*",
     "@types/node": "catalog:",
     "@types/react": "catalog:",
+    "react-email": "catalog:",
     "tsdown": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"

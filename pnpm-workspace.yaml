@@ -73,6 +73,12 @@ catalog:
   "@aws-sdk/client-s3": ^3.1138.0
   "@aws-sdk/s3-request-presigner": ^3.1138.0
   nodemailer: ^10.0.10
+  # Correos: en tiempo de ejecución solo @react-email/render. Los componentes (Html, Body, Text…) salen
+  # de react-email, que es monolítico (CLI, servidor de vista previa, tailwindcss, esbuild): es
+  # devDependency de @anticipate/emails y tsdown mete en su dist solo los componentes que usan las
+  # plantillas. Los paquetes sueltos @react-email/components y @react-email/<componente> están
+  # deprecados en npm desde la versión 6 de react-email.
+  "@react-email/render": ^2.1.0
   react-email: ^6.11.0
   react: ^19.3.0
   react-dom: ^19.3.0

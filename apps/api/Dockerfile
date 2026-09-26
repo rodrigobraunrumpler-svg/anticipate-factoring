@@ -45,16 +45,18 @@ RUN turbo run build --filter=@anticipate/api
 # supports-color, y nada de eso se usa en el runtime. Lo que la API declara se instala igual:
 # @nestjs/core encuentra @nestjs/platform-express en node_modules/.pnpm/node_modules, y la prueba de humo
 # lo comprueba al arrancar.
-# --ignore-scripts: ninguna dependencia de producción necesita script de instalación, y sin su binario
-# opcional el postinstall de esbuild (lo trae react-email, que no lo usa al renderizar) lo descargaría
-# con npm, fuera del lockfile. Si una dependencia nueva de producción los necesita, se decide aquí.
+# --ignore-scripts: ninguna dependencia de producción necesita script de instalación, y un script que
+# descargue binarios lo haría fuera del lockfile. Si una dependencia nueva de producción lo necesita, se
+# decide aquí. Los correos solo traen @react-email/render: react-email (CLI, vista previa, tailwindcss,
+# esbuild) es de desarrollo y sus componentes van dentro del dist de @anticipate/emails.
 RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
     pnpm --filter @anticipate/api deploy --prod --no-optional --ignore-scripts /out/api
 
 # ---------- migrate: `prisma migrate deploy` de un solo uso; nunca en el arranque de la API ----------
 FROM build AS migrate
 WORKDIR /repo/apps/api
-# Con NODE_ENV=production, prisma.config.ts exige DATABASE_DIRECT_URL: nunca se migra por el pooler.
+# Con NODE_ENV=production, la guarda de la CLI (prisma/cli-guard.ts) exige DATABASE_DIRECT_URL, y en
+# todo entorno rechaza un host *-pooler: nunca se migra por el pooler.
 ENV NODE_ENV=production
 ENV CHECKPOINT_DISABLE=1
 USER node
