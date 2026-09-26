@@ -89,7 +89,7 @@ Los defectos de las plantillas (5432 y 4000) son los de CI.
 | `GET /api/v1/payers` | Pagadores activos, con sus campos públicos, para la landing |
 | `POST /api/v1/advance-requests` | Recibe una solicitud en multipart: campo `form` con el JSON del formulario, archivos `xml` y `pdf`, y las cabeceras `x-turnstile-token` e `Idempotency-Key`. Contrato completo en `docs/STACK.md` (sección 8, D38 y D45) |
 | `GET /health` | Liveness: el proceso responde |
-| `GET /health/readiness` | Readiness: base, almacenamiento y backlog del outbox; 503 si algo falla |
+| `GET /health/readiness` | Readiness: base, almacenamiento y backlog del outbox. 503 si la base o el almacenamiento no responden; con correos en `DEAD_LETTER` o atrasados responde 200 con `"status": "degraded"`, así que el monitoreo alerta por el cuerpo y no solo por el código (`docs/STACK.md`, sección 12) |
 
 La imagen de producción (`apps/api/Dockerfile`) se arma con `turbo prune` y `pnpm deploy --prod`: sin devDependencies, sin el CLI de Prisma y sin root. Las migraciones nunca corren al arrancar. Se aplican antes con la etapa `migrate` de la misma imagen, que exige la URL directa de la base y se niega a migrar por el pooler de Neon (`apps/api/prisma/cli-guard.ts`; si una migración falla, ver «Si una migración falla» en `docs/database/migrations.md`):
 
@@ -100,6 +100,8 @@ docker run --rm --network anticipate_default \
   anticipate-api-migrate:local
 pnpm api:image
 ```
+
+Con `NODE_ENV=production` la API exige `CORS_ORIGINS`, `TRUST_PROXY` y `TRUST_CLOUDFLARE_HEADERS`: sus valores dependen de Cloudflare y del proxy delante del servidor (tabla «Variables de producción de la API» en `docs/STACK.md`, sección 12). El servicio `api` de Compose trae valores para la imagen local, que no tiene proxy delante.
 
 `pnpm api:image` levanta la imagen contra la base `anticipate` de desarrollo: al arrancar, la API corre el publicador del outbox y el mantenimiento (purga, barrido de huérfanos y borrado diferido) sobre esa base y sobre el bucket `anticipate-local`, igual que `pnpm dev`.
 

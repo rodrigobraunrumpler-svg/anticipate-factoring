@@ -56,13 +56,13 @@ apps/api/
 | `constants/` | `http-headers.constants.ts` | Nombres de las cabeceras del contrato HTTP |
 | `decorators/` | `submit-throttle.decorator.ts`, `response-message.decorator.ts`, `skip-response-envelope.decorator.ts` | Metadatos de ruta que leen el guard y el interceptor |
 | `guards/` | `app-throttler.guard.ts` | Límites de peticiones por IP real (`APP_GUARD`) |
-| `middleware/` | `correlation-id.middleware.ts`, `content-length-limit.middleware.ts`, `body-parser-error.middleware.ts` (errores de body-parser con su tipo, para `AllExceptionsFilter`), `index.ts` | Piezas de Express que corren antes de los guards |
+| `middleware/` | `correlation-id.middleware.ts`, `client-ip-probe.middleware.ts` (log de error si `TRUST_PROXY` o `TRUST_CLOUDFLARE_HEADERS` no coinciden con lo que llega), `content-length-limit.middleware.ts`, `body-parser-error.middleware.ts` (errores de body-parser con su tipo, para `AllExceptionsFilter`), `index.ts` | Piezas de Express que corren antes de los guards |
 | `time/` | `clock.ts` | Puerto `Clock` y token `CLOCK` |
 | `types/` | `express.d.ts`, `paginated-list.ts` | `Request.correlationId` y listas paginadas |
-| `utils/` | `client-ip.ts`, `correlation-id.ts`, `build-pagination-meta.ts`, `uuid.ts` | Utilidades genéricas que usan dos partes o más |
+| `utils/` | `client-ip.ts`, `content-length.ts`, `correlation-id.ts`, `build-pagination-meta.ts`, `uuid.ts` | Utilidades genéricas que usan dos partes o más |
 | `exceptions/` | `application-error.ts` y los errores de la aplicación, `index.ts` | Errores con código público, sin Nest |
 | `filters/` | `all-exceptions.filter.ts`, `default-http-error-code.map.ts`, `exception-translator.ts` (tipo `ExceptionTranslator` y token `EXCEPTION_TRANSLATORS`), `index.ts` | Todo error sale con el sobre de error (`APP_FILTER`) |
-| `interceptors/` | `response-envelope.interceptor.ts`, `multipart-files.interceptor.ts` | Sobre de éxito (`APP_INTERCEPTOR`) y multipart |
+| `interceptors/` | `response-envelope.interceptor.ts`, `multipart-files.interceptor.ts`, `inflight-body-budget.ts` y `inflight-body-budget.module.ts` (presupuesto de cuerpos en memoria, `INFLIGHT_BODY_BUDGET`) | Sobre de éxito (`APP_INTERCEPTOR`), multipart y el tope de lo que se lee en memoria a la vez |
 | `swagger/` | `api-enveloped-response.swagger.ts`, `api-error-responses.swagger.ts` | Documentación del sobre y de los errores |
 | `validation/` | `validation-exception.factory.ts` | Violaciones de validación agrupadas por campo |
 | `storage/` | `file-storage.port.ts`, `index.ts` | Puerto del almacenamiento de archivos (`FILE_STORAGE`) |
