@@ -9,6 +9,7 @@ import { runtimeShape } from './schemas/runtime.schema.js'
 import { storageShape } from './schemas/storage.schema.js'
 import { throttleShape } from './schemas/throttle.schema.js'
 import { uploadShape } from './schemas/upload.schema.js'
+import { xmlParserShape } from './schemas/xml-parser.schema.js'
 
 /**
  * Todas las variables de entorno que conoce la API, por tema. Cada archivo de `schemas/` es dueño de
@@ -23,6 +24,7 @@ export const environmentShape = {
   ...mailShape,
   ...captchaShape,
   ...uploadShape,
+  ...xmlParserShape,
   ...throttleShape,
   ...outboxShape,
   ...maintenanceShape,

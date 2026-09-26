@@ -18,6 +18,11 @@ export {
   type ReservedFile,
 } from './application/ports/advance-request-repository.port.js'
 export {
+  INVOICE_XML_PARSER,
+  type InvoiceXmlParseOutcome,
+  type InvoiceXmlParserPort,
+} from './application/ports/invoice-xml-parser.port.js'
+export {
   LEGAL_DOCUMENT_READER,
   type LegalDocumentReaderPort,
 } from './application/ports/legal-document-reader.port.js'

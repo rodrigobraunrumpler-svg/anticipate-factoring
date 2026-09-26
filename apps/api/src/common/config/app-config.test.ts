@@ -1,6 +1,8 @@
+import { availableParallelism } from 'node:os'
 import { describe, expect, it } from 'vitest'
 import { ConfigValidationError, parseConfig } from './app-config.js'
 import { TURNSTILE_TEST_SECRET_KEYS } from './schemas/captcha.schema.js'
+import { defaultXmlParseWorkers } from './schemas/xml-parser.schema.js'
 
 /** Solo las variables obligatorias: todo lo demás toma su valor por defecto. */
 const REQUIRED_ONLY = {
@@ -110,7 +112,56 @@ describe('parseConfig', () => {
         handlerTimeoutMs: 20_000,
       },
       maintenance: { enabled: true, intervalMs: 3_600_000 },
+      xmlParser: {
+        workers: defaultXmlParseWorkers(availableParallelism()),
+        timeoutMs: 2_000,
+        workerHeapMb: 128,
+        queueLimit: 32,
+        queueTimeoutMs: 10_000,
+      },
     })
+  })
+
+  it('el lector de XML usa por defecto un hilo menos que los núcleos, entre 1 y 4', () => {
+    expect([1, 2, 3, 4, 5, 16, 64].map(defaultXmlParseWorkers)).toEqual([1, 1, 2, 3, 4, 4, 4])
+  })
+
+  it('XML_PARSE_*: lee cada tope y rechaza los que dejarían al lector sin hilos, sin plazo o sin memoria', () => {
+    expect(
+      parseConfig({
+        ...REQUIRED_ONLY,
+        XML_PARSE_WORKERS: '3',
+        XML_PARSE_TIMEOUT_MS: '1500',
+        XML_PARSE_WORKER_HEAP_MB: '256',
+        XML_PARSE_QUEUE_LIMIT: '10',
+        XML_PARSE_QUEUE_TIMEOUT_MS: '5000',
+      }).xmlParser,
+    ).toEqual({
+      workers: 3,
+      timeoutMs: 1_500,
+      workerHeapMb: 256,
+      queueLimit: 10,
+      queueTimeoutMs: 5_000,
+    })
+    expect(
+      problemsOf({
+        ...REQUIRED_ONLY,
+        XML_PARSE_WORKERS: '0',
+        XML_PARSE_TIMEOUT_MS: '99',
+        XML_PARSE_WORKER_HEAP_MB: '32',
+        XML_PARSE_QUEUE_LIMIT: '0',
+        XML_PARSE_QUEUE_TIMEOUT_MS: '120001',
+      }),
+    ).toEqual([
+      'XML_PARSE_WORKERS: debe ser al menos 1',
+      'XML_PARSE_TIMEOUT_MS: debe ser al menos 100',
+      'XML_PARSE_WORKER_HEAP_MB: debe ser al menos 64',
+      'XML_PARSE_QUEUE_LIMIT: debe ser al menos 1',
+      'XML_PARSE_QUEUE_TIMEOUT_MS: debe ser como máximo 120000',
+    ])
+    expect(problemsOf({ ...REQUIRED_ONLY, XML_PARSE_WORKERS: '33' })).toEqual([
+      'XML_PARSE_WORKERS: debe ser como máximo 32',
+    ])
   })
 
   it('trata una variable vacía como ausente e ignora las que no conoce', () => {

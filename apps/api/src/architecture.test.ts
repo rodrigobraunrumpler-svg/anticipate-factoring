@@ -148,6 +148,12 @@ const RESTRICTED: readonly {
     onlyFrom: 'infrastructure/notifications/**',
   },
   { kind: 'package', targets: ['uuid', 'uuid/**'], onlyFrom: 'infrastructure/prisma/id.ts' },
+  // Hilos: solo el pool del lector de XML (D53). Nadie más crea workers ni habla con ellos.
+  {
+    kind: 'package',
+    targets: ['node:worker_threads', 'worker_threads'],
+    onlyFrom: 'infrastructure/invoice-xml/worker-threads/**',
+  },
 ]
 
 function globToRegExp(glob: string): RegExp {
@@ -618,6 +624,16 @@ describe('checkArchitecture detecta cada violación', () => {
       rule: 'restricted-dependency',
       path: 'infrastructure/prisma/prisma.service.ts',
       specifier: 'uuid',
+    },
+    {
+      rule: 'restricted-dependency',
+      path: 'common/utils/client-ip.ts',
+      specifier: 'node:worker_threads',
+    },
+    {
+      rule: 'restricted-dependency',
+      path: 'infrastructure/storage/s3/s3-file-storage.adapter.ts',
+      specifier: 'worker_threads',
     },
     // 7. workers
     {

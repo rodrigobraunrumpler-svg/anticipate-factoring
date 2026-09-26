@@ -1,16 +1,34 @@
+import { monitorEventLoopDelay } from 'node:perf_hooks'
 import { problemSchema } from '@anticipate/shared/errors'
 import type { Amount } from '@anticipate/shared/money'
 import { buildInvoiceXml, type TestXmlOptions } from '@anticipate/shared/testing'
-import { describe, expect, it } from 'vitest'
+import { afterAll, describe, expect, it } from 'vitest'
+import { ServiceUnavailableError } from '#/common/exceptions/index.js'
+import { WorkerThreadsInvoiceXmlParser } from '#/infrastructure/invoice-xml/worker-threads/index.js'
+import type { InvoiceXmlParseOutcome } from '#/modules/advance-requests/application/ports/invoice-xml-parser.port.js'
 import type {
   InvoiceIntakeInput,
   UploadedFile,
 } from '#/modules/advance-requests/domain/types/invoice-intake.types.js'
 import type { PayerConditions } from '#/modules/advance-requests/domain/types/payer-conditions.js'
+import { InlineInvoiceXmlParser } from '../../../../../test/support/fakes.js'
+import { hostileInvoiceXml } from '../../../../../test/support/hostile-xml.js'
 import { InvoiceIntakeService } from './invoice-intake.service.js'
 
 const MB = 1024 * 1024
 const LIMITS = { maxXmlBytes: MB, maxPdfBytes: 10 * MB }
+
+// El lector de producción: cada XML se lee en un worker_thread, así estos tests fijan también que la
+// lectura fuera del hilo principal responde exactamente lo mismo que antes. Plazos holgados: aquí
+// ningún XML debe pasarlos, ni siquiera en una máquina cargada.
+const parser = new WorkerThreadsInvoiceXmlParser({
+  workers: 2,
+  timeoutMs: 30_000,
+  workerHeapMb: 128,
+  queueLimit: 32,
+  queueTimeoutMs: 60_000,
+})
+afterAll(() => parser.close())
 
 const sea: PayerConditions = {
   payerId: '0199a3b4-c5d6-7e8f-9a0b-1c2d3e4f5a6b',
@@ -42,7 +60,7 @@ const input = (overrides: Partial<InvoiceIntakeInput> = {}): InvoiceIntakeInput 
   ...overrides,
 })
 
-const service = new InvoiceIntakeService(LIMITS)
+const service = new InvoiceIntakeService(LIMITS, parser)
 
 describe('InvoiceIntakeService', () => {
   it('acepta una factura válida con su PDF y calcula el máximo con el porcentaje del pagador', async () => {
@@ -103,52 +121,23 @@ describe('InvoiceIntakeService', () => {
     ])
   })
 
-  it('cede el turno al event loop antes de cada XML: nunca lee dos seguidos sin soltarlo', async () => {
-    // Leer un XML de 1 MiB armado a propósito (miles de etiquetas o atributos distintos) lleva medio
-    // segundo o más de CPU; leer los 20 de una petición de corrido bloquearía el proceso entero
-    // (otras solicitudes y la sonda de vida) de 13 a 30 s. Aquí se registra cuándo se lee cada
-    // archivo (el acceso a su contenido) y cada vuelta del event loop (un setImmediate que se
-    // reprograma).
-    const events: string[] = []
-    const tracked = (name: string, seriesNumber: string): UploadedFile => {
-      const file = xml(name, { seriesNumber })
-      return {
-        originalname: name,
-        size: file.size,
-        get buffer() {
-          events.push(name)
-          return file.buffer
-        },
-      }
-    }
-    let running = true
-    const tick = () => {
-      if (!running) return
-      events.push('tick')
-      setImmediate(tick)
-    }
-    setImmediate(tick)
-    const result = await service.evaluate(
-      input({
-        xmlFiles: [
-          tracked('F001-1.xml', 'F001-1'),
-          tracked('F001-2.xml', 'F001-2'),
-          tracked('F001-3.xml', 'F001-3'),
-        ],
-        requestedAmount: '1.00' as Amount,
-      }),
-    )
-    running = false
-    const seen = [...events]
-    expect(result.ok).toBe(true)
-    expect(seen.filter((event) => event !== 'tick')).toEqual([
-      'F001-1.xml',
-      'F001-2.xml',
-      'F001-3.xml',
-    ])
-    // Entre dos lecturas siempre corrió el event loop.
-    expect(seen.join(' ')).toMatch(/F001-1\.xml( tick)+ F001-2\.xml( tick)+ F001-3\.xml/)
-  })
+  it('XML hostiles de 1 MiB nunca bloquean el event loop: el bloqueo más largo queda bajo 50 ms', async () => {
+    // Etiquetas vacías con nombres distintos: XML válido que el lector tarda medio segundo o más en
+    // recorrer (la medición de la Tarea 11). En el hilo principal, cada uno bloqueaba ese tiempo.
+    const content = hostileInvoiceXml()
+    const xmlFiles = Array.from({ length: 4 }, (_, i) => upload(`hostil-${i}.xml`, content))
+    const histogram = monitorEventLoopDelay({ resolution: 1 })
+    histogram.enable()
+    const result = await service.evaluate(input({ xmlFiles }))
+    histogram.disable()
+    expect(result).toEqual({
+      ok: false,
+      problems: xmlFiles.map((file) =>
+        expect.objectContaining({ code: 'XML_MISSING_REQUIRED_FIELD', file: file.originalname }),
+      ),
+    })
+    expect(histogram.max / 1e6).toBeLessThan(50)
+  }, 30_000)
 
   it('una fecha de emisión en el año 0000, que PostgreSQL no guarda, es un 422 con el archivo', async () => {
     const result = await service.evaluate(
@@ -208,7 +197,7 @@ describe('InvoiceIntakeService', () => {
   })
 
   it('aplica los topes por archivo con el nombre de cada uno', async () => {
-    const small = new InvoiceIntakeService({ maxXmlBytes: 100, maxPdfBytes: 20 })
+    const small = new InvoiceIntakeService({ maxXmlBytes: 100, maxPdfBytes: 20 }, parser)
     const result = await small.evaluate(
       input({ xmlFiles: [xml('F001-123.xml')], pdfFiles: [pdf('F001-123.pdf')] }),
     )
@@ -693,6 +682,80 @@ describe('InvoiceIntakeService', () => {
     })
   })
 
+  describe('con el lector de XML', () => {
+    it('lee los XML de a uno y en el orden recibido, con sus bytes y el tope; uno mayor al tope nunca llega al lector', async () => {
+      const reader = new InlineInvoiceXmlParser()
+      const first = xml('F001-1.xml', { seriesNumber: 'F001-1' })
+      const second = xml('F001-2.xml', { seriesNumber: 'F001-2' })
+      const result = await new InvoiceIntakeService(LIMITS, reader).evaluate(
+        input({ xmlFiles: [first, upload('grande.xml', Buffer.alloc(MB + 1, 0x20)), second] }),
+      )
+      expect(reader.calls).toHaveLength(2)
+      expect(reader.calls[0]?.xml).toBe(first.buffer)
+      expect(reader.calls[1]?.xml).toBe(second.buffer)
+      expect(reader.calls.map((call) => call.maxLength)).toEqual([MB, MB])
+      expect(reader.maxConcurrent).toBe(1)
+      expect(result).toEqual({
+        ok: false,
+        problems: [expect.objectContaining({ code: 'XML_TOO_LARGE', file: 'grande.xml' })],
+      })
+    })
+
+    it.each(['timeout', 'memory'] as const)(
+      'un XML que pasa el tope del lector (%s) es UNREADABLE_XML con su nombre; los demás se leen y validan igual',
+      async (reason) => {
+        const reader = new InlineInvoiceXmlParser()
+        reader.outcomes.set(1, { status: 'too-expensive', reason })
+        const result = await new InvoiceIntakeService(LIMITS, reader).evaluate(
+          input({
+            xmlFiles: [
+              xml('F001-1.xml', { seriesNumber: 'F001-1' }),
+              xml('hostil.xml', { seriesNumber: 'F001-9' }),
+              xml('F001-2.xml', { seriesNumber: 'F001-2', currency: 'EUR' }),
+            ],
+          }),
+        )
+        expect(result.ok).toBe(false)
+        if (result.ok) return
+        expect(result.problems.map((p) => [p.code, p.file, p.invoice ?? null])).toEqual([
+          ['UNREADABLE_XML', 'hostil.xml', null],
+          ['CURRENCY_NOT_ALLOWED', 'F001-2.xml', 'F001-2'],
+        ])
+        for (const problem of result.problems) problemSchema.parse(problem)
+      },
+    )
+
+    it.each(['saturated', 'start-failed', 'shutting-down'] as const)(
+      'con el lector no disponible (%s) la solicitud es 503, nunca un problema del archivo',
+      async (reason) => {
+        const reader = new InlineInvoiceXmlParser()
+        const unavailable: InvoiceXmlParseOutcome = { status: 'unavailable', reason }
+        reader.outcomes.set(1, unavailable)
+        const evaluation = new InvoiceIntakeService(LIMITS, reader).evaluate(
+          input({
+            xmlFiles: [
+              xml('F001-1.xml', { seriesNumber: 'F001-1' }),
+              xml('F001-2.xml', { seriesNumber: 'F001-2' }),
+              xml('F001-3.xml', { seriesNumber: 'F001-3' }),
+            ],
+          }),
+        )
+        await expect(evaluation).rejects.toThrow(ServiceUnavailableError)
+        await expect(evaluation).rejects.toThrow(reason)
+        // No sigue leyendo: la solicitud entera se reintenta.
+        expect(reader.calls).toHaveLength(2)
+      },
+    )
+
+    it('un defecto del lector no se disfraza de problema del proveedor', async () => {
+      const reader = new InlineInvoiceXmlParser()
+      reader.outcomes.set(0, new Error('defecto del lector'))
+      await expect(new InvoiceIntakeService(LIMITS, reader).evaluate(input())).rejects.toThrow(
+        'defecto del lector',
+      )
+    })
+  })
+
   it('un pagador mal configurado es un error de la plataforma, no un problema del proveedor', async () => {
     await expect(service.evaluate(input({ payer: { ...sea, advancePercent: 0 } }))).rejects.toThrow(
       RangeError,
@@ -705,6 +768,6 @@ describe('InvoiceIntakeService', () => {
     [{ maxXmlBytes: 1.5, maxPdfBytes: MB }],
     [{ maxXmlBytes: MB, maxPdfBytes: Number.POSITIVE_INFINITY }],
   ])('rechaza topes de archivo inválidos (%o)', (limits) => {
-    expect(() => new InvoiceIntakeService(limits)).toThrow(RangeError)
+    expect(() => new InvoiceIntakeService(limits, parser)).toThrow(RangeError)
   })
 })

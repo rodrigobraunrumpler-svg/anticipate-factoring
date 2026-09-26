@@ -1,11 +1,15 @@
 import { createProblem, type Problem } from '@anticipate/shared/errors'
 import { invoiceKey, validateInvoices, validateRequestedAmount } from '@anticipate/shared/invoice'
+import { ServiceUnavailableError } from '#/common/exceptions/index.js'
+import type { InvoiceXmlParserPort } from '#/modules/advance-requests/application/ports/invoice-xml-parser.port.js'
 import { screenFileNames } from '#/modules/advance-requests/domain/services/file-names.js'
 import { pairPdfs } from '#/modules/advance-requests/domain/services/pdf-pairing.js'
 import { buildValidationContext } from '#/modules/advance-requests/domain/services/validation-context.js'
 import {
+  oversizedXmlProblem,
   type ReadInvoice,
-  readInvoice,
+  toXmlFileReading,
+  unreadableXmlProblem,
 } from '#/modules/advance-requests/domain/services/xml-reading.js'
 import type {
   IntakeInvoice,
@@ -18,23 +22,19 @@ import type {
 const isPositiveByteCount = (value: number): boolean => Number.isSafeInteger(value) && value > 0
 
 /**
- * Cede el turno al event loop: lo que ya esperaba (otras peticiones, la sonda de vida, el outbox)
- * corre antes de seguir. `setImmediate` y no una promesa resuelta: una microtarea no suelta el
- * event loop.
- */
-const yieldToEventLoop = (): Promise<void> => new Promise((resolve) => setImmediate(resolve))
-
-/**
  * Admisión de las facturas de una solicitud: lee los XML, empareja los PDF, aplica las reglas de
  * shared con las condiciones del pagador y valida el monto pedido. Junta todos los problemas en una
  * sola respuesta; nunca rechaza por un archivo o un dato del proveedor.
  *
  * Leer un XML es CPU sincrónica: uno de 1 MiB armado a propósito (decenas de miles de etiquetas o
  * atributos con nombres distintos, todo XML válido) lleva de medio segundo a más de uno según la
- * carga de la máquina, y una petición dentro de los topes trae hasta `UPLOAD_MAX_FILES` (20).
- * Leídos de corrido bloquearían el proceso entero de 13 a 30 s: las demás solicitudes, el outbox y
- * la sonda de vida. Por eso `evaluate` es asíncrona y cede el turno antes de cada XML: el bloqueo
- * más largo de una petición es un solo archivo, acotado por `UPLOAD_MAX_XML_BYTES`.
+ * carga de la máquina, y una petición dentro de los topes trae hasta `UPLOAD_MAX_FILES` (20). En el
+ * hilo principal eso frenaría a toda la API (las demás solicitudes, el outbox y la sonda de vida).
+ * Por eso los XML se leen con `InvoiceXmlParserPort`, fuera de ese hilo, uno por vez y en el orden
+ * recibido: una petición ocupa como mucho un lugar del lector, así varias se turnan en vez de que una
+ * sola lo acapare. Un XML que pasa el tope de tiempo o de memoria del lector es `UNREADABLE_XML`; si
+ * el lector está saturado, la solicitud entera es 503 (`ServiceUnavailableError`), sin juzgar el
+ * archivo.
  *
  * El nombre de un archivo se repite en `file` de cada problema suyo, y de una factura con cien cuotas
  * salen unos doscientos. Por eso lo primero es `screenFileNames`: un archivo sin un nombre de archivo
@@ -43,7 +43,10 @@ const yieldToEventLoop = (): Promise<void> => new Promise((resolve) => setImmedi
  * cliente: con los topes por defecto, menos de 4.5 MB en el peor caso (sin el tope, 128 MB).
  */
 export class InvoiceIntakeService {
-  constructor(private readonly limits: InvoiceIntakeLimits) {
+  constructor(
+    private readonly limits: InvoiceIntakeLimits,
+    private readonly xmlParser: InvoiceXmlParserPort,
+  ) {
     if (!isPositiveByteCount(limits.maxXmlBytes) || !isPositiveByteCount(limits.maxPdfBytes)) {
       throw new RangeError(
         `Topes de archivo inválidos (xml ${limits.maxXmlBytes}, pdf ${limits.maxPdfBytes})`,
@@ -118,15 +121,31 @@ export class InvoiceIntakeService {
     }
   }
 
-  /** Lee cada XML en el orden recibido, cediendo el turno antes de cada uno. */
+  /**
+   * Lee cada XML en el orden recibido, uno por vez. Uno mayor al tope es `XML_TOO_LARGE` sin llegar al
+   * lector. Un lector saturado corta la admisión con 503: ningún problema de archivo sale de ahí.
+   */
   private async readAll(
     files: readonly UploadedFile[],
   ): Promise<{ read: ReadInvoice<UploadedFile>[]; problems: Problem[] }> {
+    const { maxXmlBytes } = this.limits
     const read: ReadInvoice<UploadedFile>[] = []
     const problems: Problem[] = []
     for (const file of files) {
-      await yieldToEventLoop()
-      const reading = readInvoice(file, this.limits.maxXmlBytes)
+      const oversized = oversizedXmlProblem(file, maxXmlBytes)
+      if (oversized !== null) {
+        problems.push(oversized)
+        continue
+      }
+      const outcome = await this.xmlParser.parse(file.buffer, { maxLength: maxXmlBytes })
+      if (outcome.status === 'unavailable') {
+        throw new ServiceUnavailableError(`el lector de XML no está disponible (${outcome.reason})`)
+      }
+      if (outcome.status === 'too-expensive') {
+        problems.push(unreadableXmlProblem(file))
+        continue
+      }
+      const reading = toXmlFileReading(file, outcome.result)
       if (reading.ok) read.push(reading.read)
       else problems.push(reading.problem)
     }

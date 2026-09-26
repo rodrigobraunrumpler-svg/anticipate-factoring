@@ -16,12 +16,14 @@ import {
   CORRELATION_ID_HEADER,
   IDEMPOTENT_REPLAYED_HEADER,
 } from '#/common/constants/http-headers.constants.js'
+import type { WorkerThreadsInvoiceXmlParser } from '#/infrastructure/invoice-xml/worker-threads/index.js'
 import { FakeEmailSender } from '#/infrastructure/notifications/index.js'
 import { PrismaService } from '#/infrastructure/prisma/index.js'
 import { PrismaAdvanceRequestRepository } from '#/infrastructure/prisma/repositories/advance-requests/prisma-advance-request.repository.js'
 import { PrismaPayerConditionsReader } from '#/infrastructure/prisma/repositories/advance-requests/prisma-payer-conditions.reader.js'
 import {
   ADVANCE_REQUEST_REPOSITORY,
+  INVOICE_XML_PARSER,
   PAYER_CONDITIONS_READER,
   type PayerConditions,
   type PayerConditionsReaderPort,
@@ -44,6 +46,7 @@ import { testConfig } from '../support/config.js'
 import { createTestPrisma, truncateAll } from '../support/db.js'
 import { createPayer } from '../support/factories.js'
 import { FakeCaptchaVerifier } from '../support/fakes.js'
+import { hostileInvoiceXml } from '../support/hostile-xml.js'
 import { deletePrefix, listKeys } from '../support/s3.js'
 
 const captcha = new FakeCaptchaVerifier()
@@ -825,5 +828,82 @@ describe('POST /api/v1/advance-requests · límites', () => {
       expectError(await submitAdvanceRequest(limited, { form }), 422, 'BUSINESS_RULES_VIOLATED')
       expectError(await submitAdvanceRequest(limited, { form }), 429, 'RATE_LIMIT_EXCEEDED')
     })
+  })
+})
+
+describe('POST /api/v1/advance-requests · lector de XML en worker_threads', () => {
+  it('XML hostiles dentro del plazo: 422 con el problema de cada archivo, sin subir nada', async () => {
+    // Plazo holgado: aquí el XML hostil debe terminar de leerse aunque la máquina esté cargada.
+    await withApp({ XML_PARSE_TIMEOUT_MS: '30000' }, async (patient) => {
+      const hostile = hostileInvoiceXml()
+      const res = await submitAdvanceRequest(patient, {
+        xml: [
+          [hostile, 'hostil-1.xml'],
+          [hostile, 'hostil-2.xml'],
+        ],
+      })
+      const problems = problemsOf(expectError(res, 422, 'BUSINESS_RULES_VIOLATED'))
+      expect(problems.map((p) => [p.code, p.file])).toEqual([
+        ['XML_MISSING_REQUIRED_FIELD', 'hostil-1.xml'],
+        ['XML_MISSING_REQUIRED_FIELD', 'hostil-2.xml'],
+      ])
+      expect(await listKeys(payerPrefix())).toEqual([])
+    })
+  })
+
+  it('un XML que pasa el plazo del lector: 422 UNREADABLE_XML con su nombre y el resto se juzga igual', async () => {
+    // Márgenes en los dos sentidos, aun con la máquina saturada: el XML hostil de 3 MiB tarda 1,5 s o
+    // más en leerse (tres veces el plazo de 500 ms) y cada factura de prueba, milisegundos. Heap y
+    // tope de XML holgados: aquí se prueba el plazo.
+    const env = {
+      XML_PARSE_TIMEOUT_MS: '500',
+      XML_PARSE_WORKER_HEAP_MB: '1024',
+      UPLOAD_MAX_XML_BYTES: String(4 * 1024 * 1024),
+    }
+    await withApp(env, async (strict) => {
+      const res = await submitAdvanceRequest(strict, {
+        xml: [
+          [hostileInvoiceXml(3 * 1024 * 1024), 'hostil.xml'],
+          [invoiceXml({ seriesNumber: 'F001-5', currency: 'EUR' }), 'F001-5.xml'],
+        ],
+      })
+      const problems = problemsOf(expectError(res, 422, 'BUSINESS_RULES_VIOLATED'))
+      expect(problems.map((p) => [p.code, p.file])).toEqual([
+        ['UNREADABLE_XML', 'hostil.xml'],
+        ['CURRENCY_NOT_ALLOWED', 'F001-5.xml'],
+      ])
+      expect(await listKeys(payerPrefix())).toEqual([])
+      // El reemplazo atiende el envío siguiente.
+      expectCreated(await submitAdvanceRequest(strict))
+    })
+  })
+
+  it('con el lector saturado: 503 SERVICE_UNAVAILABLE al envío que no consigue un hilo, sin subir nada', async () => {
+    // Un solo hilo y 100 ms de espera máxima: mientras un envío lee sus XML hostiles, el otro espera
+    // más que eso y recibe 503. El que tiene el hilo termina con su 422.
+    await withApp({ XML_PARSE_WORKERS: '1', XML_PARSE_QUEUE_TIMEOUT_MS: '100' }, async (busy) => {
+      const hostile = hostileInvoiceXml()
+      const send = (name: string) =>
+        submitAdvanceRequest(busy, {
+          xml: [1, 2, 3].map((i) => [hostile, `${name}-${i}.xml`] as const),
+        })
+      const responses = await Promise.all([send('a'), send('b')])
+      expect(responses.map((res) => res.status).sort()).toEqual([422, 503])
+      const unavailable = responses.find((res) => res.status === 503)
+      if (unavailable === undefined) throw new Error('ningún envío recibió 503')
+      expectError(unavailable, 503, 'SERVICE_UNAVAILABLE')
+      expect(await listKeys(payerPrefix())).toEqual([])
+    })
+  })
+
+  it('la app deja un hilo del lector listo al arrancar y no deja ninguno al cerrarse', async () => {
+    const other = await createTestApp({ overrides })
+    const parser = other.get<WorkerThreadsInvoiceXmlParser>(INVOICE_XML_PARSER)
+    try {
+      expect(parser.stats).toEqual(expect.objectContaining({ workers: 1, idle: 1 }))
+    } finally {
+      await other.close()
+    }
+    expect(parser.stats.workers).toBe(0)
   })
 })

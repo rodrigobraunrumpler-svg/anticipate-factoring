@@ -23,6 +23,7 @@ import type { UploadedFile } from '#/modules/advance-requests/domain/types/invoi
 import type { NewAdvanceRequest } from '#/modules/advance-requests/domain/types/new-advance-request.js'
 import type { PayerConditions } from '#/modules/advance-requests/domain/types/payer-conditions.js'
 import type { NewOutboxMessage } from '#/modules/outbox/index.js'
+import { InlineInvoiceXmlParser } from '../../../../../test/support/fakes.js'
 import {
   CreateAdvanceRequestUseCase,
   MAX_CREATE_ATTEMPTS,
@@ -201,7 +202,10 @@ beforeEach(() => {
     legalDocuments: {
       isCurrent: async (type, version) => currentVersions.has(`${type}:${version}`),
     },
-    invoiceIntake: new InvoiceIntakeService({ maxXmlBytes: 1_048_576, maxPdfBytes: 10_485_760 }),
+    invoiceIntake: new InvoiceIntakeService(
+      { maxXmlBytes: 1_048_576, maxPdfBytes: 10_485_760 },
+      new InlineInvoiceXmlParser(),
+    ),
     storage,
     outboxWakeUp: { notify: () => notified++ },
     clock: { now: () => NOW },

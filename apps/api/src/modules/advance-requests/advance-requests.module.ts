@@ -4,6 +4,7 @@ import { ContentLengthLimitMiddleware } from '#/common/middleware/content-length
 import { FILE_STORAGE, type FileStoragePort } from '#/common/storage/index.js'
 import { CLOCK, type Clock } from '#/common/time/clock.js'
 import { TurnstileModule } from '#/infrastructure/captcha/turnstile/index.js'
+import { InvoiceXmlParserModule } from '#/infrastructure/invoice-xml/worker-threads/index.js'
 import { newId } from '#/infrastructure/prisma/id.js'
 import { AdvanceRequestsPersistenceModule } from '#/infrastructure/prisma/repositories/advance-requests/advance-requests-persistence.module.js'
 import { SupplierConfirmationEmailHandler } from '#/modules/advance-requests/application/handlers/supplier-confirmation-email.handler.js'
@@ -16,6 +17,10 @@ import {
   ADVANCE_REQUEST_REPOSITORY,
   type AdvanceRequestRepositoryPort,
 } from '#/modules/advance-requests/application/ports/advance-request-repository.port.js'
+import {
+  INVOICE_XML_PARSER,
+  type InvoiceXmlParserPort,
+} from '#/modules/advance-requests/application/ports/invoice-xml-parser.port.js'
 import {
   LEGAL_DOCUMENT_READER,
   type LegalDocumentReaderPort,
@@ -34,20 +39,21 @@ import { OUTBOX_WAKE_UP, type OutboxWakeUpSignal } from '#/modules/outbox/index.
  * Solicitudes de adelanto: `POST /api/v1/advance-requests` y los dos handlers de correo del
  * outbox, que exporta para que `OutboxPublisherModule` los registre. Los casos de uso y handlers son
  * clases sin Nest: se cablean aquí con `useFactory`. `FILE_STORAGE`, `OUTBOX_WAKE_UP`,
- * `EMAIL_SENDER`, `CLOCK` y `APP_CONFIG` llegan de módulos globales.
+ * `EMAIL_SENDER`, `CLOCK` y `APP_CONFIG` llegan de módulos globales; el lector de XML
+ * (`INVOICE_XML_PARSER`), de `InvoiceXmlParserModule`.
  */
 @Module({
-  imports: [AdvanceRequestsPersistenceModule, TurnstileModule],
+  imports: [AdvanceRequestsPersistenceModule, TurnstileModule, InvoiceXmlParserModule],
   controllers: [AdvanceRequestsController],
   providers: [
     {
       provide: InvoiceIntakeService,
-      inject: [APP_CONFIG],
-      useFactory: ({ upload }: AppConfig) =>
-        new InvoiceIntakeService({
-          maxXmlBytes: upload.maxXmlBytes,
-          maxPdfBytes: upload.maxPdfBytes,
-        }),
+      inject: [APP_CONFIG, INVOICE_XML_PARSER],
+      useFactory: ({ upload }: AppConfig, xmlParser: InvoiceXmlParserPort) =>
+        new InvoiceIntakeService(
+          { maxXmlBytes: upload.maxXmlBytes, maxPdfBytes: upload.maxPdfBytes },
+          xmlParser,
+        ),
     },
     {
       provide: CreateAdvanceRequestUseCase,

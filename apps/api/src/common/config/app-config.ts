@@ -9,6 +9,7 @@ import { toRuntimeConfig } from './schemas/runtime.schema.js'
 import { toStorageConfig } from './schemas/storage.schema.js'
 import { toThrottleConfig } from './schemas/throttle.schema.js'
 import { toUploadConfig } from './schemas/upload.schema.js'
+import { toXmlParserConfig } from './schemas/xml-parser.schema.js'
 
 /** Token de la configuración validada. Lo provee `AppConfigModule.register(config)`, global. */
 export const APP_CONFIG = Symbol('APP_CONFIG')
@@ -28,6 +29,7 @@ function toAppConfig(env: Environment) {
     ...toMailConfig(env),
     ...toCaptchaConfig(env),
     ...toUploadConfig(env),
+    ...toXmlParserConfig(env),
     ...toThrottleConfig(env),
     ...toOutboxConfig(env),
     ...toMaintenanceConfig(env),

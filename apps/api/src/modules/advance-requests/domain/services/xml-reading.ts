@@ -1,5 +1,5 @@
 import { createProblem, type Problem } from '@anticipate/shared/errors'
-import { decodeXml, type ParsedInvoice, parseUblInvoice } from '@anticipate/shared/invoice'
+import type { ParsedInvoice, ParseResult } from '@anticipate/shared/invoice'
 import type { UploadedFile } from '../types/invoice-intake.types.js'
 
 export type ReadInvoice<T extends UploadedFile> = { file: T; invoice: ParsedInvoice }
@@ -9,24 +9,35 @@ export type XmlFileReading<T extends UploadedFile> =
   | { ok: false; problem: Problem }
 
 /**
- * Lee un XML con el lector de shared. El problema lleva en `file` el archivo que lo causó; el
- * `field` del lector (el dato de la factura que falta o es inválido) se conserva. Un XML mayor al
- * tope se rechaza sin leer su contenido. El nombre ya pasó `screenFileNames` (lo hace
- * `InvoiceIntakeService`), así que el problema repite un nombre acotado.
- *
- * Lee un solo archivo a propósito: es trabajo de CPU sincrónico (un XML de 1 MiB armado para eso
- * lleva cerca de medio segundo), así que quien lee varios decide cuándo ceder el turno entre uno y
- * otro (`InvoiceIntakeService`).
+ * Un XML mayor al tope es `XML_TOO_LARGE` con su nombre, sin leer su contenido (ni `buffer`); `null`
+ * si entra. El nombre ya pasó `screenFileNames` (lo hace `InvoiceIntakeService`), así que el problema
+ * repite un nombre acotado.
  */
-export function readInvoice<T extends UploadedFile>(
+export function oversizedXmlProblem(file: UploadedFile, maxXmlBytes: number): Problem | null {
+  return file.size > maxXmlBytes
+    ? createProblem('XML_TOO_LARGE', { file: file.originalname })
+    : null
+}
+
+/**
+ * Lo que devolvió el lector de shared para `file`: la factura leída junto a su archivo, o el problema
+ * con el archivo que lo causó en `file`. El `field` del lector (el dato de la factura que falta o es
+ * inválido) se conserva.
+ */
+export function toXmlFileReading<T extends UploadedFile>(
   file: T,
-  maxXmlBytes: number,
+  result: ParseResult,
 ): XmlFileReading<T> {
-  if (file.size > maxXmlBytes) {
-    return { ok: false, problem: createProblem('XML_TOO_LARGE', { file: file.originalname }) }
-  }
-  const result = parseUblInvoice(decodeXml(file.buffer), { maxLength: maxXmlBytes })
   return result.ok
     ? { ok: true, read: { file, invoice: result.invoice } }
     : { ok: false, problem: { ...result.problem, file: file.originalname } }
+}
+
+/**
+ * Un XML que el lector no pudo terminar dentro de sus topes de tiempo o de memoria es ilegible para el
+ * proveedor: `UNREADABLE_XML` con su nombre («verifica que sea el XML original de la factura»).
+ * Ningún XML emitido para SUNAT se acerca a esos topes.
+ */
+export function unreadableXmlProblem(file: UploadedFile): Problem {
+  return createProblem('UNREADABLE_XML', { file: file.originalname })
 }
