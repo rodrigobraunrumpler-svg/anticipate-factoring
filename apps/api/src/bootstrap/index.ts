@@ -1,6 +1,12 @@
 export { configureBodyParsers, JSON_BODY_LIMIT } from './body-parser.options.js'
 export { API_DEFAULT_VERSION, API_PREFIX, HEALTH_PATHS, SWAGGER_PATH } from './constants.js'
 export { createCorsOptions } from './cors.options.js'
+export {
+  GracefulShutdown,
+  type GracefulShutdownOptions,
+  HttpServerDrain,
+  type HttpServerLoad,
+} from './graceful-shutdown.js'
 export { createHelmetOptions } from './helmet.options.js'
 export {
   createPinoHttpOptions,

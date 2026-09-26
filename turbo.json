@@ -17,6 +17,10 @@
     "@anticipate/api#build": { "dependsOn": ["^build", "db:generate"], "outputs": ["dist/**"] },
     "@anticipate/api#typecheck": { "dependsOn": ["^build", "db:generate"] },
     "@anticipate/api#test": { "dependsOn": ["^build", "db:generate"] },
+    "@anticipate/api#test:integration": {
+      "dependsOn": ["^build", "db:generate", "build"],
+      "cache": false
+    },
     "@anticipate/api#dev": {
       "dependsOn": ["^build", "db:generate"],
       "cache": false,

@@ -1,6 +1,7 @@
 import { ENVIRONMENT_KEYS, type Environment, environmentSchema } from './environment.schema.js'
 import { toCaptchaConfig } from './schemas/captcha.schema.js'
 import { toDatabaseConfig } from './schemas/database.schema.js'
+import { toDeadlinesConfig } from './schemas/deadlines.schema.js'
 import { toHttpConfig } from './schemas/http.schema.js'
 import { toMailConfig } from './schemas/mail.schema.js'
 import { toMaintenanceConfig } from './schemas/maintenance.schema.js'
@@ -33,6 +34,7 @@ function toAppConfig(env: Environment) {
     ...toThrottleConfig(env),
     ...toOutboxConfig(env),
     ...toMaintenanceConfig(env),
+    ...toDeadlinesConfig(env),
   }
 }
 

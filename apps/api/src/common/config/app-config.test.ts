@@ -151,6 +151,7 @@ describe('parseConfig', () => {
         handlerTimeoutMs: 20_000,
       },
       maintenance: { enabled: true, intervalMs: 3_600_000 },
+      shutdown: { timeoutMs: 25_000 },
       xmlParser: {
         workers: defaultXmlParseWorkers(availableParallelism()),
         timeoutMs: 2_000,
@@ -369,12 +370,36 @@ describe('parseConfig', () => {
   })
 
   it('el tope de un handler del outbox cabe dos veces en el arriendo', () => {
-    expect(problemsOf({ ...REQUIRED_ONLY, OUTBOX_HANDLER_TIMEOUT_MS: '60000' })).toEqual([
+    // El plazo del apagado acompaña al tope del handler (regla de SHUTDOWN_TIMEOUT_MS, abajo).
+    const shutdown = { SHUTDOWN_TIMEOUT_MS: '70000' }
+    expect(
+      problemsOf({ ...REQUIRED_ONLY, ...shutdown, OUTBOX_HANDLER_TIMEOUT_MS: '60000' }),
+    ).toEqual([
       'OUTBOX_HANDLER_TIMEOUT_MS: el doble debe ser menor que OUTBOX_LEASE_SECONDS (en milisegundos)',
     ])
     expect(
-      parseConfig({ ...REQUIRED_ONLY, OUTBOX_HANDLER_TIMEOUT_MS: '59999' }).outbox.handlerTimeoutMs,
+      parseConfig({ ...REQUIRED_ONLY, ...shutdown, OUTBOX_HANDLER_TIMEOUT_MS: '59999' }).outbox
+        .handlerTimeoutMs,
     ).toBe(59_999)
+  })
+
+  it('el plazo del apagado deja terminar el correo en curso y registrar su resultado', () => {
+    const message =
+      'SHUTDOWN_TIMEOUT_MS: debe ser al menos OUTBOX_HANDLER_TIMEOUT_MS + 2000: el correo que se está enviando al apagar termina y registra su resultado antes del cierre forzado'
+    expect(problemsOf({ ...REQUIRED_ONLY, SHUTDOWN_TIMEOUT_MS: '21999' })).toEqual([message])
+    expect(
+      problemsOf({
+        ...REQUIRED_ONLY,
+        OUTBOX_HANDLER_TIMEOUT_MS: '30000',
+        SHUTDOWN_TIMEOUT_MS: '31000',
+      }),
+    ).toEqual([message])
+    expect(parseConfig({ ...REQUIRED_ONLY, SHUTDOWN_TIMEOUT_MS: '22000' }).shutdown).toEqual({
+      timeoutMs: 22_000,
+    })
+    expect(problemsOf({ ...REQUIRED_ONLY, SHUTDOWN_TIMEOUT_MS: '600001' })).toEqual([
+      'SHUTDOWN_TIMEOUT_MS: debe ser como máximo 600000',
+    ])
   })
 
   it('una configuración de producción completa pasa las guardas', () => {

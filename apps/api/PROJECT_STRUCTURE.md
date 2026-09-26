@@ -18,7 +18,7 @@ apps/api/
 ├── src/
 │   ├── main.ts · app.module.ts · app.setup.ts · architecture.test.ts
 │   ├── bootstrap/        contrato HTTP de la app: prefijo, versión, helmet, CORS, parser de JSON,
-│   │                     tiempos del servidor, logger HTTP y Swagger
+│   │                     tiempos del servidor, apagado ordenado, logger HTTP y Swagger
 │   ├── common/           transversal sin dueño: config, constants, decorators, guards, middleware,
 │   │                     time, types, utils, exceptions, filters, interceptors, swagger,
 │   │                     validation, storage y captcha
@@ -36,8 +36,8 @@ apps/api/
 
 | Carpeta | Contenido | No contiene |
 |---|---|---|
-| `src/` (raíz) | `main.ts` (lee `.env` fuera de producción, valida la configuración, crea la app y abre el puerto), `app.module.ts` (`AppModule.register(config, extraModules)`, la raíz de composición) y `app.setup.ts` (`NEST_APP_OPTIONS` y `setupApp`, compartidos por producción y tests) | Lógica de negocio |
-| `bootstrap/` | Una pieza por archivo: `constants.ts` (`API_PREFIX`, `API_DEFAULT_VERSION`, `SWAGGER_PATH`, `HEALTH_PATHS`), `body-parser.options.ts`, `cors.options.ts`, `helmet.options.ts`, `server-timeouts.ts`, `pino-http.options.ts`, `swagger.setup.ts` y `startup-banner.ts` (las líneas de arranque: URL completas fuera de producción) | Nada de `modules/` |
+| `src/` (raíz) | `main.ts` (lee `.env` fuera de producción, valida la configuración, crea la app, abre el puerto y atiende `SIGTERM` y `SIGINT` con `GracefulShutdown`), `app.module.ts` (`AppModule.register(config, extraModules)`, la raíz de composición) y `app.setup.ts` (`NEST_APP_OPTIONS` y `setupApp`, compartidos por producción y tests) | Lógica de negocio |
+| `bootstrap/` | Una pieza por archivo: `constants.ts` (`API_PREFIX`, `API_DEFAULT_VERSION`, `SWAGGER_PATH`, `HEALTH_PATHS`), `body-parser.options.ts`, `cors.options.ts`, `helmet.options.ts`, `server-timeouts.ts`, `graceful-shutdown.ts` (apagado ordenado con plazo, D56), `pino-http.options.ts`, `swagger.setup.ts` y `startup-banner.ts` (las líneas de arranque: URL completas fuera de producción) | Nada de `modules/` |
 | `common/` | Lo transversal: configuración validada, cabeceras del contrato, decoradores, guards, middleware, puertos comunes (`Clock`, almacenamiento, captcha), excepciones, filtro, interceptores y validación | Nada de `modules/`, `infrastructure/` ni `workers/` |
 | `infrastructure/` | Adaptadores de los puertos: Prisma y sus repositorios (`prisma/repositories/<módulo>/`, con su módulo de persistencia y sus `mappers/`), S3, correo, Turnstile, reloj y el lector de XML (`invoice-xml/worker-threads/`: el pool de `worker_threads`, el script del worker y su adaptador, D53) | Casos de uso, controladores, workers |
 | `modules/<m>/domain/` | TypeScript puro: tipos, servicios de dominio y errores del módulo | Nest, Prisma, Express, adaptadores |

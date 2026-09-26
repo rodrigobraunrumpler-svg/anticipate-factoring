@@ -1,7 +1,7 @@
 import { Logger } from '@nestjs/common'
 import { NestFactory } from '@nestjs/core'
 import type { NestExpressApplication } from '@nestjs/platform-express'
-import { startupBannerLines } from '#/bootstrap/index.js'
+import { GracefulShutdown, HttpServerDrain, startupBannerLines } from '#/bootstrap/index.js'
 import { ConfigValidationError, parseConfig } from '#/common/config/index.js'
 import { AppModule } from './app.module.js'
 import { NEST_APP_OPTIONS, setupApp } from './app.setup.js'
@@ -25,8 +25,16 @@ async function bootstrap(): Promise<void> {
   )
   try {
     setupApp(app, config)
-    app.enableShutdownHooks()
+    // Antes de abrir el puerto: sigue cada conexión y cada petición desde la primera.
+    const drain = new HttpServerDrain(app.getHttpServer())
     await app.listen(config.port)
+    // En lugar de `enableShutdownHooks`: con SIGTERM o SIGINT el servidor drena mientras Nest cierra
+    // la app, con el plazo SHUTDOWN_TIMEOUT_MS (D56).
+    new GracefulShutdown(drain, {
+      timeoutMs: config.shutdown.timeoutMs,
+      closeApp: () => app.close(),
+      exit: (code) => process.exit(code),
+    }).listen(['SIGTERM', 'SIGINT'])
   } catch (error) {
     await app.close()
     throw error

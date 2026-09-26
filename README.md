@@ -62,7 +62,7 @@ pnpm infra:up
 
 ## API
 
-`apps/api` es la API: NestJS 12 en ESM y Prisma 7.10 sobre PostgreSQL 18, con módulos por capas y todas las respuestas en el sobre de `@anticipate/shared/api`. Su estructura y sus reglas de dependencia están en [`apps/api/PROJECT_STRUCTURE.md`](apps/api/PROJECT_STRUCTURE.md), y las decisiones, en `docs/STACK.md` (D37 a D52).
+`apps/api` es la API: NestJS 12 en ESM y Prisma 7.10 sobre PostgreSQL 18, con módulos por capas y todas las respuestas en el sobre de `@anticipate/shared/api`. Su estructura y sus reglas de dependencia están en [`apps/api/PROJECT_STRUCTURE.md`](apps/api/PROJECT_STRUCTURE.md), y las decisiones, en `docs/STACK.md` (D37 a D56).
 
 Para correrla en local, con la infraestructura levantada (`pnpm infra:up`):
 
@@ -102,6 +102,8 @@ pnpm api:image
 ```
 
 Con `NODE_ENV=production` la API exige `CORS_ORIGINS`, `TRUST_PROXY` y `TRUST_CLOUDFLARE_HEADERS`: sus valores dependen de Cloudflare y del proxy delante del servidor (tabla «Variables de producción de la API» en `docs/STACK.md`, sección 12). El servicio `api` de Compose trae valores para la imagen local, que no tiene proxy delante.
+
+Al apagarse (`SIGTERM`), la API deja de aceptar conexiones, cierra las ociosas y responde lo que está en curso con `Connection: close`, con un tope de `SHUTDOWN_TIMEOUT_MS` (25 s, D56); si lo pasa, corta lo que queda y sale con código 1 y un log de error. El hosting le da al menos 30 s de gracia antes del SIGKILL: `docker stop` espera solo 10 s si no se configura (`--time 30`; en Compose, `stop_grace_period: 30s`). Tabla completa en `docs/STACK.md`, sección 12.
 
 `pnpm api:image` levanta la imagen contra la base `anticipate` de desarrollo: al arrancar, la API corre el publicador del outbox y el mantenimiento (purga, barrido de huérfanos y borrado diferido) sobre esa base y sobre el bucket `anticipate-local`, igual que `pnpm dev`.
 

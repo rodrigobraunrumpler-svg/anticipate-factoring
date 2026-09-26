@@ -106,8 +106,9 @@ services:
       TURNSTILE_SECRET_KEY: local-image-smoke-test-not-a-secret
     ports:
       - "127.0.0.1:${API_PORT:-4000}:4000"
-    # Al recibir SIGTERM la API deja de programar pasadas del outbox y del mantenimiento, espera la que
-    # está en curso y recién entonces cierra el pool; 30 s cubren el tope por handler del outbox (20 s).
+    # Al recibir SIGTERM la API deja de aceptar conexiones, cierra las ociosas, responde lo que está en
+    # curso con Connection: close y espera la pasada del outbox y del mantenimiento, como mucho
+    # SHUTDOWN_TIMEOUT_MS (25 s, D56); 30 s de gracia dejan margen antes del SIGKILL.
     stop_grace_period: 30s
     depends_on:
       postgres: { condition: service_healthy }

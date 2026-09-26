@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import { captchaShape, refineCaptcha } from './schemas/captcha.schema.js'
 import { databaseShape, refineDatabase } from './schemas/database.schema.js'
+import { deadlinesShape, refineDeadlines } from './schemas/deadlines.schema.js'
 import { httpShape, refineHttp } from './schemas/http.schema.js'
 import { mailShape, refineMail } from './schemas/mail.schema.js'
 import { maintenanceShape } from './schemas/maintenance.schema.js'
@@ -28,6 +29,7 @@ export const environmentShape = {
   ...throttleShape,
   ...outboxShape,
   ...maintenanceShape,
+  ...deadlinesShape,
 }
 
 export type EnvironmentKey = keyof typeof environmentShape
@@ -47,6 +49,7 @@ export const environmentSchema = z.object(environmentShape).superRefine((env, ct
   refineCaptcha(env, ctx)
   refineUpload(env, ctx)
   refineOutbox(env, ctx)
+  refineDeadlines(env, ctx)
 })
 
 export type Environment = z.output<typeof environmentSchema>
