@@ -18,6 +18,17 @@ describe('readInvoice', () => {
     expect(reading.read.file).toBe(file)
   })
 
+  it('un XML justo en el tope se lee; con un byte más que el tope es XML_TOO_LARGE', () => {
+    const file = xmlFile('F001-123.xml', buildInvoiceXml())
+    const atCap = readInvoice(file, file.size)
+    if (!atCap.ok) throw new Error(atCap.problem.code)
+    expect(atCap.read.invoice.seriesNumber).toBe('F001-123')
+    expect(readInvoice(file, file.size - 1)).toEqual({
+      ok: false,
+      problem: expect.objectContaining({ code: 'XML_TOO_LARGE', file: 'F001-123.xml' }),
+    })
+  })
+
   it('un XML mayor al tope es XML_TOO_LARGE con su nombre, aunque sea válido', () => {
     const content = buildInvoiceXml()
     expect(readInvoice(xmlFile('F001-123.xml', content), content.length - 1)).toEqual({

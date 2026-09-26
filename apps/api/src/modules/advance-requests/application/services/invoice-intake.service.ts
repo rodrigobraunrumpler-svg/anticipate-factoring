@@ -53,15 +53,22 @@ export class InvoiceIntakeService {
     // El máximo de facturas del pagador cuenta los XML recibidos, legibles o no (contrato del
     // endpoint, D38): así TOO_MANY_INVOICES sale junto con los problemas de cada archivo y de cada
     // factura, no en un segundo envío. Sin ningún XML, `validateInvoices` responde NO_INVOICES; si
-    // llegaron y ninguno se pudo leer, no lo agrega: ya hay un problema por archivo.
+    // llegaron y ninguno se pudo leer, no lo agrega: ya hay un problema por archivo. Cada problema
+    // de una factura lleva el XML que la trajo (`invoiceFiles`, por posición): la serie-número sola
+    // no alcanza, dos archivos pueden traer la misma.
     const validation = validateInvoices(
       reading.read.map(({ invoice }) => invoice),
       context,
-      { xmlFileCount: input.xmlFiles.length },
+      {
+        xmlFileCount: input.xmlFiles.length,
+        invoiceFiles: reading.read.map(({ file }) => file.originalname),
+      },
     )
     const problems: Problem[] = [...reading.problems, ...pairing.problems, ...validation.problems]
-    // El máximo se calcula sobre las facturas válidas: solo tiene sentido si todas lo son.
-    if (problems.length === 0) {
+    // El máximo se calcula sobre las facturas: tiene sentido si todos los XML se leyeron y todas
+    // pasan las reglas. Los PDF y los nombres de archivo no cambian las facturas, así que sus
+    // problemas no lo ocultan: salen en la misma respuesta.
+    if (reading.problems.length === 0 && validation.problems.length === 0) {
       const amountProblem = validateRequestedAmount(input.requestedAmount, validation)
       if (amountProblem !== null) problems.push(amountProblem)
     }

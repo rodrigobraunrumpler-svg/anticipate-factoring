@@ -57,6 +57,8 @@ describe('buildValidationContext', () => {
     [{ minTermDays: 1.5 }, /minTermDays/],
     [{ maxInvoices: 0 }, /maxInvoices/],
     [{ maxInvoices: 101 }, /maxInvoices/],
+    [{ maxInvoices: 1.5 }, /maxInvoices/],
+    [{ maxInvoices: Number.NaN }, /maxInvoices/],
     [{ allowedCurrencies: [] }, /allowedCurrencies/],
     [
       { allowedCurrencies: ['EUR'] as unknown as PayerConditions['allowedCurrencies'] },

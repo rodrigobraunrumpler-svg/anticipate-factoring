@@ -96,9 +96,9 @@ describe('InvoiceIntakeService', () => {
     )
     expect(result.ok).toBe(false)
     if (result.ok) return
-    expect(result.problems.map((p) => [p.code, p.file ?? p.invoice])).toEqual([
-      ['UNREADABLE_XML', 'roto.xml'],
-      ['CURRENCY_NOT_ALLOWED', 'F001-1'],
+    expect(result.problems.map((p) => [p.code, p.file, p.invoice ?? null])).toEqual([
+      ['UNREADABLE_XML', 'roto.xml', null],
+      ['CURRENCY_NOT_ALLOWED', 'F001-1.xml', 'F001-1'],
     ])
   })
 
@@ -177,11 +177,11 @@ describe('InvoiceIntakeService', () => {
     )
     expect(result.ok).toBe(false)
     if (result.ok) return
-    expect(result.problems.map((p) => [p.code, p.file ?? p.invoice])).toEqual([
-      ['UNREADABLE_XML', 'F001-2.xml'],
-      ['INVALID_PDF', 'F001-1.pdf'],
-      ['PDF_WITHOUT_XML', 'F001-9.pdf'],
-      ['RECIPIENT_IS_NOT_PAYER', 'F001-1'],
+    expect(result.problems.map((p) => [p.code, p.file, p.invoice ?? null])).toEqual([
+      ['UNREADABLE_XML', 'F001-2.xml', null],
+      ['INVALID_PDF', 'F001-1.pdf', null],
+      ['PDF_WITHOUT_XML', 'F001-9.pdf', null],
+      ['RECIPIENT_IS_NOT_PAYER', 'F001-1.xml', 'F001-1'],
     ])
   })
 
@@ -303,11 +303,11 @@ describe('InvoiceIntakeService', () => {
     )
     expect(result.ok).toBe(false)
     if (result.ok) return
-    expect(result.problems.map((p) => [p.code, p.file ?? p.invoice ?? null])).toEqual([
-      ['PDF_WITHOUT_XML', 'F001-9.pdf'],
-      ['TOO_MANY_INVOICES', null],
-      ['RECIPIENT_IS_NOT_PAYER', 'F001-1'],
-      ['CURRENCY_NOT_ALLOWED', 'F001-2'],
+    expect(result.problems.map((p) => [p.code, p.file ?? null, p.invoice ?? null])).toEqual([
+      ['PDF_WITHOUT_XML', 'F001-9.pdf', null],
+      ['TOO_MANY_INVOICES', null, null],
+      ['RECIPIENT_IS_NOT_PAYER', 'F001-1.xml', 'F001-1'],
+      ['CURRENCY_NOT_ALLOWED', 'F001-2.xml', 'F001-2'],
     ])
   })
 
@@ -348,7 +348,13 @@ describe('InvoiceIntakeService', () => {
     )
     expect(result).toEqual({
       ok: false,
-      problems: [expect.objectContaining({ code: 'ISSUE_DATE_IN_FUTURE', invoice: 'F001-123' })],
+      problems: [
+        expect.objectContaining({
+          code: 'ISSUE_DATE_IN_FUTURE',
+          invoice: 'F001-123',
+          file: 'F001-123.xml',
+        }),
+      ],
     })
   })
 
@@ -373,9 +379,9 @@ describe('InvoiceIntakeService', () => {
     )
     expect(result.ok).toBe(false)
     if (result.ok) return
-    expect(result.problems.map((p) => [p.code, p.invoice])).toEqual([
-      ['NET_PENDING_EXCEEDS_TOTAL', 'F001-123'],
-      ['INSTALLMENT_AMOUNT_ZERO', 'F001-124'],
+    expect(result.problems.map((p) => [p.code, p.invoice, p.file])).toEqual([
+      ['NET_PENDING_EXCEEDS_TOTAL', 'F001-123', 'F001-123.xml'],
+      ['INSTALLMENT_AMOUNT_ZERO', 'F001-124', 'F001-124.xml'],
     ])
   })
 
@@ -387,8 +393,122 @@ describe('InvoiceIntakeService', () => {
     )
     expect(result).toEqual({
       ok: false,
-      problems: [expect.objectContaining({ code: 'DUPLICATE_INVOICE', invoice: 'F001-00000123' })],
+      problems: [
+        expect.objectContaining({
+          code: 'DUPLICATE_INVOICE',
+          invoice: 'F001-00000123',
+          file: 'copia.xml',
+        }),
+      ],
     })
+  })
+
+  it('cada problema de una factura lleva el XML que la trajo, aunque dos archivos traigan la misma serie', async () => {
+    const result = await service.evaluate(
+      input({
+        xmlFiles: [
+          xml('a.xml', { seriesNumber: 'F001-1' }),
+          xml('b.xml', { seriesNumber: 'F001-1' }),
+          xml('c.xml', { seriesNumber: 'F001-1', issuerRuc: '10467286736' }),
+        ],
+      }),
+    )
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.problems.map((p) => [p.code, p.invoice, p.file])).toEqual([
+      ['DUPLICATE_INVOICE', 'F001-1', 'b.xml'],
+      ['ISSUER_IS_NOT_SUPPLIER', 'F001-1', 'c.xml'],
+    ])
+  })
+
+  it('dos XML con el mismo nombre y un PDF: 422 DUPLICATE_FILE_NAME, nunca el PDF en otra factura', async () => {
+    // a/factura.xml y b/factura.xml llegan como factura.xml: el PDF no puede ir a ninguna de las dos.
+    const result = await service.evaluate(
+      input({
+        xmlFiles: [
+          xml('factura.xml', { seriesNumber: 'F001-2' }),
+          xml('factura.xml', { seriesNumber: 'F001-1' }),
+        ],
+        pdfFiles: [pdf('factura.pdf')],
+      }),
+    )
+    expect(result).toEqual({
+      ok: false,
+      problems: [
+        expect.objectContaining({
+          code: 'DUPLICATE_FILE_NAME',
+          file: 'factura.xml',
+          params: { file: 'factura.xml' },
+        }),
+      ],
+    })
+  })
+
+  it('dos XML con el mismo nombre y un PDF para cada uno: ningún PDF es PDF_WITHOUT_XML', async () => {
+    const result = await service.evaluate(
+      input({
+        xmlFiles: [
+          xml('F001-1.xml', { seriesNumber: 'F001-1' }),
+          xml('f001-1.XML', { seriesNumber: 'F001-2' }),
+        ],
+        pdfFiles: [pdf('F001-1.pdf'), pdf('f001-1.pdf')],
+      }),
+    )
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.problems.map((p) => [p.code, p.file])).toEqual([
+      ['DUPLICATE_FILE_NAME', 'F001-1.xml'],
+      ['DUPLICATE_FILE_NAME', 'f001-1.XML'],
+    ])
+  })
+
+  it('los XML con el mismo nombre se leen y validan igual: sus demás problemas salen en la misma respuesta', async () => {
+    const result = await service.evaluate(
+      input({
+        xmlFiles: [
+          xml('factura.xml', { seriesNumber: 'F001-1', currency: 'EUR' }),
+          upload('Factura.xml', 'no soy xml'),
+        ],
+      }),
+    )
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.problems.map((p) => [p.code, p.file])).toEqual([
+      ['UNREADABLE_XML', 'Factura.xml'],
+      ['DUPLICATE_FILE_NAME', 'factura.xml'],
+      ['DUPLICATE_FILE_NAME', 'Factura.xml'],
+      ['CURRENCY_NOT_ALLOWED', 'factura.xml'],
+    ])
+  })
+
+  it('un problema de un PDF no oculta un monto mayor al máximo: los PDF no cambian las facturas', async () => {
+    const result = await service.evaluate(
+      input({ pdfFiles: [pdf('F001-9.pdf')], requestedAmount: '8496.01' as Amount }),
+    )
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.problems.map((p) => [p.code, p.file ?? p.field])).toEqual([
+      ['PDF_WITHOUT_XML', 'F001-9.pdf'],
+      ['AMOUNT_EXCEEDS_MAXIMUM', 'requestedAmount'],
+    ])
+  })
+
+  it('XML con nombres repetidos tampoco ocultan un monto mayor al máximo', async () => {
+    const result = await service.evaluate(
+      input({
+        xmlFiles: [
+          xml('factura.xml', { seriesNumber: 'F001-1' }),
+          xml('factura.xml', { seriesNumber: 'F001-2' }),
+        ],
+        requestedAmount: '16992.01' as Amount,
+      }),
+    )
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.problems.map((p) => p.code)).toEqual([
+      'DUPLICATE_FILE_NAME',
+      'AMOUNT_EXCEEDS_MAXIMUM',
+    ])
   })
 
   it('un pagador mal configurado es un error de la plataforma, no un problema del proveedor', async () => {
