@@ -359,6 +359,56 @@ describe('CreateAdvanceRequestUseCase', () => {
     expect(calls).not.toContain('reserveFiles')
   })
 
+  describe('D45: la solicitud de la misma clave confirma después de la búsqueda de la clave', () => {
+    /** Huella de `input()`: la de la solicitud que guardó el envío original. */
+    async function fingerprintOfInput(): Promise<string> {
+      await useCase.execute(input())
+      const fingerprint = only(repository.created).request.requestFingerprint
+      repository.created = []
+      repository.reserved = []
+      calls = []
+      return fingerprint
+    }
+
+    it('y toma sus facturas: responde como reintento, no 422 INVOICE_ALREADY_IN_OPEN_REQUEST', async () => {
+      const fingerprint = await fingerprintOfInput()
+      // La clave no aparece en el paso 2; cuando se buscan las facturas, el original ya confirmó.
+      repository.openKeys = ['20100070970|F001-123']
+      repository.winner = { publicCode: 'ANT-2026-000007', requestFingerprint: fingerprint }
+      await expect(useCase.execute(input())).resolves.toEqual({
+        publicCode: 'ANT-2026-000007',
+        replayed: true,
+      })
+      expect(calls).toEqual([
+        'findByIdempotencyKey',
+        'findInvoiceKeysInOpenRequests',
+        'findByIdempotencyKey',
+      ])
+      expect(repository.reserved).toEqual([])
+    })
+
+    it('con otra huella: 422 IDEMPOTENCY_KEY_REUSED, como si hubiera confirmado antes del paso 2', async () => {
+      repository.openKeys = ['20100070970|F001-123']
+      repository.winner = { publicCode: 'ANT-2026-000007', requestFingerprint: 'f'.repeat(64) }
+      await expect(useCase.execute(input())).rejects.toBeInstanceOf(IdempotencyKeyReusedError)
+      expect(calls).not.toContain('reserveFiles')
+    })
+
+    it('después de un choque de factura: libera lo suyo y responde como reintento', async () => {
+      const fingerprint = await fingerprintOfInput()
+      repository.results = [{ kind: 'invoice-conflict', invoiceKeys: ['20100070970|F001-123'] }]
+      repository.openKeysAfterConflict = ['20100070970|F001-123']
+      repository.winner = { publicCode: 'ANT-2026-000007', requestFingerprint: fingerprint }
+      await expect(useCase.execute(input())).resolves.toEqual({
+        publicCode: 'ANT-2026-000007',
+        replayed: true,
+      })
+      expect(repository.released).toEqual(repository.reserved.map(({ id }) => id))
+      expect(storage.deleted).toEqual(repository.reserved.map(({ key }) => key))
+      expect(notified).toBe(1)
+    })
+  })
+
   it('si falla la subida: primero libera las filas, después borra sus objetos y responde 503', async () => {
     storage.putError = new Error('S3 caído')
     const error = await useCase.execute(input()).catch((e: unknown) => e)

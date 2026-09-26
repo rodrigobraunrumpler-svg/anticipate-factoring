@@ -1,3 +1,4 @@
+export { translateDatabaseException } from './database-exception.translator.js'
 export { dbDateToIso, decimalToAmount, decimalToNumber, isoDateToDb } from './db-values.js'
 export { newId } from './id.js'
 export { PrismaModule } from './prisma.module.js'
@@ -12,6 +13,7 @@ export {
 export {
   type DatabaseErrorInfo,
   databaseErrorInfo,
+  isDatabaseUnavailableError,
   isUniqueViolation,
   SQL_STATE,
   uniqueViolationIndex,

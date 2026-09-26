@@ -1,4 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
+import { type Options, pinoHttp } from 'pino-http'
 import { describe, expect, it } from 'vitest'
 import {
   createPinoHttpOptions,
@@ -40,6 +41,28 @@ describe('logger HTTP', () => {
       code: '23505',
     })
     expect(serializeSafeError(error)).toEqual({ type: 'Error', code: '23505' })
+  })
+
+  it('con pino-http real el error llega envuelto por su serializador y conserva clase y código', () => {
+    // pino-http envuelve el serializador `err`: recibe el objeto de pino-std-serializers (con el
+    // error en `raw`), no el Error. Sin verlo así, todo error del log salía como { type: 'Error' }.
+    const lines: string[] = []
+    const { pinoHttp: options } = createPinoHttpOptions({ logLevel: 'error', nodeEnv: 'test' })
+    const http = pinoHttp(options as Options, {
+      write: (line: string) => {
+        lines.push(line)
+      },
+    })
+    const error = Object.assign(
+      new Error("Can't reach database server at db.interno:5432 (ana@proveedor.pe)"),
+      { name: 'PrismaClientKnownRequestError', code: 'P1001', meta: { modelName: 'Payer' } },
+    )
+    http.logger.error({ err: error }, 'Respuesta 503 SERVICE_UNAVAILABLE')
+    http.logger.error({ err: 'un texto' }, 'lanzaron un texto')
+    const [entry, text] = lines.map((line) => JSON.parse(line) as { err: unknown })
+    expect(entry?.err).toEqual({ type: 'PrismaClientKnownRequestError', code: 'P1001' })
+    expect(text?.err).toEqual({ type: 'Error' })
+    expect(lines.join('')).not.toMatch(/db\.interno|ana@proveedor|Payer|stack/)
   })
 
   it('registra el patrón de la ruta, nunca la URL ni el comodín del 404', () => {

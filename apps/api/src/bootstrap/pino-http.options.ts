@@ -51,11 +51,15 @@ export function serializeSafeResponse(value: unknown): { statusCode: number | nu
 /**
  * De un error solo su clase y su código: el mensaje y la pila de una librería pueden traer SQL, los
  * argumentos de una consulta de Prisma o el cuerpo de la petición, con datos personales.
+ *
+ * pino-http envuelve este serializador (`wrapErrorSerializer`): no recibe el `Error` sino el objeto
+ * de pino-std-serializers, con el original en `raw` (no enumerable). Se acepta de las dos formas.
  */
 export function serializeSafeError(value: unknown): { type: string; code?: string } {
-  if (!(value instanceof Error)) return { type: 'Error' }
-  const code = (value as Error & { code?: unknown }).code
-  return typeof code === 'string' ? { type: value.name, code } : { type: value.name }
+  const error = value instanceof Error ? value : isRecord(value) ? value.raw : undefined
+  if (!(error instanceof Error)) return { type: 'Error' }
+  const code = (error as Error & { code?: unknown }).code
+  return typeof code === 'string' ? { type: error.name, code } : { type: error.name }
 }
 
 /** Las sondas no se registran: el monitoreo las llama cada pocos segundos. */

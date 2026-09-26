@@ -86,9 +86,11 @@ type DraftContext = {
 /**
  * `POST /api/v1/advance-requests`. En orden: huella; clave de idempotencia (misma huella → misma
  * respuesta; otra → 422); condiciones del pagador; versiones legales; admisión de las facturas;
- * facturas ya tomadas; reserva y subida de archivos (todo o nada); una transacción con todo y el
- * outbox; despertar al publicador. Nada queda subido sin su fila: lo que se sube y no se guarda se
- * libera y se borra (`discard`), y nunca se borra el objeto de un archivo `ATTACHED`.
+ * facturas ya tomadas (antes del 422 se relee la clave); reserva y subida de archivos (todo o nada);
+ * una transacción con todo y el outbox; despertar al publicador. Nada queda subido sin su fila: lo
+ * que se sube y no se guarda se libera y se borra (`discard`), y nunca se borra el objeto de un
+ * archivo `ATTACHED`. Una lectura de la base que falla antes de subir nada no se captura aquí: el
+ * traductor de errores de la base del filtro HTTP la responde como 503.
  */
 export class CreateAdvanceRequestUseCase {
   constructor(private readonly deps: CreateAdvanceRequestDependencies) {}
@@ -117,7 +119,8 @@ export class CreateAdvanceRequestUseCase {
 
     const context: DraftContext = { input, fingerprint, payer, intake, now, today, digests }
     for (let attempt = 1; attempt <= MAX_CREATE_ATTEMPTS; attempt++) {
-      await this.assertInvoicesAvailable(intake.invoices)
+      const replayed = await this.assertInvoicesAvailableOrReplay(context)
+      if (replayed !== null) return replayed
       // Ids y rutas nuevas en cada intento: las del intento anterior quedaron DELETED.
       const draft = this.buildDraft(context)
       await this.upload(draft)
@@ -137,7 +140,8 @@ export class CreateAdvanceRequestUseCase {
       }
       // `invoice-conflict`: el paso 6 se repite arriba y responde 422 si la factura sigue tomada.
     }
-    await this.assertInvoicesAvailable(intake.invoices)
+    const replayed = await this.assertInvoicesAvailableOrReplay(context)
+    if (replayed !== null) return replayed
     throw new ServiceUnavailableError(
       `las facturas chocaron ${MAX_CREATE_ATTEMPTS} veces con otros envíos`,
     )
@@ -169,12 +173,25 @@ export class CreateAdvanceRequestUseCase {
     if (problems.length > 0) throw new BusinessRulesViolatedError(problems)
   }
 
-  /** 422 con un problema por cada factura que ya está en una solicitud abierta. */
-  private async assertInvoicesAvailable(invoices: readonly IntakeInvoice[]): Promise<void> {
+  /**
+   * Paso 6: facturas en solicitudes abiertas. Devuelve `null` si están todas libres. Si alguna está
+   * tomada, antes del 422 relee la clave: el envío original de este reintento pudo confirmar después
+   * del paso 2, y entonces las facturas tomadas son las suyas. Se responde como si hubiera confirmado
+   * antes del paso 2: la misma respuesta (misma huella) o 422 `IDEMPOTENCY_KEY_REUSED` (otra), nunca
+   * un falso `INVOICE_ALREADY_IN_OPEN_REQUEST` (D45). Si la clave no aparece, 422 con un problema por
+   * cada factura tomada.
+   */
+  private async assertInvoicesAvailableOrReplay({
+    input,
+    fingerprint,
+    intake: { invoices },
+  }: DraftContext): Promise<CreateAdvanceRequestOutput | null> {
     const taken = new Set(
       await this.deps.repository.findInvoiceKeysInOpenRequests(invoices.map(({ key }) => key)),
     )
-    if (taken.size === 0) return
+    if (taken.size === 0) return null
+    const previous = await this.deps.repository.findByIdempotencyKey(input.idempotencyKey)
+    if (previous !== null) return replay(previous, fingerprint, input.idempotencyKey)
     throw new BusinessRulesViolatedError(
       invoices
         .filter(({ key }) => taken.has(key))

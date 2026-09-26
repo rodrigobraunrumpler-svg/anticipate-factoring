@@ -9,7 +9,9 @@ import {
   Catch,
   type ExceptionFilter,
   HttpException,
+  Inject,
   Logger,
+  Optional,
   ServiceUnavailableException,
 } from '@nestjs/common'
 import { ThrottlerException } from '@nestjs/throttler'
@@ -23,6 +25,7 @@ import {
 } from '#/common/exceptions/index.js'
 import { resolveCorrelationId } from '#/common/utils/correlation-id.js'
 import { defaultHttpErrorCode } from './default-http-error-code.map.js'
+import { EXCEPTION_TRANSLATORS, type ExceptionTranslator } from './exception-translator.js'
 
 /** Rutas de salud (fuera del prefijo `api`): cuando fallan, responden con el cuerpo de Terminus. */
 const HEALTH_PATH = /^\/health(?:\/|$)/
@@ -107,10 +110,20 @@ function codeOf(exception: unknown): ApiErrorCode {
  * en español: el de la `ApplicationError` o el de `API_ERROR_MESSAGES_ES`. Nunca reenvía el mensaje
  * de una `HttpException` ni de una librería (Nest, body-parser, multer, throttler). La única excepción
  * al sobre es un chequeo de salud fallido, que responde 503 con el cuerpo de Terminus.
+ *
+ * Un error de una librería de infraestructura pasa antes por los `EXCEPTION_TRANSLATORS`: así la base
+ * caída es 503 `SERVICE_UNAVAILABLE` en cualquier ruta, sin que cada caso de uso la envuelva. El log
+ * registra el error original (su clase y su código), no el traducido.
  */
 @Catch()
 export class AllExceptionsFilter implements ExceptionFilter {
   private readonly logger = new Logger(AllExceptionsFilter.name)
+
+  constructor(
+    @Optional()
+    @Inject(EXCEPTION_TRANSLATORS)
+    private readonly translators: readonly ExceptionTranslator[] = [],
+  ) {}
 
   catch(exception: unknown, host: ArgumentsHost): void {
     const http = host.switchToHttp()
@@ -136,7 +149,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
       return
     }
 
-    const error = publicErrorOf(exception)
+    const error = publicErrorOf(this.translate(exception))
     const statusCode = API_ERROR_HTTP_STATUS[error.code]
     if (statusCode >= 500) {
       this.logger.error(
@@ -154,5 +167,19 @@ export class AllExceptionsFilter implements ExceptionFilter {
       timestamp: new Date().toISOString(),
     }
     response.status(statusCode).json(body)
+  }
+
+  /** El error del primer traductor que lo reconoce, o el mismo si ninguno lo hace. */
+  private translate(exception: unknown): unknown {
+    if (isApplicationError(exception) || exception instanceof HttpException) return exception
+    for (const translator of this.translators) {
+      try {
+        const translated = translator(exception)
+        if (translated !== undefined) return translated
+      } catch {
+        // Un traductor roto no puede impedir la respuesta: el error sigue con los demás.
+      }
+    }
+    return exception
   }
 }

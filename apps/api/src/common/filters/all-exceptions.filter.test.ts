@@ -36,6 +36,7 @@ import {
 } from '#/common/exceptions/index.js'
 import { AllExceptionsFilter } from './all-exceptions.filter.js'
 import { defaultHttpErrorCode } from './default-http-error-code.map.js'
+import type { ExceptionTranslator } from './exception-translator.js'
 
 type FakeRequestInit = {
   method?: string
@@ -72,6 +73,7 @@ function run(
   exception: unknown,
   request: Request = fakeRequest({ correlationId: 'corr-1' }),
   headersSent = false,
+  filter: AllExceptionsFilter = new AllExceptionsFilter(),
 ): Sent {
   const sent: Sent = { headers: {}, destroyed: false }
   const response = {
@@ -95,7 +97,7 @@ function run(
   const host = {
     switchToHttp: () => ({ getRequest: () => request, getResponse: () => response }),
   } as unknown as ArgumentsHost
-  new AllExceptionsFilter().catch(exception, host)
+  filter.catch(exception, host)
   return sent
 }
 
@@ -241,6 +243,72 @@ describe('AllExceptionsFilter: excepciones de Nest y de librerías', () => {
 
   it.each([['un texto'], [null], [undefined], [42]])('lanzar %o también es 500', (thrown) => {
     expectEnvelope(run(thrown), 'INTERNAL_ERROR')
+  })
+})
+
+describe('AllExceptionsFilter: traductores de errores de infraestructura', () => {
+  /** Error de una librería que un traductor reconoce (como el de la base caída). */
+  class DriverDownError extends Error {
+    override readonly name = 'DriverDownError'
+    readonly code = 'DRIVER_DOWN'
+  }
+  const translateDriverDown: ExceptionTranslator = (exception) =>
+    exception instanceof DriverDownError
+      ? new ServiceUnavailableError('el driver no responde', { cause: exception })
+      : undefined
+  const withTranslators = (...translators: ExceptionTranslator[]) =>
+    new AllExceptionsFilter(translators)
+  const runWith = (exception: unknown, ...translators: ExceptionTranslator[]) =>
+    run(exception, fakeRequest({ correlationId: 'corr-1' }), false, withTranslators(...translators))
+
+  it('un error que un traductor reconoce sale como su ApplicationError: 503, no 500', () => {
+    const body = expectEnvelope(
+      runWith(new DriverDownError('host 10.0.0.5 caído'), translateDriverDown),
+      'SERVICE_UNAVAILABLE',
+    )
+    expect(body.message).toBe(API_ERROR_MESSAGES_ES.SERVICE_UNAVAILABLE)
+    expect(JSON.stringify(body)).not.toMatch(/10\.0\.0\.5|driver|DRIVER_DOWN/i)
+  })
+
+  it('el log registra el error original (su clase y su código), con el código y el estado públicos', () => {
+    const original = new DriverDownError('host caído')
+    runWith(original, translateDriverDown)
+    expect(loggedErrors).toHaveBeenCalledTimes(1)
+    expect(loggedErrors).toHaveBeenCalledWith(
+      expect.objectContaining({ err: original, code: 'SERVICE_UNAVAILABLE', statusCode: 503 }),
+      'Respuesta 503 SERVICE_UNAVAILABLE',
+    )
+  })
+
+  it('lo que ningún traductor reconoce sigue siendo 500 INTERNAL_ERROR', () => {
+    expectEnvelope(runWith(new Error('defecto'), translateDriverDown), 'INTERNAL_ERROR')
+  })
+
+  it('gana el primer traductor que reconoce el error', () => {
+    const second = vi.fn<ExceptionTranslator>(() => apiError('CONFLICT'))
+    expectEnvelope(
+      runWith(new DriverDownError('x'), translateDriverDown, second),
+      'SERVICE_UNAVAILABLE',
+    )
+    expect(second).not.toHaveBeenCalled()
+  })
+
+  it('una ApplicationError o una HttpException no pasan por los traductores', () => {
+    const translator = vi.fn<ExceptionTranslator>(() => new ServiceUnavailableError())
+    expectEnvelope(runWith(apiError('CAPTCHA_FAILED'), translator), 'CAPTCHA_FAILED')
+    expectEnvelope(runWith(new NotFoundException(), translator), 'RESOURCE_NOT_FOUND')
+    expect(translator).not.toHaveBeenCalled()
+  })
+
+  it('un traductor que lanza no impide responder: se ignora y el error sigue su camino', () => {
+    const broken: ExceptionTranslator = () => {
+      throw new TypeError('traductor roto')
+    }
+    expectEnvelope(
+      runWith(new DriverDownError('x'), broken, translateDriverDown),
+      'SERVICE_UNAVAILABLE',
+    )
+    expectEnvelope(runWith(new Error('defecto'), broken), 'INTERNAL_ERROR')
   })
 })
 

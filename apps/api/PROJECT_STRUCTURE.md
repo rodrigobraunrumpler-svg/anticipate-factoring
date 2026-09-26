@@ -61,7 +61,7 @@ apps/api/
 | `types/` | `express.d.ts`, `paginated-list.ts` | `Request.correlationId` y listas paginadas |
 | `utils/` | `client-ip.ts`, `correlation-id.ts`, `build-pagination-meta.ts`, `uuid.ts` | Utilidades genéricas que usan dos partes o más |
 | `exceptions/` | `application-error.ts` y los errores de la aplicación, `index.ts` | Errores con código público, sin Nest |
-| `filters/` | `all-exceptions.filter.ts`, `default-http-error-code.map.ts`, `index.ts` | Todo error sale con el sobre de error (`APP_FILTER`) |
+| `filters/` | `all-exceptions.filter.ts`, `default-http-error-code.map.ts`, `exception-translator.ts` (tipo `ExceptionTranslator` y token `EXCEPTION_TRANSLATORS`), `index.ts` | Todo error sale con el sobre de error (`APP_FILTER`) |
 | `interceptors/` | `response-envelope.interceptor.ts`, `multipart-files.interceptor.ts` | Sobre de éxito (`APP_INTERCEPTOR`) y multipart |
 | `swagger/` | `api-enveloped-response.swagger.ts`, `api-error-responses.swagger.ts` | Documentación del sobre y de los errores |
 | `validation/` | `validation-exception.factory.ts` | Violaciones de validación agrupadas por campo |
@@ -146,3 +146,4 @@ violación en el mismo archivo.
 | Swagger | En `/docs` fuera de producción (`development` y `test`) | Los tests verifican el documento |
 | Puertos y repositorios | Puertos en `application/ports/` con token `Symbol`; repositorios en `infrastructure/prisma/repositories/<módulo>/`; cableado con `useFactory` | `application/` queda libre de Nest y de Prisma |
 | Ids | UUIDv7 con `newId()` (`infrastructure/prisma/id.ts`); Biome prohíbe `randomUUID` fuera del id de correlación | El orden por `id` es el orden de creación |
+| Errores de infraestructura | Cada adaptador publica un `ExceptionTranslator` (`translateDatabaseException` en `infrastructure/prisma`) y `app.module.ts` los entrega a `AllExceptionsFilter` con `EXCEPTION_TRANSLATORS` | La base caída es 503 en toda ruta sin que cada caso de uso la envuelva, y `common` no conoce Prisma |

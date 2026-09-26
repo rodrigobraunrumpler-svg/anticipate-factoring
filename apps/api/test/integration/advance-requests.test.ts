@@ -17,8 +17,15 @@ import {
   IDEMPOTENT_REPLAYED_HEADER,
 } from '#/common/constants/http-headers.constants.js'
 import { FakeEmailSender } from '#/infrastructure/notifications/index.js'
+import { PrismaService } from '#/infrastructure/prisma/index.js'
 import { PrismaAdvanceRequestRepository } from '#/infrastructure/prisma/repositories/advance-requests/prisma-advance-request.repository.js'
-import { ADVANCE_REQUEST_REPOSITORY } from '#/modules/advance-requests/index.js'
+import { PrismaPayerConditionsReader } from '#/infrastructure/prisma/repositories/advance-requests/prisma-payer-conditions.reader.js'
+import {
+  ADVANCE_REQUEST_REPOSITORY,
+  PAYER_CONDITIONS_READER,
+  type PayerConditions,
+  type PayerConditionsReaderPort,
+} from '#/modules/advance-requests/index.js'
 import { EMAIL_SENDER } from '#/modules/notifications/index.js'
 import { PublishOutboxEventsUseCase } from '#/modules/outbox/index.js'
 import {
@@ -84,6 +91,40 @@ class CommitAckLostRepository extends PrismaAdvanceRequestRepository {
     const result = await super.create(...args)
     if (result.kind === 'created') throw new Error('se cortó la conexión después del COMMIT')
     return result
+  }
+}
+
+/**
+ * El lector real de las condiciones del pagador, salvo que la primera lectura espera a `resume()`.
+ * Deja a ese envío detenido entre la búsqueda de su clave (paso 2) y la de sus facturas (paso 6).
+ */
+class PausedFirstPayerRead implements PayerConditionsReaderPort {
+  readonly paused: Promise<void>
+  private markPaused: () => void = () => undefined
+  private readonly resumed: Promise<void>
+  private markResumed: () => void = () => undefined
+  private reads = 0
+
+  constructor(private readonly reader: PayerConditionsReaderPort) {
+    this.paused = new Promise((resolve) => {
+      this.markPaused = resolve
+    })
+    this.resumed = new Promise((resolve) => {
+      this.markResumed = resolve
+    })
+  }
+
+  resume(): void {
+    this.markResumed()
+  }
+
+  async findActiveBySlug(slug: string): Promise<PayerConditions | null> {
+    this.reads += 1
+    if (this.reads === 1) {
+      this.markPaused()
+      await this.resumed
+    }
+    return this.reader.findActiveBySlug(slug)
   }
 }
 
@@ -349,6 +390,57 @@ describe('POST /api/v1/advance-requests · idempotencia', () => {
     expect(await listKeys(payerPrefix())).toEqual(attached.map((f) => f.key).sort())
   })
 
+  describe('D45: el original confirma entre la búsqueda de la clave y la de las facturas', () => {
+    /**
+     * El reintento sale primero y se detiene después de buscar su clave (no está); el original guarda
+     * todo; el reintento sigue y encuentra sus facturas tomadas por la solicitud de su propia clave.
+     */
+    async function retryAfterOriginalCommits(retryOptions: SubmitOptions) {
+      const idempotencyKey = newIdempotencyKey()
+      const gate = new PausedFirstPayerRead(new PrismaPayerConditionsReader(db.prisma))
+      let original: Response | undefined
+      let retry: Response | undefined
+      await withApp(
+        {},
+        async (other) => {
+          const pending = submitAdvanceRequest(other, { ...retryOptions, idempotencyKey }).then(
+            (res) => res,
+          )
+          try {
+            await gate.paused
+            original = await submitAdvanceRequest(other, { idempotencyKey })
+          } finally {
+            gate.resume()
+          }
+          retry = await pending
+        },
+        [[PAYER_CONDITIONS_READER, gate]],
+      )
+      if (original === undefined || retry === undefined) throw new Error('faltan respuestas')
+      return { original: expectCreated(original), retry }
+    }
+
+    it('con el mismo contenido: 201 repetido con el mismo código, nunca un falso 422', async () => {
+      const { original, retry } = await retryAfterOriginalCommits({})
+      expect(expectCreated(retry).publicCode).toBe(original.publicCode)
+      expect(retry.headers[IDEMPOTENT_REPLAYED_HEADER]).toBe('true')
+      expect(await db.prisma.advanceRequest.count()).toBe(1)
+      // El reintento no reservó ni subió nada: solo queda el XML del original.
+      const files = await db.prisma.storedFile.findMany()
+      expect(files.map((f) => f.status)).toEqual(['ATTACHED'])
+      expect(await listKeys(payerPrefix())).toEqual(files.map((f) => f.key))
+    })
+
+    it('con otro contenido: 422 IDEMPOTENCY_KEY_REUSED, no INVOICE_ALREADY_IN_OPEN_REQUEST', async () => {
+      const { retry } = await retryAfterOriginalCommits({
+        form: validForm({ financing: { requestedAmount: '7000.00' } }),
+      })
+      expectError(retry, 422, 'IDEMPOTENCY_KEY_REUSED')
+      expect(await db.prisma.advanceRequest.count()).toBe(1)
+      expect(await db.prisma.storedFile.count()).toBe(1)
+    })
+  })
+
   it('ocho envíos simultáneos de un RUC nuevo con facturas distintas: ocho 201 y un proveedor', async () => {
     const responses = await Promise.all(
       Array.from({ length: 8 }, (_, i) =>
@@ -593,6 +685,46 @@ describe('POST /api/v1/advance-requests · facturas tomadas y fallas', () => {
       await db.prisma.$executeRawUnsafe('DROP TRIGGER IF EXISTS test_slow_invoices ON invoices')
       await db.prisma.$executeRawUnsafe('DROP FUNCTION IF EXISTS test_slow_invoices()')
     }
+  })
+
+  it('con la base inalcanzable: 503 SERVICE_UNAVAILABLE (nunca 500), sin subir nada ni revelar el host', async () => {
+    const unreachable = 'postgresql://anticipate:anticipate@127.0.0.1:1/anticipate_test'
+    await withApp(
+      { DATABASE_URL: unreachable, DATABASE_DIRECT_URL: unreachable },
+      async (other) => {
+        const res = await submitAdvanceRequest(other, { pdf: [[pdf(), 'F001-123.pdf']] })
+        const body = expectError(res, 503, 'SERVICE_UNAVAILABLE')
+        expect(JSON.stringify(body)).not.toMatch(/127\.0\.0\.1|P1001|reach|database server/i)
+      },
+    )
+    expect(await listKeys(payerPrefix())).toEqual([])
+  })
+
+  it('con el pool sin conexiones libres: 503 SERVICE_UNAVAILABLE a tiempo, nunca 500', async () => {
+    await withApp(
+      { DATABASE_POOL_MAX: '1', DATABASE_CONNECTION_TIMEOUT_MS: '300' },
+      async (other) => {
+        // Otra operación ocupa la única conexión: la lectura de la clave no consigue una y pg-pool
+        // lanza su propio Error ('timeout exceeded when trying to connect'), sin código de Prisma.
+        const prisma = other.get(PrismaService)
+        let markHeld: () => void = () => undefined
+        const held = new Promise<void>((resolve) => {
+          markHeld = resolve
+        })
+        const holding = prisma.$transaction(async (tx) => {
+          markHeld()
+          await tx.$queryRaw`SELECT pg_sleep(1.5)::text`
+        })
+        await held
+        try {
+          expectError(await submitAdvanceRequest(other), 503, 'SERVICE_UNAVAILABLE')
+        } finally {
+          await holding
+        }
+      },
+    )
+    expect(await db.prisma.advanceRequest.count()).toBe(0)
+    expect(await listKeys(payerPrefix())).toEqual([])
   })
 
   it('una IP ilegible en X-Forwarded-For (detrás de un proxy de confianza) no impide guardar', async () => {

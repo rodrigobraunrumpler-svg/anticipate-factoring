@@ -199,15 +199,48 @@ describe('GET /api/v1/payers con el repositorio reemplazado', () => {
     )
   })
 
-  it('un fallo del repositorio responde 500 INTERNAL_ERROR en el sobre y sin caché pública', async () => {
+  it('un error inesperado del repositorio (un defecto) responde 500 INTERNAL_ERROR en el sobre y sin caché pública', async () => {
     vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined)
-    listActive.mockRejectedValueOnce(new Error('la base no responde'))
+    listActive.mockRejectedValueOnce(new Error('defecto del repositorio'))
 
     const res = await request(app.getHttpServer()).get(PAYERS_PATH).expect(500)
 
     expect(apiErrorEnvelopeSchema.safeParse(res.body).success).toBe(true)
     expect(res.body.code).toBe('INTERNAL_ERROR')
-    expect(JSON.stringify(res.body)).not.toContain('la base no responde')
+    expect(JSON.stringify(res.body)).not.toContain('defecto del repositorio')
+    expect(res.headers['cache-control']).not.toBe(PUBLIC_PAYERS_CACHE_CONTROL)
+    expect(res.headers[CORRELATION_ID_HEADER]).toBe(res.body.correlationId)
+  })
+})
+
+describe('GET /api/v1/payers con la base caída', () => {
+  const UNREACHABLE_DATABASE_URL = 'postgresql://anticipate:anticipate@127.0.0.1:1/anticipate_test'
+  let app: NestExpressApplication
+
+  beforeAll(async () => {
+    app = await createTestApp({
+      env: {
+        DATABASE_URL: UNREACHABLE_DATABASE_URL,
+        DATABASE_DIRECT_URL: UNREACHABLE_DATABASE_URL,
+      },
+    })
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  afterAll(async () => {
+    await app.close()
+  })
+
+  it('responde 503 SERVICE_UNAVAILABLE (no 500) en el sobre, sin caché pública ni el host', async () => {
+    vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined)
+    const res = await request(app.getHttpServer()).get(PAYERS_PATH).expect(503)
+
+    expect(apiErrorEnvelopeSchema.safeParse(res.body).success).toBe(true)
+    expect(res.body.code).toBe('SERVICE_UNAVAILABLE')
+    expect(JSON.stringify(res.body)).not.toMatch(/127\.0\.0\.1|P1001|reach|database server/i)
     expect(res.headers['cache-control']).not.toBe(PUBLIC_PAYERS_CACHE_CONTROL)
     expect(res.headers[CORRELATION_ID_HEADER]).toBe(res.body.correlationId)
   })

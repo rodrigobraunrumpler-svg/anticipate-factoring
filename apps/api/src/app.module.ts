@@ -4,11 +4,15 @@ import { ThrottlerModule } from '@nestjs/throttler'
 import { LoggerModule } from 'nestjs-pino'
 import { createPinoHttpOptions } from '#/bootstrap/index.js'
 import { type AppConfig, AppConfigModule } from '#/common/config/index.js'
-import { AllExceptionsFilter } from '#/common/filters/index.js'
+import {
+  AllExceptionsFilter,
+  EXCEPTION_TRANSLATORS,
+  type ExceptionTranslator,
+} from '#/common/filters/index.js'
 import { AppThrottlerGuard, createThrottlerOptions } from '#/common/guards/app-throttler.guard.js'
 import { ResponseEnvelopeInterceptor } from '#/common/interceptors/response-envelope.interceptor.js'
 import { NotificationsInfrastructureModule } from '#/infrastructure/notifications/index.js'
-import { PrismaModule } from '#/infrastructure/prisma/index.js'
+import { PrismaModule, translateDatabaseException } from '#/infrastructure/prisma/index.js'
 import { StorageModule } from '#/infrastructure/storage/s3/index.js'
 import { TimeModule } from '#/infrastructure/time/index.js'
 import { AdvanceRequestsModule } from '#/modules/advance-requests/advance-requests.module.js'
@@ -56,6 +60,11 @@ export class AppModule {
       ],
       providers: [
         { provide: APP_GUARD, useClass: AppThrottlerGuard },
+        // Errores de infraestructura que el filtro traduce: la base caída es 503 en toda ruta.
+        {
+          provide: EXCEPTION_TRANSLATORS,
+          useValue: [translateDatabaseException] satisfies readonly ExceptionTranslator[],
+        },
         { provide: APP_FILTER, useClass: AllExceptionsFilter },
         { provide: APP_INTERCEPTOR, useClass: ResponseEnvelopeInterceptor },
       ],
