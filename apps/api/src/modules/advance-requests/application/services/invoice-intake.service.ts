@@ -1,5 +1,6 @@
 import { createProblem, type Problem } from '@anticipate/shared/errors'
 import { invoiceKey, validateInvoices, validateRequestedAmount } from '@anticipate/shared/invoice'
+import { screenFileNames } from '#/modules/advance-requests/domain/services/file-names.js'
 import { pairPdfs } from '#/modules/advance-requests/domain/services/pdf-pairing.js'
 import { buildValidationContext } from '#/modules/advance-requests/domain/services/validation-context.js'
 import {
@@ -34,6 +35,12 @@ const yieldToEventLoop = (): Promise<void> => new Promise((resolve) => setImmedi
  * Leídos de corrido bloquearían el proceso entero de 13 a 30 s: las demás solicitudes, el outbox y
  * la sonda de vida. Por eso `evaluate` es asíncrona y cede el turno antes de cada XML: el bloqueo
  * más largo de una petición es un solo archivo, acotado por `UPLOAD_MAX_XML_BYTES`.
+ *
+ * El nombre de un archivo se repite en `file` de cada problema suyo, y de una factura con cien cuotas
+ * salen unos doscientos. Por eso lo primero es `screenFileNames`: un archivo sin un nombre de archivo
+ * (más de 255 unidades UTF-16 o con controles) es `INVALID_FILE_NAME`, sin repetir el nombre, y no se
+ * lee ni se empareja. Así el 422 queda acotado por los topes de archivos y no por lo que mande el
+ * cliente: con los topes por defecto, menos de 4.5 MB en el peor caso (sin el tope, 128 MB).
  */
 export class InvoiceIntakeService {
   constructor(private readonly limits: InvoiceIntakeLimits) {
@@ -47,15 +54,19 @@ export class InvoiceIntakeService {
   async evaluate(input: InvoiceIntakeInput): Promise<InvoiceIntakeResult> {
     // Primero el contexto: un pagador mal configurado es un error de la plataforma y corta aquí.
     const context = buildValidationContext(input.payer, input.supplierRuc, input.today)
-    const reading = await this.readAll(input.xmlFiles)
-    const pairing = pairPdfs(input.xmlFiles, input.pdfFiles, this.limits.maxPdfBytes)
+    // Un archivo cuyo nombre no se puede repetir se rechaza en la puerta: no se lee ni se empareja.
+    const xmlNames = screenFileNames(input.xmlFiles)
+    const pdfNames = screenFileNames(input.pdfFiles)
+    const reading = await this.readAll(xmlNames.accepted)
+    const pairing = pairPdfs(xmlNames.accepted, pdfNames.accepted, this.limits.maxPdfBytes)
 
-    // El máximo de facturas del pagador cuenta los XML recibidos, legibles o no (contrato del
-    // endpoint, D38): así TOO_MANY_INVOICES sale junto con los problemas de cada archivo y de cada
-    // factura, no en un segundo envío. Sin ningún XML, `validateInvoices` responde NO_INVOICES; si
-    // llegaron y ninguno se pudo leer, no lo agrega: ya hay un problema por archivo. Cada problema
-    // de una factura lleva el XML que la trajo (`invoiceFiles`, por posición): la serie-número sola
-    // no alcanza, dos archivos pueden traer la misma.
+    // El máximo de facturas del pagador cuenta los XML recibidos, legibles o no, también los de
+    // nombre inválido (contrato del endpoint, D38): así TOO_MANY_INVOICES sale junto con los
+    // problemas de cada archivo y de cada factura, no en un segundo envío. Sin ningún XML,
+    // `validateInvoices` responde NO_INVOICES; si llegaron y ninguno se pudo leer, no lo agrega: ya
+    // hay un problema por archivo. Cada problema de una factura lleva el XML que la trajo
+    // (`invoiceFiles`, por posición): la serie-número sola no alcanza, dos archivos pueden traer la
+    // misma.
     const validation = validateInvoices(
       reading.read.map(({ invoice }) => invoice),
       context,
@@ -64,11 +75,17 @@ export class InvoiceIntakeService {
         invoiceFiles: reading.read.map(({ file }) => file.originalname),
       },
     )
-    const problems: Problem[] = [...reading.problems, ...pairing.problems, ...validation.problems]
+    const xmlProblems = [...xmlNames.problems, ...reading.problems]
+    const problems: Problem[] = [
+      ...xmlProblems,
+      ...pdfNames.problems,
+      ...pairing.problems,
+      ...validation.problems,
+    ]
     // El máximo se calcula sobre las facturas: tiene sentido si todos los XML se leyeron y todas
-    // pasan las reglas. Los PDF y los nombres de archivo no cambian las facturas, así que sus
+    // pasan las reglas. Los PDF y los nombres repetidos no cambian las facturas, así que sus
     // problemas no lo ocultan: salen en la misma respuesta.
-    if (reading.problems.length === 0 && validation.problems.length === 0) {
+    if (xmlProblems.length === 0 && validation.problems.length === 0) {
       const amountProblem = validateRequestedAmount(input.requestedAmount, validation)
       if (amountProblem !== null) problems.push(amountProblem)
     }

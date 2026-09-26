@@ -1,3 +1,4 @@
+import { problemSchema } from '@anticipate/shared/errors'
 import type { Amount } from '@anticipate/shared/money'
 import { buildInvoiceXml, type TestXmlOptions } from '@anticipate/shared/testing'
 import { describe, expect, it } from 'vitest'
@@ -509,6 +510,187 @@ describe('InvoiceIntakeService', () => {
       'DUPLICATE_FILE_NAME',
       'AMOUNT_EXCEEDS_MAXIMUM',
     ])
+  })
+
+  describe('nombres de archivo: el 422 nunca repite uno sin tope ni con controles', () => {
+    /** Un XML válido cuyo contenido registra si alguien lo leyó. */
+    const watched = (originalname: string, reads: string[]): UploadedFile => {
+      const file = xml('F001-123.xml')
+      return {
+        originalname,
+        size: file.size,
+        get buffer() {
+          reads.push(originalname)
+          return file.buffer
+        },
+      }
+    }
+    const shortened = `${'x'.repeat(64)}…`
+
+    it('un XML con un nombre sin tope es INVALID_FILE_NAME: no se lee y el nombre sale acortado', async () => {
+      const reads: string[] = []
+      const long = `${'x'.repeat(16_000)}.xml`
+      const result = await service.evaluate(
+        input({
+          xmlFiles: [watched(long, reads), xml('F001-124.xml', { seriesNumber: 'F001-124' })],
+        }),
+      )
+      expect(reads).toEqual([])
+      expect(result).toEqual({
+        ok: false,
+        problems: [
+          {
+            code: 'INVALID_FILE_NAME',
+            message: `El archivo «${shortened}» tiene un nombre que no podemos usar: debe tener hasta 255 caracteres y ningún carácter de control. Cámbiale el nombre y vuelve a adjuntarlo.`,
+            params: { file: shortened, max: 255 },
+          },
+        ],
+      })
+      expect(JSON.stringify(result).length).toBeLessThan(512)
+    })
+
+    it('el tope es de 255 unidades UTF-16: con 255 el nombre se repite tal cual, con 256 no', async () => {
+      const atMax = `${'a'.repeat(251)}.xml`
+      const over = `${'b'.repeat(252)}.xml`
+      const result = await service.evaluate(
+        input({
+          xmlFiles: [
+            xml(atMax, { seriesNumber: 'F001-1', currency: 'EUR' }),
+            xml(over, { seriesNumber: 'F001-2', currency: 'EUR' }),
+          ],
+        }),
+      )
+      expect(result.ok).toBe(false)
+      if (result.ok) return
+      expect(result.problems.map((p) => [p.code, p.file ?? null, p.params?.file ?? null])).toEqual([
+        ['INVALID_FILE_NAME', null, `${'b'.repeat(64)}…`],
+        ['CURRENCY_NOT_ALLOWED', atMax, null],
+      ])
+    })
+
+    it.each([
+      ['U+0000', 'F001-123\u0000.xml'],
+      ['un salto de línea', 'F001-123\n.xml'],
+      ['un control C1', 'F001-123\u0085.xml'],
+      ['un sustituto suelto', 'F001-123\uD800.xml'],
+    ])('un XML con %s en el nombre es INVALID_FILE_NAME y no se lee', async (_, name) => {
+      const reads: string[] = []
+      const result = await service.evaluate(input({ xmlFiles: [watched(name, reads)] }))
+      expect(reads).toEqual([])
+      expect(result).toEqual({
+        ok: false,
+        problems: [
+          expect.objectContaining({
+            code: 'INVALID_FILE_NAME',
+            params: { file: 'F001-123\uFFFD.xml', max: 255 },
+          }),
+        ],
+      })
+    })
+
+    it('un PDF con un nombre inválido: solo INVALID_FILE_NAME, no se empareja y no oculta el monto', async () => {
+      const result = await service.evaluate(
+        input({
+          pdfFiles: [
+            upload('F001-123\u0001.pdf', 'no soy pdf'),
+            upload('x'.repeat(300), 'tampoco'),
+          ],
+          requestedAmount: '8496.01' as Amount,
+        }),
+      )
+      expect(result.ok).toBe(false)
+      if (result.ok) return
+      expect(result.problems.map((p) => [p.code, p.file ?? null, p.params?.file ?? null])).toEqual([
+        ['INVALID_FILE_NAME', null, 'F001-123\uFFFD.pdf'],
+        ['INVALID_FILE_NAME', null, shortened],
+        ['AMOUNT_EXCEEDS_MAXIMUM', null, null],
+      ])
+    })
+
+    it('un XML con un nombre inválido no entra al emparejamiento ni a los nombres repetidos', async () => {
+      // Sin espacios alrededor y en minúsculas, su nombre base sería el de factura.xml.
+      const padded = `${' '.repeat(300)}FACTURA.xml`
+      const result = await service.evaluate(
+        input({
+          xmlFiles: [xml(padded, { seriesNumber: 'F001-9' }), xml('factura.xml')],
+          pdfFiles: [pdf('factura.pdf')],
+        }),
+      )
+      expect(result.ok).toBe(false)
+      if (result.ok) return
+      expect(result.problems.map((p) => [p.code, p.file ?? null])).toEqual([
+        ['INVALID_FILE_NAME', null],
+      ])
+    })
+
+    it('el máximo de facturas cuenta también los XML con un nombre inválido', async () => {
+      const result = await service.evaluate(
+        input({
+          payer: { ...sea, maxInvoices: 1 },
+          xmlFiles: [xml('F001-123.xml'), xml('x'.repeat(300), { seriesNumber: 'F001-124' })],
+        }),
+      )
+      expect(result.ok).toBe(false)
+      if (result.ok) return
+      expect(result.problems.map((p) => p.code)).toEqual(['INVALID_FILE_NAME', 'TOO_MANY_INVOICES'])
+    })
+
+    /**
+     * Peor caso para el tamaño del 422: los 20 archivos de UPLOAD_MAX_FILES son XML con cien cuotas
+     * vencidas y en cero y todo otro dato inválido. Son unos doscientos problemas por factura, y cada
+     * uno repite el nombre de su XML en `file`.
+     */
+    const worstCase = (name: (index: number) => string): UploadedFile[] => {
+      const installments = Array.from({ length: 100 }, (_, i) => ({
+        id: `Cuota${String(i + 1).padStart(3, '0')}`,
+        amount: '0.00',
+        dueDate: '2026-01-01',
+      }))
+      return Array.from({ length: 20 }, (_, i) =>
+        xml(name(i), {
+          seriesNumber: `F001-${i + 1}`,
+          documentType: '03',
+          recipientRuc: '20100070970',
+          issuerRuc: '10467286736',
+          currency: 'EUR',
+          issueDate: '2026-12-31',
+          total: '1.00',
+          netPendingAmount: '2.00',
+          installments,
+        }),
+      )
+    }
+    const jsonBytes = (value: unknown): number => Buffer.byteLength(JSON.stringify(value))
+
+    it('el 422 más grande que admiten los topes por defecto pesa menos de 4.5 MB', async () => {
+      // Nombres del largo máximo (255 unidades) en caracteres de 3 bytes, lo que más pesa en JSON.
+      const xmlFiles = worstCase((i) => `${'請'.repeat(248)}${String(i).padStart(3, '0')}.xml`)
+      expect(xmlFiles.every((f) => f.originalname.length === 255)).toBe(true)
+      const result = await service.evaluate(input({ xmlFiles }))
+      expect(result.ok).toBe(false)
+      if (result.ok) return
+      expect(result.problems.length).toBe(1 + 20 * 207)
+      for (const problem of result.problems) problemSchema.parse(problem)
+      expect(jsonBytes(result.problems)).toBeLessThan(4.5 * MB)
+    })
+
+    it.each([
+      ['16 000 caracteres', (i: number) => `${'x'.repeat(16_000)}${i}.xml`],
+      [
+        '5 400 controles, que JSON escribe con 6 bytes cada uno',
+        (i: number) => `${'\u0001'.repeat(5_400)}${i}.xml`,
+      ],
+    ])('el mismo envío con nombres de %s responde un 422 de pocos kilobytes', async (_, name) => {
+      // multer acepta un nombre de hasta unos 16 KiB (el tope de la cabecera de la parte en busboy).
+      const result = await service.evaluate(input({ xmlFiles: worstCase(name) }))
+      expect(result.ok).toBe(false)
+      if (result.ok) return
+      expect(jsonBytes(result.problems)).toBeLessThan(20 * 1024)
+      expect(result.problems.map((p) => p.code)).toEqual([
+        ...Array.from({ length: 20 }, () => 'INVALID_FILE_NAME'),
+        'TOO_MANY_INVOICES',
+      ])
+    })
   })
 
   it('un pagador mal configurado es un error de la plataforma, no un problema del proveedor', async () => {

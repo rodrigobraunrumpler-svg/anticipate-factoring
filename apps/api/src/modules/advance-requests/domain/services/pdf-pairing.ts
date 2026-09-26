@@ -48,6 +48,9 @@ const megabytes = (bytes: number): number => Math.floor((bytes / BYTES_PER_MB) *
  *   su XML ya tiene un PDF antes, `PDF_WITHOUT_XML`. Un PDF puede tener varios. Uno con problemas
  *   igual ocupa el lugar de su XML (así un segundo PDF para ese XML también se informa), pero nunca
  *   queda en `pdfByXml`.
+ *
+ * Recibe archivos cuyo nombre ya pasó `screenFileNames` (lo hace `InvoiceIntakeService`), así que
+ * cada problema repite un nombre acotado.
  */
 export function pairPdfs<T extends UploadedFile>(
   xmls: readonly T[],

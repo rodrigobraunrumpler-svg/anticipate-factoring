@@ -11,7 +11,8 @@ export type XmlFileReading<T extends UploadedFile> =
 /**
  * Lee un XML con el lector de shared. El problema lleva en `file` el archivo que lo causó; el
  * `field` del lector (el dato de la factura que falta o es inválido) se conserva. Un XML mayor al
- * tope se rechaza sin leer su contenido.
+ * tope se rechaza sin leer su contenido. El nombre ya pasó `screenFileNames` (lo hace
+ * `InvoiceIntakeService`), así que el problema repite un nombre acotado.
  *
  * Lee un solo archivo a propósito: es trabajo de CPU sincrónico (un XML de 1 MiB armado para eso
  * lleva cerca de medio segundo), así que quien lee varios decide cuándo ceder el turno entre uno y
