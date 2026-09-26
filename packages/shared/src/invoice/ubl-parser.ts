@@ -48,6 +48,23 @@ const FIELD_NAMES = VALIDATION_MESSAGES_ES.invoiceXml.fields
 const DOCUMENT_KINDS: Readonly<Record<string, string>> =
   VALIDATION_MESSAGES_ES.invoiceXml.documentKinds
 
+/**
+ * Largo máximo, en puntos de código, del nombre de una raíz desconocida que se muestra en
+ * XML_NOT_AN_INVOICE. Ningún comprobante tiene un nombre así de largo; el nombre viene de un XML no
+ * confiable, y sin tope uno de 1 MiB llegaba entero al mensaje y a `params` (unos 2 MiB por archivo).
+ */
+const MAX_ROOT_NAME_IN_MESSAGE = 64
+
+/** Si `text` tiene más de `max` puntos de código. Corta al pasar el tope: no recorre un texto enorme. */
+function exceedsCodePoints(text: string, max: number): boolean {
+  let count = 0
+  for (const _ of text) {
+    count += 1
+    if (count > max) return true
+  }
+  return false
+}
+
 type InvoiceField = keyof ParsedInvoice
 
 /**
@@ -294,11 +311,15 @@ function extractInvoice(document: Record<string, unknown>): ParseResult {
   const rootName = Object.keys(document).find((k) => !k.startsWith('?'))
   if (rootName !== 'Invoice') {
     // Object.hasOwn, no `DOCUMENT_KINDS[rootName]` directo: rootName viene de un XML no confiable y
-    // podría coincidir con una propiedad heredada de Object.prototype (p. ej. "isPrototypeOf").
+    // podría coincidir con una propiedad heredada de Object.prototype (p. ej. "isPrototypeOf"). Por
+    // lo mismo, un nombre más largo que MAX_ROOT_NAME_IN_MESSAGE no se muestra: es «desconocido».
+    const unknown = VALIDATION_MESSAGES_ES.invoiceXml.unknownDocumentKind
     const kind =
-      rootName !== undefined && Object.hasOwn(DOCUMENT_KINDS, rootName)
-        ? (DOCUMENT_KINDS[rootName] ?? rootName)
-        : (rootName ?? VALIDATION_MESSAGES_ES.invoiceXml.unknownDocumentKind)
+      rootName === undefined || exceedsCodePoints(rootName, MAX_ROOT_NAME_IN_MESSAGE)
+        ? unknown
+        : Object.hasOwn(DOCUMENT_KINDS, rootName)
+          ? (DOCUMENT_KINDS[rootName] ?? rootName)
+          : rootName
     return fail(createProblem('XML_NOT_AN_INVOICE', { data: { kind } }))
   }
   const inv = document.Invoice as Record<string, unknown>

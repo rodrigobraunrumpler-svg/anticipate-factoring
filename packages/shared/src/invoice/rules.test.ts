@@ -264,6 +264,58 @@ describe('validateInvoices · reglas del conjunto', () => {
     expect(r.maxAmount).toBe('0.00')
   })
 
+  it('con invoiceFiles, cada problema de una factura lleva el archivo de esa factura, aunque varias compartan la serie', () => {
+    const invoices = [
+      invoice({ seriesNumber: 'F001-1' }),
+      invoice({ seriesNumber: 'F001-1' }),
+      invoice({ seriesNumber: 'F001-1', issuerRuc: '10467286736' }),
+      invoice({ seriesNumber: 'F001-2', currency: 'USD' }),
+    ]
+    const invoiceFiles = ['a.xml', 'b.xml', 'c.xml', 'd.xml']
+    const labeled = (r: ReturnType<typeof validateInvoices>) =>
+      r.problems.map((p) => [p.code, p.invoice ?? null, p.file ?? null])
+    expect(labeled(validateInvoices(invoices, ctx, { invoiceFiles }))).toEqual([
+      ['DUPLICATE_INVOICE', 'F001-1', 'b.xml'],
+      ['ISSUER_IS_NOT_SUPPLIER', 'F001-1', 'c.xml'],
+      ['MIXED_CURRENCIES', null, null],
+    ])
+    // Los problemas del conjunto no son de un archivo.
+    expect(
+      labeled(validateInvoices(invoices, { ...ctx, maxInvoices: 3 }, { invoiceFiles })),
+    ).toEqual([
+      ['TOO_MANY_INVOICES', null, null],
+      ['DUPLICATE_INVOICE', 'F001-1', 'b.xml'],
+      ['ISSUER_IS_NOT_SUPPLIER', 'F001-1', 'c.xml'],
+      ['MIXED_CURRENCIES', null, null],
+    ])
+  })
+
+  it('con invoiceFiles, cada regla de una factura lleva su archivo; sin invoiceFiles, ninguna', () => {
+    const invoices = [
+      invoice({ seriesNumber: 'F001-1' }),
+      invoice({ seriesNumber: 'F001-2', recipientRuc: '20100070970', currency: 'EUR' }),
+    ]
+    expect(
+      validateInvoices(invoices, ctx, { invoiceFiles: ['uno.xml', 'dos.xml'] }).problems.map(
+        (p) => [p.code, p.file],
+      ),
+    ).toEqual([
+      ['RECIPIENT_IS_NOT_PAYER', 'dos.xml'],
+      ['CURRENCY_NOT_ALLOWED', 'dos.xml'],
+    ])
+    for (const problem of validateInvoices(invoices, ctx).problems) {
+      expect(problem).not.toHaveProperty('file')
+    }
+  })
+
+  it('invoiceFiles necesita un nombre por factura: otro largo es un error de quien llama', () => {
+    const two = [invoice({ seriesNumber: 'F001-1' }), invoice({ seriesNumber: 'F001-2' })]
+    expect(() => validateInvoices(two, ctx, { invoiceFiles: ['a.xml'] })).toThrow(RangeError)
+    expect(() => validateInvoices(two, ctx, { invoiceFiles: ['a.xml', 'b.xml', 'c.xml'] })).toThrow(
+      RangeError,
+    )
+  })
+
   it('las facturas con problemas no cuentan para el máximo', () => {
     const r = validateInvoices(
       [invoice(), invoice({ seriesNumber: 'F001-9', paymentTerms: 'Contado', installments: [] })],
@@ -507,6 +559,31 @@ describe('validateInvoices · propiedades', () => {
         return Array.isArray(r.problems)
       }),
       { numRuns: 500 },
+    )
+  })
+
+  it('invoiceFiles solo suma el archivo: mismo resultado, y cada problema de una factura lleva el de una factura con esa serie', () => {
+    fc.assert(
+      fc.property(scenario, ([c, candidates]) => {
+        const invoices = candidates.flatMap((candidate) => {
+          const parsed = parsedInvoiceSchema.safeParse(candidate)
+          return parsed.success ? [parsed.data as ParsedInvoice] : []
+        })
+        const invoiceFiles = invoices.map((_, index) => `factura-${index}.xml`)
+        const plain = validateInvoices(invoices, c)
+        const withFiles = validateInvoices(invoices, c, { invoiceFiles })
+        expect(withFiles.problems.map(({ file: _file, ...rest }) => rest)).toEqual(plain.problems)
+        expect({ ...withFiles, problems: [] }).toEqual({ ...plain, problems: [] })
+        for (const problem of withFiles.problems) {
+          if (problem.invoice === undefined) {
+            expect(problem).not.toHaveProperty('file')
+          } else {
+            const index = invoiceFiles.indexOf(problem.file ?? '')
+            expect(invoices[index]?.seriesNumber).toBe(problem.invoice)
+          }
+        }
+      }),
+      { numRuns: 300 },
     )
   })
 

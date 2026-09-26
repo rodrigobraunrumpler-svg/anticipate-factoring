@@ -303,6 +303,13 @@ export type ValidateInvoicesOptions = {
    * problema por cada archivo.
    */
   xmlFileCount?: number
+  /**
+   * Nombre del archivo de cada factura, en el mismo orden que `invoices` (un nombre por factura). Con
+   * él, cada problema de una factura (sus reglas y `DUPLICATE_INVOICE`) lleva en `file` el archivo
+   * que la trajo, así se marca la fila exacta aunque dos archivos traigan la misma serie-número. Los
+   * problemas del conjunto no son de un archivo y no lo llevan.
+   */
+  invoiceFiles?: readonly string[]
 }
 
 const emptyResult = (problems: Problem[]): ValidationResult => ({
@@ -318,17 +325,26 @@ const emptyResult = (problems: Problem[]): ValidationResult => ({
  * problemas juntos, para corregirlos de una vez: con más facturas que el máximo también informa los
  * de cada factura y del conjunto (así el proveedor sabe cuáles quitar), pero no calcula un máximo,
  * porque la solicitud no se puede crear así.
+ *
+ * Lanza `RangeError` si `options.invoiceFiles` no trae exactamente un nombre por factura: es un error
+ * de quien llama, nunca un problema de las facturas.
  */
 export function validateInvoices(
   invoices: readonly ParsedInvoice[],
   ctx: ValidationContext,
   options: ValidateInvoicesOptions = {},
 ): ValidationResult {
+  const { invoiceFiles } = options
+  if (invoiceFiles !== undefined && invoiceFiles.length !== invoices.length) {
+    throw new RangeError(
+      `invoiceFiles trae ${invoiceFiles.length} nombres para ${invoices.length} facturas`,
+    )
+  }
   const xmlFileCount = Math.max(options.xmlFileCount ?? invoices.length, invoices.length)
   if (xmlFileCount === 0) {
     return emptyResult([createProblem('NO_INVOICES', { rule: 'no-invoices' })])
   }
-  const result = evaluateInvoices(invoices, ctx)
+  const result = evaluateInvoices(invoices, ctx, invoiceFiles)
   if (xmlFileCount <= ctx.maxInvoices) return result
   const tooMany = createProblem('TOO_MANY_INVOICES', {
     rule: 'max-invoices',
@@ -337,36 +353,44 @@ export function validateInvoices(
   return emptyResult([tooMany, ...result.problems])
 }
 
-/** Duplicados, reglas por factura y reglas del conjunto, sin mirar cuántas facturas son. */
+/** El problema de una factura con el archivo que la trajo, si se conoce y no lo lleva ya. */
+const withFile = (problem: Problem, file: string | undefined): Problem =>
+  file === undefined || problem.file !== undefined ? problem : { ...problem, file }
+
+/**
+ * Duplicados, reglas por factura y reglas del conjunto, sin mirar cuántas facturas son. Cada factura
+ * se sigue por su posición en `invoices`, no por su serie-número: dos archivos pueden traer la misma.
+ */
 function evaluateInvoices(
   invoices: readonly ParsedInvoice[],
   ctx: ValidationContext,
+  invoiceFiles: readonly string[] | undefined,
 ): ValidationResult {
   const problems: Problem[] = []
   const empty = emptyResult(problems)
 
   const seen = new Set<string>()
-  const candidates: ParsedInvoice[] = []
-  for (const inv of invoices) {
+  const candidates: { inv: ParsedInvoice; file: string | undefined }[] = []
+  for (const [index, inv] of invoices.entries()) {
+    const file = invoiceFiles?.[index]
     const key = invoiceKey(inv)
     if (seen.has(key)) {
-      problems.push(
-        createProblem('DUPLICATE_INVOICE', {
-          rule: 'duplicate-invoice',
-          invoice: inv.seriesNumber,
-          data: { invoice: inv.seriesNumber },
-        }),
-      )
+      const duplicate = createProblem('DUPLICATE_INVOICE', {
+        rule: 'duplicate-invoice',
+        invoice: inv.seriesNumber,
+        data: { invoice: inv.seriesNumber },
+      })
+      problems.push(withFile(duplicate, file))
       continue
     }
     seen.add(key)
-    candidates.push(inv)
+    candidates.push({ inv, file })
   }
 
-  const validInvoices = candidates.filter((inv) => {
+  const validInvoices = candidates.flatMap(({ inv, file }) => {
     const own = INVOICE_RULES.flatMap((rule) => rule.run(inv, ctx))
-    problems.push(...own)
-    return own.length === 0
+    problems.push(...own.map((problem) => withFile(problem, file)))
+    return own.length === 0 ? [inv] : []
   })
   if (validInvoices.length === 0) return { ...empty, problems }
 

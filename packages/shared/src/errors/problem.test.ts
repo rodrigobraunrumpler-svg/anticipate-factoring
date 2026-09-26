@@ -65,6 +65,10 @@ describe('códigos de la recepción de solicitudes y de las reglas nuevas', () =
         'El PDF f9.pdf no corresponde a ninguna factura XML adjunta.',
       ],
       [
+        createProblem('DUPLICATE_FILE_NAME', { data: { file: 'factura.xml' } }),
+        'El archivo factura.xml tiene el mismo nombre que otro XML adjunto (sin contar mayúsculas ni extensión). Cambia el nombre de uno de ellos, y el de su PDF si lo adjuntas, para que cada factura tenga un nombre distinto.',
+      ],
+      [
         createProblem('INVOICE_ALREADY_IN_OPEN_REQUEST', { data: { invoice: 'F001-123' } }),
         'La factura F001-123 ya está en otra solicitud en curso.',
       ],

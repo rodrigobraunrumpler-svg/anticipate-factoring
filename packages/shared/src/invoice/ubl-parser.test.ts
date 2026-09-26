@@ -270,6 +270,24 @@ describe('parseUblInvoice · errores', () => {
     expect(p.message).not.toContain('native code')
   })
 
+  it('el nombre de una raíz desconocida llega al mensaje solo hasta 64 caracteres; más largo es «desconocido»', () => {
+    const rootOf = (name: string) => parseError(`<?xml version="1.0" encoding="UTF-8"?><${name}/>`)
+    const edge = 'ñ'.repeat(64)
+    expect(rootOf(edge)).toEqual({
+      code: 'XML_NOT_AN_INVOICE',
+      message: `El archivo no es una factura electrónica (${edge}).`,
+      params: { kind: edge },
+    })
+    // Un nombre de 1 MiB llegaba entero al mensaje y a params.kind: unos 2 MiB por archivo en el 422.
+    for (const name of ['ñ'.repeat(65), 'a'.repeat(1024 * 1024)]) {
+      expect(rootOf(name)).toEqual({
+        code: 'XML_NOT_AN_INVOICE',
+        message: 'El archivo no es una factura electrónica (desconocido).',
+        params: { kind: 'desconocido' },
+      })
+    }
+  })
+
   it.each([
     ['ID', 'serie y número'],
     ['IssueDate', 'fecha de emisión'],

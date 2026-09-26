@@ -44,6 +44,8 @@ export const MESSAGES_ES: Readonly<Record<ProblemCode, string>> = {
   FILE_TOO_LARGE: 'El archivo {file} supera el máximo de {max} MB.',
   INVALID_PDF: 'El archivo {file} no es un PDF válido.',
   PDF_WITHOUT_XML: 'El PDF {file} no corresponde a ninguna factura XML adjunta.',
+  DUPLICATE_FILE_NAME:
+    'El archivo {file} tiene el mismo nombre que otro XML adjunto (sin contar mayúsculas ni extensión). Cambia el nombre de uno de ellos, y el de su PDF si lo adjuntas, para que cada factura tenga un nombre distinto.',
   INVOICE_ALREADY_IN_OPEN_REQUEST: 'La factura {invoice} ya está en otra solicitud en curso.',
   CONSENT_VERSION_OUTDATED:
     'Los términos o la política de privacidad cambiaron. Recarga la página y acéptalos de nuevo.',
