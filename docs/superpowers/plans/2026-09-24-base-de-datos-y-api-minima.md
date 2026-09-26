@@ -318,7 +318,7 @@ anticipate-factoring/
 | Parte o cabecera | Tipo | Regla |
 |---|---|---|
 | `form` | campo de texto con JSON | Se valida con `advanceRequestFormSchema` de `shared`: `payerSlug`, `contact`, `company`, `financing`, `cavaliRegistration`, `consents` (con `termsVersion` y `privacyVersion`) y `source` opcional. Si falta o no es JSON: 400 `VALIDATION_ERROR` con la violación en `form`. Cada error de forma es una violación con la ruta dentro del formulario (`contact.email`) |
-| `xml` | archivos, 1 a N | XML UBL de cada factura. N ≤ `maxInvoices` del pagador (422 `TOO_MANY_INVOICES`). Cada uno ≤ `UPLOAD_MAX_XML_BYTES` (1 MiB); si lo supera, 422 `XML_TOO_LARGE` con `file` |
+| `xml` | archivos, 1 a N | XML UBL de cada factura. N ≤ `maxInvoices` del pagador, contando todo XML recibido, legible o no (422 `TOO_MANY_INVOICES`, junto con los demás problemas de los archivos y de las facturas). Cada uno ≤ `UPLOAD_MAX_XML_BYTES` (1 MiB); si lo supera, 422 `XML_TOO_LARGE` con `file` |
 | `pdf` | archivos, 0 a N | Opcional. Se empareja con el XML del mismo nombre base (sin extensión, sin distinguir mayúsculas). Cada uno ≤ `UPLOAD_MAX_PDF_BYTES` (10 MiB), si no `FILE_TOO_LARGE`. Si no es PDF por contenido, `INVALID_PDF`; si no tiene XML, `PDF_WITHOUT_XML` |
 | cualquier otro campo de archivo | — | 400 `UNEXPECTED_FILE_FIELD` |
 | total de archivos | — | ≤ `UPLOAD_MAX_FILES` (20); más: 400 `TOO_MANY_FILES` |
@@ -20224,6 +20224,14 @@ git commit -m "feat(api): outbox con arriendo por token, publicador con desperta
 
 ### Task 11: Admisión de la solicitud: dominio, `InvoiceIntakeService` y lectores de la base
 
+> **Estado tras ejecutarla** (`2695a93` y la corrección `f484c64`): el código de esta sección es el de la primera versión. La revisión cambió esto, y lo vigente es lo del repositorio:
+> - `@anticipate/shared`: `validateInvoices(invoices, ctx, options?: ValidateInvoicesOptions)`, con `{ xmlFileCount?: number }`. El máximo de facturas cuenta los XML recibidos, legibles o no (nunca menos que las facturas). `TOO_MANY_INVOICES` ya no corta la validación: sale primero y junto con los problemas de cada factura y del conjunto, y el resultado queda sin máximo (`validInvoices: []`, `currency: null`). Si llegaron XML y ninguno se pudo leer, no agrega `NO_INVOICES`.
+> - `InvoiceIntakeService.evaluate` llama siempre a `validateInvoices(…, context, { xmlFileCount: input.xmlFiles.length })`; la decisión sobre `NO_INVOICES` pasó a `shared`. Con más XML que el máximo, la respuesta junta los problemas de lectura, de emparejamiento, `TOO_MANY_INVOICES` y los de las reglas.
+> - `@anticipate/shared`: `parseUblInvoice` responde `UNREADABLE_XML` si el XML trae, escrito tal cual y en cualquier parte, un carácter que XML 1.0 no admite (U+0000, los demás controles C0 salvo tabulación y saltos de línea, un sustituto suelto, U+FFFE o U+FFFF). Una referencia a uno de ellos (`&#0;`, `&#xD800;`) se deja intacta como texto, igual que las que ya quedaban fuera de Unicode. `parsedInvoiceSchema` exige lo mismo en `issuerName` y `recipientName` (`isXmlText`, en `invoice/xml-text.ts`): es la gemela del `varchar` de `invoices.issuer_name`, porque PostgreSQL no guarda U+0000 y cambiaría un sustituto suelto por U+FFFD. Lo fijan la semilla dorada `seed-nul-in-name.xml` y un test `(f)` de `database-structure.test.ts` contra el tipo real de la columna.
+> - `readInvoices` no cambió: el problema del lector ya llevaba el nombre del archivo.
+>
+> Nada de lo que consume la Tarea 12 cambió de firma. La Tarea 12 se corrigió para construir `IdempotencyKeyReusedError(idempotencyKey)` como ya lo exigía esta tarea: `replay` recibe la clave.
+
 **Files:**
 - Create: `apps/api/src/modules/advance-requests/domain/types/payer-conditions.ts`, `apps/api/src/modules/advance-requests/domain/types/invoice-intake.types.ts`, `apps/api/src/modules/advance-requests/domain/types/new-advance-request.ts`
 - Create: `apps/api/src/modules/advance-requests/domain/services/pdf-pairing.ts`, `apps/api/src/modules/advance-requests/domain/services/xml-reading.ts`, `apps/api/src/modules/advance-requests/domain/services/validation-context.ts`, `apps/api/src/modules/advance-requests/domain/services/storage-keys.ts`, `apps/api/src/modules/advance-requests/domain/services/request-fingerprint.ts`, `apps/api/src/modules/advance-requests/domain/services/advance-request-created-event.ts`, `apps/api/src/modules/advance-requests/domain/services/outbox-handlers.ts`
@@ -22168,7 +22176,7 @@ git commit -m "feat(api): admisión de facturas y lectores de condiciones del pa
     - `FakeEmailSender` con `sent`, `failNext(error, times = 1)` y `reset()` (`#/infrastructure/notifications/index.js`). Su `send(email, signal)` empieza con `signal.throwIfAborted()`, como un adaptador real: llamado sin señal lanza `TypeError`, que el publicador clasifica `UNEXPECTED` y reintenta.
     - `insertOutboxMessages(tx: OutboxWriter, messages: readonly NewOutboxMessage[], { maxAttempts }): Promise<number>` (filas nuevas; `OutboxWriter = Pick<Prisma.TransactionClient, '$executeRaw'>`, así que el `tx` de una transacción interactiva sirve) en `#/infrastructure/prisma/repositories/outbox/outbox-rows.js`.
     - `OutboxPublisherModule.forRoot({ imports, handlers, requiredHandlers })`, registrado en `app.module.ts` con listas vacías.
-  - Tarea 11, en `modules/advance-requests`: `PayerConditions`, `PayerConditionsReaderPort.findActiveBySlug(slug)` y `PAYER_CONDITIONS_READER`; `LegalDocumentReaderPort.isCurrent(type, version)` y `LEGAL_DOCUMENT_READER`; `InvoiceIntakeService({ maxXmlBytes, maxPdfBytes }).evaluate({ payer, supplierRuc, today, requestedAmount, xmlFiles, pdfFiles }): InvoiceIntakeResult`; `UploadedFile`, `IntakeInvoice`, `InvoiceIntakeResult`; `NewAdvanceRequest`, `NewInvoice`, `NewInvoiceInstallment`, `NewConsent`, `ConsentType` (`domain/types/new-advance-request.ts`); `computeRequestFingerprint(form, files: FingerprintFile[]): string`, `FingerprintFile = { field: 'xml' | 'pdf'; originalname; sha256 }`, `sha256Hex(data)`; `storageKeys.invoiceXml(payerId, requestId, invoiceId)` y `storageKeys.invoicePdf(...)`; `buildAdvanceRequestCreatedEvent(input)` y `toAdvanceRequestCreatedOutboxPayload(event)`; `ADVANCE_REQUEST_OUTBOX_HANDLERS`, `AdvanceRequestOutboxHandler`, `advanceRequestOutboxDedupeKey(handler, eventId)`; `IdempotencyKeyReusedError()`; `PrismaPayerConditionsReader(prisma)` y `PrismaLegalDocumentReader(prisma)`.
+  - Tarea 11, en `modules/advance-requests`: `PayerConditions`, `PayerConditionsReaderPort.findActiveBySlug(slug)` y `PAYER_CONDITIONS_READER`; `LegalDocumentReaderPort.isCurrent(type, version)` y `LEGAL_DOCUMENT_READER`; `InvoiceIntakeService({ maxXmlBytes, maxPdfBytes }).evaluate({ payer, supplierRuc, today, requestedAmount, xmlFiles, pdfFiles }): InvoiceIntakeResult`; `UploadedFile`, `IntakeInvoice`, `InvoiceIntakeResult`; `NewAdvanceRequest`, `NewInvoice`, `NewInvoiceInstallment`, `NewConsent`, `ConsentType` (`domain/types/new-advance-request.ts`); `computeRequestFingerprint(form, files: FingerprintFile[]): string`, `FingerprintFile = { field: 'xml' | 'pdf'; originalname; sha256 }`, `sha256Hex(data)`; `storageKeys.invoiceXml(payerId, requestId, invoiceId)` y `storageKeys.invoicePdf(...)`; `buildAdvanceRequestCreatedEvent(input)` y `toAdvanceRequestCreatedOutboxPayload(event)`; `ADVANCE_REQUEST_OUTBOX_HANDLERS`, `AdvanceRequestOutboxHandler`, `advanceRequestOutboxDedupeKey(handler, eventId)`; `IdempotencyKeyReusedError(idempotencyKey)` (la clave va solo al diagnóstico, para el log); `PrismaPayerConditionsReader(prisma)` y `PrismaLegalDocumentReader(prisma)`.
 - Produces:
   - `#/common/utils/uuid.js`: `isUuid(value: string): boolean` (RFC 9562, versión 1 a 8).
   - `#/common/captcha/index.js`: `CaptchaVerificationInput = { token: string; remoteIp: string; idempotencyKey?: string }`, `CaptchaVerifierPort { verify(input): Promise<boolean> }`, `CAPTCHA_VERIFIER`, `CaptchaGuard`.
@@ -22942,9 +22950,11 @@ describe('CreateAdvanceRequestUseCase', () => {
     expect(calls).toEqual(['findByIdempotencyKey'])
   })
 
-  it('la misma clave con otra huella: IdempotencyKeyReusedError', async () => {
+  it('la misma clave con otra huella: IdempotencyKeyReusedError con la clave en el diagnóstico', async () => {
     repository.existing = { publicCode: 'ANT-2026-000001', requestFingerprint: 'f'.repeat(64) }
-    await expect(useCase.execute(input())).rejects.toBeInstanceOf(IdempotencyKeyReusedError)
+    const reused = useCase.execute(input())
+    await expect(reused).rejects.toBeInstanceOf(IdempotencyKeyReusedError)
+    await expect(reused).rejects.toThrow(`Idempotency-Key ${KEY} reutilizada con otra huella`)
   })
 
   it('un pagador que no está activo: PAYER_NOT_AVAILABLE y nada subido', async () => {
@@ -23432,7 +23442,7 @@ export class CreateAdvanceRequestUseCase {
     const fingerprint = computeRequestFingerprint(input.form, fingerprintFiles(input, digests))
 
     const previous = await this.deps.repository.findByIdempotencyKey(input.idempotencyKey)
-    if (previous !== null) return replay(previous, fingerprint)
+    if (previous !== null) return replay(previous, fingerprint, input.idempotencyKey)
 
     const payer = await this.findPayer(input.form)
     await this.assertCurrentConsents(input.form)
@@ -23467,7 +23477,7 @@ export class CreateAdvanceRequestUseCase {
         if (winner === null) {
           throw new ServiceUnavailableError('la clave chocó y la solicitud ganadora no aparece')
         }
-        return replay(winner, fingerprint)
+        return replay(winner, fingerprint, input.idempotencyKey)
       }
       // `invoice-conflict`: el paso 6 se repite arriba y responde 422 si la factura sigue tomada.
     }
@@ -23706,11 +23716,15 @@ export class CreateAdvanceRequestUseCase {
   }
 }
 
+/** La misma clave con la misma huella repite la respuesta; con otra, 422 con la clave en el log. */
 function replay(
   previous: { publicCode: string; requestFingerprint: string },
   fingerprint: string,
+  idempotencyKey: string,
 ): CreateAdvanceRequestOutput {
-  if (previous.requestFingerprint !== fingerprint) throw new IdempotencyKeyReusedError()
+  if (previous.requestFingerprint !== fingerprint) {
+    throw new IdempotencyKeyReusedError(idempotencyKey)
+  }
   return { publicCode: previous.publicCode, replayed: true }
 }
 
