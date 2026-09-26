@@ -1,3 +1,4 @@
+export { formatDateTimeIn, formatIsoDate } from './display.js'
 export {
   addDaysIso,
   daysBetween,
