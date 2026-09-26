@@ -4,7 +4,11 @@ import { describe, expect, it } from 'vitest'
 import { isApplicationError } from '#/common/exceptions/index.js'
 import { testConfig } from '../../../test/support/config.js'
 import { CaptchaGuard } from './captcha.guard.js'
-import type { CaptchaVerificationInput, CaptchaVerifierPort } from './captcha-verifier.port.js'
+import {
+  CaptchaProviderRefusedError,
+  type CaptchaVerificationInput,
+  type CaptchaVerifierPort,
+} from './captcha-verifier.port.js'
 
 const KEY = '0192f3a0-7c1e-7d2a-9b3c-4d5e6f708192'
 
@@ -86,6 +90,16 @@ describe('CaptchaGuard', () => {
     const guard = new CaptchaGuard(new RecordingVerifier(new Error('fetch failed')), config)
     expect(await rejection(guard.canActivate(contextWith({ 'x-turnstile-token': 't' })))).toBe(
       'CAPTCHA_UNAVAILABLE',
+    )
+  })
+
+  it('el proveedor rechaza nuestra verificación (clave secreta, petición): 503 SERVICE_UNAVAILABLE, nunca 403', async () => {
+    const guard = new CaptchaGuard(
+      new RecordingVerifier(new CaptchaProviderRefusedError(['invalid-input-secret'])),
+      config,
+    )
+    expect(await rejection(guard.canActivate(contextWith({ 'x-turnstile-token': 't' })))).toBe(
+      'SERVICE_UNAVAILABLE',
     )
   })
 })

@@ -10,6 +10,7 @@ import { resolveClientIp } from '#/common/utils/client-ip.js'
 import { isUuid } from '#/common/utils/uuid.js'
 import {
   CAPTCHA_VERIFIER,
+  CaptchaProviderRefusedError,
   type CaptchaVerificationInput,
   type CaptchaVerifierPort,
 } from './captcha-verifier.port.js'
@@ -17,7 +18,9 @@ import {
 /**
  * Verifica el captcha antes de que multer lea los archivos (los guards corren antes que los
  * interceptores). Token vacío: 403 sin consultar al proveedor. Token rechazado: 403
- * `CAPTCHA_FAILED`. Proveedor sin respuesta: 503 `CAPTCHA_UNAVAILABLE`, nunca deja pasar.
+ * `CAPTCHA_FAILED`. Proveedor que se niega a verificar por algo que no es el token (clave secreta
+ * equivocada o rotada, petición mal formada): 503 `SERVICE_UNAVAILABLE`, porque no es culpa del
+ * visitante. Proveedor sin respuesta: 503 `CAPTCHA_UNAVAILABLE`. Nunca deja pasar sin verificar.
  */
 @Injectable()
 export class CaptchaGuard implements CanActivate {
@@ -43,6 +46,11 @@ export class CaptchaGuard implements CanActivate {
     try {
       valid = await this.verifier.verify(input)
     } catch (error) {
+      if (error instanceof CaptchaProviderRefusedError) {
+        throw apiError('SERVICE_UNAVAILABLE', 'captcha: el proveedor se negó a verificar', {
+          cause: error,
+        })
+      }
       throw apiError('CAPTCHA_UNAVAILABLE', 'captcha: el verificador no respondió', {
         cause: error,
       })
