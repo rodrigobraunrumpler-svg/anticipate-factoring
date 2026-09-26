@@ -2,6 +2,7 @@ import { z } from 'zod'
 import { isoDateSchema } from '../dates/index.js'
 import type { Amount } from '../money/index.js'
 import { PAYMENT_TERMS } from './codes.js'
+import { isXmlText } from './xml-text.js'
 
 // El límite de 12 dígitos en la parte entera refleja la columna Decimal(14, 2) de PostgreSQL
 // (STACK.md §9, D14), igual que AMOUNT_FORMAT en money/amount.ts.
@@ -20,6 +21,14 @@ export const PARSED_INVOICE_LIMITS = {
   maxNameLength: 1500,
   maxInstallments: 100,
 } as const
+
+/**
+ * Razón social del emisor o del receptor: texto libre con tope y solo con caracteres de XML 1.0. Es
+ * la gemela del tipo de las columnas de texto de la base (`invoices.issuer_name`): PostgreSQL no
+ * guarda U+0000, así que un nombre que cumple esto nunca hace fallar el INSERT. El lector ya rechaza
+ * esos XML como ilegibles; esto lo garantiza para toda factura que viaje con esta forma.
+ */
+const nameSchema = z.string().max(PARSED_INVOICE_LIMITS.maxNameLength).refine(isXmlText)
 
 /** Serie de cuatro caracteres y correlativo de hasta ocho dígitos (`F001-123`, `E001-00000001`). */
 const SERIES_NUMBER = /^[A-Z0-9]{4}-\d{1,8}$/
@@ -43,9 +52,9 @@ export const parsedInvoiceSchema = z.object({
   /** Código ISO 4217 de tres letras. Qué monedas se aceptan lo decide la regla, no el lector. */
   currency: z.string().regex(/^[A-Z]{3}$/),
   issuerRuc: z.string().regex(RUC_DIGITS),
-  issuerName: z.string().max(PARSED_INVOICE_LIMITS.maxNameLength),
+  issuerName: nameSchema,
   recipientRuc: z.string().regex(RUC_DIGITS),
-  recipientName: z.string().max(PARSED_INVOICE_LIMITS.maxNameLength).nullable(),
+  recipientName: nameSchema.nullable(),
   /** Total a pagar del comprobante. Puede ser 0.00 en casos raros; por eso no usa amountSchema. */
   total: parsedAmountSchema,
   paymentTerms: z.enum(PAYMENT_TERMS).nullable(),

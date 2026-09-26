@@ -9,6 +9,7 @@ import {
 import { type Amount, normalizeAmount } from '../money/index.js'
 import type { PaymentTerms } from './codes.js'
 import { type Installment, type ParsedInvoice, parsedInvoiceSchema } from './parsed-invoice.js'
+import { isXmlCodePoint, isXmlText } from './xml-text.js'
 
 export type ParseResult = { ok: true; invoice: ParsedInvoice } | { ok: false; problem: Problem }
 
@@ -40,9 +41,6 @@ const NAMED_ENTITIES: Record<string, string> = {
 
 const ENTITY_PATTERN = /&(?:amp|lt|gt|quot|apos|#\d+|#x[0-9a-fA-F]+);/g
 
-/** Un punto de código válido de Unicode va de 1 a 0x10FFFF; 0 y lo que excede el plano 16 no lo son. */
-const MAX_CODE_POINT = 0x10ffff
-
 /** Marca de orden de bytes (U+FEFF) al inicio de un texto. */
 const LEADING_BOM = /^\uFEFF/
 
@@ -56,8 +54,10 @@ type InvoiceField = keyof ParsedInvoice
  * Decodifica en una sola pasada (no recursiva) las cinco entidades predefinidas de XML y las
  * referencias numéricas de carácter (`&#209;`, `&#xD1;`). Deja intacto cualquier otro `&nombre;`:
  * con `processEntities: false` el parser nunca las tocó, así que no son entidades declaradas.
- * Una referencia numérica fuera de 1..0x10FFFF (o desbordada) también se deja intacta en vez de
- * lanzar: `String.fromCodePoint` lanza `RangeError` para esos valores.
+ * Una referencia numérica a algo que no es un carácter de XML 1.0 también se deja intacta, como
+ * texto: fuera de Unicode o desbordada (`String.fromCodePoint` lanzaría `RangeError`), U+0000 y los
+ * demás controles C0 (PostgreSQL no guarda U+0000), un sustituto suelto (se guardaría cambiado por
+ * U+FFFD) y U+FFFE/U+FFFF. Así lo decodificado nunca trae un carácter que XML no admite.
  */
 function decodeEntities(value: string): string {
   return value.replace(ENTITY_PATTERN, (match) => {
@@ -65,9 +65,7 @@ function decodeEntities(value: string): string {
       const codePoint = match.startsWith('&#x')
         ? Number.parseInt(match.slice(3, -1), 16)
         : Number.parseInt(match.slice(2, -1), 10)
-      return Number.isInteger(codePoint) && codePoint >= 1 && codePoint <= MAX_CODE_POINT
-        ? String.fromCodePoint(codePoint)
-        : match
+      return isXmlCodePoint(codePoint) ? String.fromCodePoint(codePoint) : match
     }
     return NAMED_ENTITIES[match.slice(1, -1)] ?? match
   })
@@ -263,7 +261,10 @@ export function parseUblInvoice(rawXml: string, options: ParseOptions = {}): Par
   // Una factura de SUNAT nunca trae DOCTYPE; rechazarlo cierra de raíz la expansión de entidades.
   // `\s*` cubre también a un parser tolerante que acepte espacios entre `<!` y `DOCTYPE`.
   if (/<!\s*DOCTYPE/i.test(xml)) return fail(createProblem('XML_DOCTYPE_NOT_ALLOWED'))
-  if (!xml.trimStart().startsWith('<') || XMLValidator.validate(xml) !== true) {
+  // `XMLValidator` no mira los caracteres: un U+0000 o un control C0 escrito tal cual (en un dato, un
+  // comentario o un CDATA) deja al documento mal formado según XML 1.0, y en un dato leído haría
+  // fallar el INSERT (PostgreSQL no guarda U+0000). Es un XML ilegible, nunca un dato aceptado.
+  if (!xml.trimStart().startsWith('<') || !isXmlText(xml) || XMLValidator.validate(xml) !== true) {
     return fail(createProblem('UNREADABLE_XML'))
   }
 

@@ -1,7 +1,8 @@
 import { CLOSE_REASONS_BY_STATUS, TRANSITIONS } from '@anticipate/shared/advance-request'
 import { isValidRuc } from '@anticipate/shared/identity'
-import { invoiceKey } from '@anticipate/shared/invoice'
+import { invoiceKey, parsedInvoiceSchema, parseUblInvoice } from '@anticipate/shared/invoice'
 import { publicPayerSchema } from '@anticipate/shared/payer'
+import { buildInvoiceXml } from '@anticipate/shared/testing'
 import fc from 'fast-check'
 import pg from 'pg'
 import { afterAll, beforeEach, describe, expect, it } from 'vitest'
@@ -1498,6 +1499,59 @@ describe('reglas espejo de shared', () => {
     expect(results.every((r) => r.accepted || r.constraint === 'payers_texts_check')).toBe(true)
     expect(expected.some(Boolean)).toBe(true)
     expect(expected.some((ok) => !ok)).toBe(true)
+  })
+
+  it('(f) una razón social que acepta parsedInvoiceSchema se guarda sin cambios en invoices.issuer_name', async () => {
+    // Gemela del tipo de la columna: PostgreSQL no guarda U+0000 (22021) y un sustituto suelto llega
+    // cambiado por U+FFFD. Se prueba contra el tipo real de la columna con un cast: donde el INSERT
+    // fallaría por largo, el cast recorta, y eso tampoco es "sin cambios".
+    const [column] = await queryRows<{ type: string }>(
+      `SELECT format_type(atttypid, atttypmod) AS type FROM pg_attribute
+        WHERE attrelid = 'invoices'::regclass AND attname = 'issuer_name'`,
+    )
+    expect(column?.type).toBe('character varying(1500)')
+    const storedUnchanged = async (name: string): Promise<boolean> => {
+      try {
+        const rows = await queryRows<{ v: string }>(`SELECT $1::${column?.type} AS v`, [name])
+        return rows[0]?.v === name
+      } catch (error) {
+        expect((error as SqlError).code).toBe('22021')
+        return false
+      }
+    }
+    const parsed = parseUblInvoice(buildInvoiceXml())
+    if (!parsed.ok) throw new Error(parsed.problem.code)
+    const accepts = (name: string) =>
+      parsedInvoiceSchema.safeParse({ ...parsed.invoice, issuerName: name }).success
+
+    const boundary = [
+      '',
+      'CASTAÑEDA\tE HIJOS 😀 \uE000 \uFFFD',
+      'PROV\u0000EEDOR',
+      'PROV\uD800EEDOR',
+      'PROV\uDFFFEEDOR',
+      'PROV\u0001EEDOR',
+      'PROV\uFFFFEEDOR',
+      'a'.repeat(1500),
+      'a'.repeat(1501),
+    ]
+    const random = fc.sample(fc.string({ unit: 'binary', maxLength: 30 }), {
+      numRuns: 400,
+      seed: 20260925,
+    })
+    const values = [...boundary, ...random]
+    const accepted = values.filter(accepts)
+    const broken: string[] = []
+    for (const name of accepted) {
+      if (!(await storedUnchanged(name))) broken.push(JSON.stringify(name))
+    }
+    expect(broken).toEqual([])
+    expect(accepted.length).toBeGreaterThan(0)
+    expect(values.length - accepted.length).toBeGreaterThan(0)
+    // Los dos contraejemplos que motivan la gemela: la base no los guarda tal cual.
+    expect(await storedUnchanged('PROV\u0000EEDOR')).toBe(false)
+    expect(await storedUnchanged('PROV\uD800EEDOR')).toBe(false)
+    expect(accepts('PROV\u0000EEDOR') || accepts('PROV\uD800EEDOR')).toBe(false)
   })
 
   it('(g) transiciones y reglas de cierre de la base = TRANSITIONS y CLOSE_REASONS_BY_STATUS', async () => {

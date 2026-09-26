@@ -56,6 +56,14 @@ describe('suite dorada', () => {
     }
   })
 
+  it('seed-nul-in-name.xml trae un byte 0x00 y es UNREADABLE_XML: nunca un INSERT que la base rechaza', () => {
+    const bytes = readFileSync(`${casesDir}seed-nul-in-name.xml`)
+    expect(bytes.includes(0)).toBe(true)
+    const parsed = parseUblInvoice(decodeXml(bytes))
+    expect(parsed.ok).toBe(false)
+    if (!parsed.ok) expect(parsed.problem.code).toBe('UNREADABLE_XML')
+  })
+
   it('el caso realista (ISO-8859-1, CRLF, CDATA, dos extensiones) se lee firmado y con el neto correcto', () => {
     const parsed = parseUblInvoice(readCase('seed-sunat-realistic.xml'))
     expect(parsed.ok).toBe(true)

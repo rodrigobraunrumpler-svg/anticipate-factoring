@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest'
 import { buildCdrXml, buildInvoiceXml, DEFAULT_TEST_XML } from '../testing/index.js'
 import { parsedInvoiceSchema } from './parsed-invoice.js'
 import { decodeXml, type ParseResult, parseUblInvoice } from './ubl-parser.js'
+import { isXmlText } from './xml-text.js'
 
 function parseOk(xml: string) {
   const r = parseUblInvoice(xml)
@@ -106,6 +107,68 @@ describe('parseUblInvoice · referencias de carácter en texto', () => {
     expect(() =>
       parseUblInvoice(buildInvoiceXml().replace('>F001-123<', '>F001-&#1114112;<')),
     ).not.toThrow()
+  })
+
+  it.each([
+    ['U+0000', '&#0;'],
+    ['U+0000 en hexadecimal', '&#x0;'],
+    ['un control C0', '&#1;'],
+    ['U+001F', '&#x1F;'],
+    ['un sustituto alto', '&#xD800;'],
+    ['un sustituto bajo', '&#56320;'],
+    ['U+FFFE', '&#xFFFE;'],
+    ['U+FFFF', '&#65535;'],
+  ])('deja intacta una referencia a un carácter que XML no admite (%s)', (_, reference) => {
+    const inv = parseOk(withRawIssuerName(`X ${reference} Y`))
+    expect(inv.issuerName).toBe(`X ${reference} Y`)
+  })
+
+  it('decodifica las referencias a tabulación, salto de línea y retorno de carro', () => {
+    const inv = parseOk(withRawIssuerName('A&#9;B&#xA;C&#13;D'))
+    expect(inv.issuerName).toBe('A\tB\nC\rD')
+  })
+})
+
+describe('parseUblInvoice · caracteres que XML no admite', () => {
+  /*
+   * XML 1.0 (§2.2) solo admite tabulación, salto de línea, retorno de carro y Unicode sin los demás
+   * controles C0, sin sustitutos sueltos y sin U+FFFE/U+FFFF. Un documento con otro carácter no está
+   * bien formado. Además, PostgreSQL no guarda U+0000 en `text`: un nombre que lo trae haría fallar
+   * el INSERT de la factura en vez de volver al proveedor como un problema de su archivo.
+   */
+  it.each([
+    ['U+0000', '\u0000'],
+    ['un control C0', '\u0001'],
+    ['U+000B', '\u000B'],
+    ['U+001F', '\u001F'],
+    ['U+FFFE', '\uFFFE'],
+    ['U+FFFF', '\uFFFF'],
+    ['un sustituto suelto', '\uD800'],
+  ])('un XML con %s escrito tal cual en un dato es UNREADABLE_XML', (_, character) => {
+    expect(parseError(buildInvoiceXml({ issuerName: `PROV${character}EEDOR` })).code).toBe(
+      'UNREADABLE_XML',
+    )
+  })
+
+  it('también fuera de los datos que se leen: en un comentario o en una sección CDATA', () => {
+    const xml = buildInvoiceXml()
+    expect(parseError(xml.replace('<cbc:ID>', '<!-- \u0000 --><cbc:ID>')).code).toBe(
+      'UNREADABLE_XML',
+    )
+    expect(parseError(buildInvoiceXml({ issuerName: 'A\u0000B', cdataNames: true })).code).toBe(
+      'UNREADABLE_XML',
+    )
+  })
+
+  it('acepta tabulación, saltos de línea, tildes y caracteres fuera del plano básico', () => {
+    const inv = parseOk(withRawIssuerName('CASTAÑEDA\tE HIJOS 😀 \uE000 \uFFFD'))
+    expect(inv.issuerName).toBe('CASTAÑEDA\tE HIJOS 😀 \uE000 \uFFFD')
+  })
+
+  it('lo decodificado desde bytes UTF-8 con un 0x00 también es UNREADABLE_XML', () => {
+    const bytes = new TextEncoder().encode(buildInvoiceXml({ issuerName: 'PROV\u0000EEDOR' }))
+    expect(bytes.includes(0)).toBe(true)
+    expect(parseError(decodeXml(bytes)).code).toBe('UNREADABLE_XML')
   })
 })
 
@@ -538,7 +601,17 @@ describe('parseUblInvoice · CDATA', () => {
 })
 
 describe('parseUblInvoice · propiedad: nunca lanza', () => {
-  /** Nunca lanza, y si lee la factura, lo leído cumple `parsedInvoiceSchema`. */
+  /** Todo texto de lo leído, a cualquier profundidad (nombres, ids de cuota, fechas…). */
+  const textsOf = (value: unknown): string[] => {
+    if (typeof value === 'string') return [value]
+    if (value === null || typeof value !== 'object') return []
+    return Object.values(value).flatMap(textsOf)
+  }
+
+  /**
+   * Nunca lanza, y si lee la factura, lo leído cumple `parsedInvoiceSchema` y ningún texto lleva un
+   * carácter que XML no admite (U+0000, que PostgreSQL no guarda, ni un sustituto suelto).
+   */
   const wellBehaved = (xml: string): boolean => {
     let r: ParseResult
     try {
@@ -547,7 +620,7 @@ describe('parseUblInvoice · propiedad: nunca lanza', () => {
       return false
     }
     return r.ok
-      ? parsedInvoiceSchema.safeParse(r.invoice).success
+      ? parsedInvoiceSchema.safeParse(r.invoice).success && textsOf(r.invoice).every(isXmlText)
       : typeof r.problem.code === 'string'
   }
 
@@ -582,6 +655,11 @@ describe('parseUblInvoice · propiedad: nunca lanza', () => {
       '&amp;',
       '&#0;',
       '&#x110000;',
+      '&#xD800;',
+      '&#1;',
+      '\u0000',
+      '\uD800',
+      '\uFFFE',
       '<![CDATA[',
       ']]>',
       '<!DOCTYPE x>',

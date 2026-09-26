@@ -294,29 +294,56 @@ export function invoiceKey(invoice: Pick<ParsedInvoice, 'issuerRuc' | 'seriesNum
   return `${invoice.issuerRuc.trim()}|${dash === -1 ? series : `${series}-${canonicalNumber}`}`
 }
 
+export type ValidateInvoicesOptions = {
+  /**
+   * Cuántos XML de factura se enviaron, se hayan podido leer o no; por defecto, las facturas
+   * recibidas, y nunca cuenta menos que ellas. El máximo de facturas del pagador cuenta los XML
+   * enviados (contrato de `POST /api/v1/advance-requests`, D38): uno ilegible también ocupa un lugar.
+   * Y si llegaron XML pero ninguno se pudo leer, no se agrega NO_INVOICES: quien los lee ya informó un
+   * problema por cada archivo.
+   */
+  xmlFileCount?: number
+}
+
+const emptyResult = (problems: Problem[]): ValidationResult => ({
+  problems,
+  validInvoices: [],
+  currency: null,
+  totalNetPending: '0.00',
+  maxAmount: '0.00',
+})
+
+/**
+ * Aplica las reglas a las facturas de una solicitud y calcula el máximo a pedir. Informa todos los
+ * problemas juntos, para corregirlos de una vez: con más facturas que el máximo también informa los
+ * de cada factura y del conjunto (así el proveedor sabe cuáles quitar), pero no calcula un máximo,
+ * porque la solicitud no se puede crear así.
+ */
 export function validateInvoices(
+  invoices: readonly ParsedInvoice[],
+  ctx: ValidationContext,
+  options: ValidateInvoicesOptions = {},
+): ValidationResult {
+  const xmlFileCount = Math.max(options.xmlFileCount ?? invoices.length, invoices.length)
+  if (xmlFileCount === 0) {
+    return emptyResult([createProblem('NO_INVOICES', { rule: 'no-invoices' })])
+  }
+  const result = evaluateInvoices(invoices, ctx)
+  if (xmlFileCount <= ctx.maxInvoices) return result
+  const tooMany = createProblem('TOO_MANY_INVOICES', {
+    rule: 'max-invoices',
+    data: { max: ctx.maxInvoices },
+  })
+  return emptyResult([tooMany, ...result.problems])
+}
+
+/** Duplicados, reglas por factura y reglas del conjunto, sin mirar cuántas facturas son. */
+function evaluateInvoices(
   invoices: readonly ParsedInvoice[],
   ctx: ValidationContext,
 ): ValidationResult {
   const problems: Problem[] = []
-  const empty: ValidationResult = {
-    problems,
-    validInvoices: [],
-    currency: null,
-    totalNetPending: '0.00',
-    maxAmount: '0.00',
-  }
-
-  if (invoices.length === 0) {
-    problems.push(createProblem('NO_INVOICES', { rule: 'no-invoices' }))
-    return empty
-  }
-  if (invoices.length > ctx.maxInvoices) {
-    problems.push(
-      createProblem('TOO_MANY_INVOICES', { rule: 'max-invoices', data: { max: ctx.maxInvoices } }),
-    )
-    return empty
-  }
+  const empty = emptyResult(problems)
 
   const seen = new Set<string>()
   const candidates: ParsedInvoice[] = []

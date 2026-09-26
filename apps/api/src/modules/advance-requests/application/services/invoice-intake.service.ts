@@ -32,26 +32,22 @@ export class InvoiceIntakeService {
     const reading = readInvoices(input.xmlFiles, this.limits.maxXmlBytes)
     const pairing = pairPdfs(input.xmlFiles, input.pdfFiles, this.limits.maxPdfBytes)
 
-    // Si ningún XML se pudo leer, "adjunta al menos una factura" sería ruido: ya hay un problema por
-    // archivo. Sin ningún XML, en cambio, `validateInvoices` responde NO_INVOICES.
-    const nothingReadable = reading.read.length === 0 && reading.problems.length > 0
-    const validation = nothingReadable
-      ? null
-      : validateInvoices(
-          reading.read.map(({ invoice }) => invoice),
-          context,
-        )
-    const problems: Problem[] = [
-      ...reading.problems,
-      ...pairing.problems,
-      ...(validation?.problems ?? []),
-    ]
+    // El máximo de facturas del pagador cuenta los XML recibidos, legibles o no (contrato del
+    // endpoint, D38): así TOO_MANY_INVOICES sale junto con los problemas de cada archivo y de cada
+    // factura, no en un segundo envío. Sin ningún XML, `validateInvoices` responde NO_INVOICES; si
+    // llegaron y ninguno se pudo leer, no lo agrega: ya hay un problema por archivo.
+    const validation = validateInvoices(
+      reading.read.map(({ invoice }) => invoice),
+      context,
+      { xmlFileCount: input.xmlFiles.length },
+    )
+    const problems: Problem[] = [...reading.problems, ...pairing.problems, ...validation.problems]
     // El máximo se calcula sobre las facturas válidas: solo tiene sentido si todas lo son.
-    if (problems.length === 0 && validation !== null) {
+    if (problems.length === 0) {
       const amountProblem = validateRequestedAmount(input.requestedAmount, validation)
       if (amountProblem !== null) problems.push(amountProblem)
     }
-    if (problems.length > 0 || validation === null) return { ok: false, problems }
+    if (problems.length > 0) return { ok: false, problems }
     // `validateRequestedAmount` ya exige una moneda común; esto solo estrecha el tipo.
     if (validation.currency === null) {
       return {

@@ -6,6 +6,8 @@ Hoy la suite solo tiene casos semilla (`seed-*.xml`), generados con la fábrica 
 
 Cuatro semillas fijan las reglas de fecha y las gemelas de las restricciones CHECK de la base (D49): `seed-issue-date-in-future.xml` (emisión posterior a "hoy"), `seed-due-before-issue.xml` (una cuota vence antes de la emisión), `seed-installment-zero.xml` (una cuota con monto cero) y `seed-net-exceeds-total.xml` (neto pendiente mayor que el total). El XML de cada una se lee bien y termina en su problema; `golden.test.ts` lo comprueba además del snapshot. Ninguna semilla anterior cambió de resultado con esas reglas.
 
+`seed-nul-in-name.xml` es la gemela del tipo de las columnas de texto: trae un byte `0x00` en la razón social, que XML 1.0 no admite y PostgreSQL no guarda. Termina en `UNREADABLE_XML`, nunca en un INSERT que la base rechaza; `golden.test.ts` lo comprueba además del snapshot. Git lo trata como binario por ese byte.
+
 ## Agregar un XML real
 
 1. Guardar el original en `private/` (ignorado por git; nunca se commitea).

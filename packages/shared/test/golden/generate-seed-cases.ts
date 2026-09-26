@@ -53,6 +53,10 @@ const cases: Record<string, SeedCase> = {
       installments: [{ id: 'Cuota001', amount: '11800.01', dueDate: '2026-11-30' }],
     }),
   ),
+  // Gemela del tipo de las columnas de texto de la base: PostgreSQL no guarda U+0000. Un byte 0x00
+  // en la razón social deja al XML mal formado y termina en UNREADABLE_XML, nunca en un INSERT que la
+  // base rechaza.
+  'seed-nul-in-name.xml': utf8(buildInvoiceXml({ issuerName: 'PROVEEDOR\u0000EJEMPLO S.A.C.' })),
   // Lo que más se parece a un XML real de SUNAT sin serlo: dos UBLExtension con la firma en la
   // segunda, cac:Signature de primer nivel, razón social en CDATA con "Ñ" y "&", finales CRLF,
   // bytes ISO-8859-1 y detracción al 12 % (neto = 11800.00 - 1416.00 = 10384.00).

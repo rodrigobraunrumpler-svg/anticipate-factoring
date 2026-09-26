@@ -29,6 +29,7 @@ export {
   RULE_IDS,
   type RuleId,
   recipientIsPayerRule,
+  type ValidateInvoicesOptions,
   type ValidationContext,
   type ValidationResult,
   validateInvoices,

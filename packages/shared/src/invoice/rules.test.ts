@@ -159,9 +159,73 @@ describe('validateInvoices · reglas del conjunto', () => {
 
   it('rechaza más facturas que el máximo del contexto', () => {
     const three = ['F001-1', 'F001-2', 'F001-3'].map((seriesNumber) => invoice({ seriesNumber }))
-    expect(codes(validateInvoices(three, { ...ctx, maxInvoices: 2 }))).toEqual([
+    const r = validateInvoices(three, { ...ctx, maxInvoices: 2 })
+    expect(codes(r)).toEqual(['TOO_MANY_INVOICES'])
+    expect(r.problems[0]).toEqual(
+      expect.objectContaining({ rule: 'max-invoices', params: { max: 2 } }),
+    )
+  })
+
+  it('con más facturas que el máximo informa también los problemas de cada una y del conjunto', () => {
+    const r = validateInvoices(
+      [
+        invoice({ seriesNumber: 'F001-1', recipientRuc: '20100070970' }),
+        invoice({ seriesNumber: 'F001-2', currency: 'EUR' }),
+        invoice({ seriesNumber: 'F001-3' }),
+        invoice({ seriesNumber: 'F001-0003' }),
+        invoice({ seriesNumber: 'F001-4', currency: 'USD' }),
+      ],
+      { ...ctx, maxInvoices: 2 },
+    )
+    expect(r.problems.map((p) => [p.code, p.invoice ?? null])).toEqual([
+      ['TOO_MANY_INVOICES', null],
+      ['DUPLICATE_INVOICE', 'F001-0003'],
+      ['RECIPIENT_IS_NOT_PAYER', 'F001-1'],
+      ['CURRENCY_NOT_ALLOWED', 'F001-2'],
+      ['MIXED_CURRENCIES', null],
+    ])
+  })
+
+  it('con más facturas que el máximo no calcula un máximo: la solicitud no se puede crear así', () => {
+    const three = ['F001-1', 'F001-2', 'F001-3'].map((seriesNumber) => invoice({ seriesNumber }))
+    expect(validateInvoices(three, { ...ctx, maxInvoices: 2 })).toEqual({
+      problems: [expect.objectContaining({ code: 'TOO_MANY_INVOICES' })],
+      validInvoices: [],
+      currency: null,
+      totalNetPending: '0.00',
+      maxAmount: '0.00',
+    })
+  })
+
+  it('el tope cuenta los XML recibidos, se hayan podido leer o no (xmlFileCount)', () => {
+    const two = ['F001-1', 'F001-2'].map((seriesNumber) => invoice({ seriesNumber }))
+    expect(codes(validateInvoices(two, { ...ctx, maxInvoices: 2 }, { xmlFileCount: 3 }))).toEqual([
       'TOO_MANY_INVOICES',
     ])
+    expect(codes(validateInvoices(two, { ...ctx, maxInvoices: 2 }, { xmlFileCount: 2 }))).toEqual(
+      [],
+    )
+  })
+
+  it('si llegaron XML y ninguno se pudo leer, no agrega NO_INVOICES: cada archivo ya tiene el suyo', () => {
+    expect(validateInvoices([], ctx, { xmlFileCount: 2 })).toEqual({
+      problems: [],
+      validInvoices: [],
+      currency: null,
+      totalNetPending: '0.00',
+      maxAmount: '0.00',
+    })
+    expect(codes(validateInvoices([], { ...ctx, maxInvoices: 1 }, { xmlFileCount: 2 }))).toEqual([
+      'TOO_MANY_INVOICES',
+    ])
+    expect(codes(validateInvoices([], ctx, { xmlFileCount: 0 }))).toEqual(['NO_INVOICES'])
+  })
+
+  it('xmlFileCount nunca cuenta menos que las facturas recibidas', () => {
+    const three = ['F001-1', 'F001-2', 'F001-3'].map((seriesNumber) => invoice({ seriesNumber }))
+    expect(codes(validateInvoices(three, { ...ctx, maxInvoices: 2 }, { xmlFileCount: 1 }))).toEqual(
+      ['TOO_MANY_INVOICES'],
+    )
   })
 
   it('rechaza la misma factura repetida, ignorando mayúsculas y espacios', () => {

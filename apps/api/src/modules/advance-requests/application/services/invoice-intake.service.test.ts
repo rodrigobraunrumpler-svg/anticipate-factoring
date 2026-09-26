@@ -178,6 +178,89 @@ describe('InvoiceIntakeService', () => {
     })
   })
 
+  it('el máximo de facturas cuenta los XML recibidos, también los que no se pudieron leer', () => {
+    const result = service.evaluate(
+      input({
+        payer: { ...sea, maxInvoices: 1 },
+        xmlFiles: [xml('a.xml'), upload('b.xml', 'no soy xml')],
+      }),
+    )
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.problems.map((p) => [p.code, p.file ?? null])).toEqual([
+      ['UNREADABLE_XML', 'b.xml'],
+      ['TOO_MANY_INVOICES', null],
+    ])
+  })
+
+  it('con más XML que el máximo y ninguno legible, informa cada archivo y el máximo', () => {
+    const result = service.evaluate(
+      input({
+        payer: { ...sea, maxInvoices: 1 },
+        xmlFiles: [upload('a.xml', 'hola'), upload('b.xml', '<a>')],
+      }),
+    )
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.problems.map((p) => [p.code, p.file ?? null])).toEqual([
+      ['UNREADABLE_XML', 'a.xml'],
+      ['UNREADABLE_XML', 'b.xml'],
+      ['TOO_MANY_INVOICES', null],
+    ])
+  })
+
+  it('con más XML que el máximo informa también los problemas de cada factura, en una sola respuesta', () => {
+    const result = service.evaluate(
+      input({
+        payer: { ...sea, maxInvoices: 1 },
+        xmlFiles: [
+          xml('F001-1.xml', { seriesNumber: 'F001-1', recipientRuc: '20100070970' }),
+          xml('F001-2.xml', { seriesNumber: 'F001-2', currency: 'EUR' }),
+        ],
+        pdfFiles: [pdf('F001-9.pdf')],
+      }),
+    )
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.problems.map((p) => [p.code, p.file ?? p.invoice ?? null])).toEqual([
+      ['PDF_WITHOUT_XML', 'F001-9.pdf'],
+      ['TOO_MANY_INVOICES', null],
+      ['RECIPIENT_IS_NOT_PAYER', 'F001-1'],
+      ['CURRENCY_NOT_ALLOWED', 'F001-2'],
+    ])
+  })
+
+  it('un XML con U+0000 en la razón social es UNREADABLE_XML con su nombre: 422, nunca un INSERT que falle', () => {
+    const result = service.evaluate(
+      input({ xmlFiles: [xml('F001-123.xml', { issuerName: 'PROV\u0000EEDOR' })] }),
+    )
+    expect(result).toEqual({
+      ok: false,
+      problems: [expect.objectContaining({ code: 'UNREADABLE_XML', file: 'F001-123.xml' })],
+    })
+  })
+
+  it('lo aceptado nunca lleva un carácter que PostgreSQL no guarda ni un sustituto suelto', () => {
+    const result = service.evaluate(
+      input({
+        xmlFiles: [
+          upload(
+            'F001-123.xml',
+            buildInvoiceXml().replace(
+              '>PROVEEDOR EJEMPLO S.A.C.<',
+              '>PROVEEDOR &#0; &#xD800; &#1; S.A.C.<',
+            ),
+          ),
+        ],
+      }),
+    )
+    if (!result.ok) throw new Error(JSON.stringify(result.problems))
+    const name = result.invoices[0]?.invoice.issuerName ?? ''
+    expect(name).toBe('PROVEEDOR &#0; &#xD800; &#1; S.A.C.')
+    const codePoints = [...name].map((ch) => ch.codePointAt(0) ?? 0)
+    expect(codePoints.filter((cp) => cp < 0x20 || (cp >= 0xd800 && cp <= 0xdfff))).toEqual([])
+  })
+
   it('aplica la regla de la fecha de emisión futura (hoy es el de la solicitud)', () => {
     const result = service.evaluate(
       input({ xmlFiles: [xml('F001-123.xml', { issueDate: '2026-09-25' })] }),

@@ -45,6 +45,23 @@ describe('readInvoices', () => {
     ])
   })
 
+  it.each([
+    ['U+0000', 'PROV\u0000EEDOR'],
+    ['un control C0', 'PROV\u0001EEDOR'],
+  ])(
+    'un XML con %s en un dato es UNREADABLE_XML con su nombre, nunca una factura leída',
+    (_, issuerName) => {
+      const { read, problems } = readInvoices(
+        [xmlFile('F001-123.xml', buildInvoiceXml({ issuerName }))],
+        MAX_XML_BYTES,
+      )
+      expect(read).toEqual([])
+      expect(problems).toEqual([
+        expect.objectContaining({ code: 'UNREADABLE_XML', file: 'F001-123.xml' }),
+      ])
+    },
+  )
+
   it('el problema del lector conserva el dato de la factura y suma el archivo', () => {
     const { problems } = readInvoices(
       [xmlFile('sin-fecha.xml', buildInvoiceXml({ omit: ['IssueDate'] }))],
