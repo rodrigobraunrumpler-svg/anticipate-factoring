@@ -2,9 +2,9 @@ import { readFileSync } from 'node:fs'
 import fc from 'fast-check'
 import { describe, expect, it } from 'vitest'
 import { buildCdrXml, buildInvoiceXml, DEFAULT_TEST_XML } from '../testing/index.js'
+import { isXmlText } from '../text/index.js'
 import { parsedInvoiceSchema } from './parsed-invoice.js'
 import { decodeXml, type ParseResult, parseUblInvoice } from './ubl-parser.js'
-import { isXmlText } from './xml-text.js'
 
 function parseOk(xml: string) {
   const r = parseUblInvoice(xml)
@@ -410,6 +410,13 @@ describe('parseUblInvoice · datos con formato inválido (XML_INVALID_FIELD)', (
       'issueDate',
       'fecha de emisión',
     ],
+    // PostgreSQL no tiene año 0: la factura haría fallar el INSERT en vez de volver con su problema.
+    [
+      'fecha de emisión en el año 0000',
+      { issueDate: '0000-01-01' },
+      'issueDate',
+      'fecha de emisión',
+    ],
   ] as const)('%s', (_, options, key, field) => {
     const p = parseError(buildInvoiceXml(options))
     expect(p.code).toBe('XML_INVALID_FIELD')
@@ -452,6 +459,14 @@ describe('parseUblInvoice · cuotas y detracción mal formadas', () => {
       ],
     })
     expect(invalidField(xml)).toBe('fecha de vencimiento de Cuota002')
+  })
+
+  it('Cuota001 con vencimiento en el año 0000, que PostgreSQL no guarda', () => {
+    const xml = buildInvoiceXml({
+      issueDate: '0001-01-01',
+      installments: [{ id: 'Cuota001', amount: '10620.00', dueDate: '0000-12-31' }],
+    })
+    expect(invalidField(xml)).toBe('fecha de vencimiento de Cuota001')
   })
 
   it('Cuota001 con monto abc', () => {

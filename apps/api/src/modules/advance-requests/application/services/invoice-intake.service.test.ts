@@ -44,10 +44,10 @@ const input = (overrides: Partial<InvoiceIntakeInput> = {}): InvoiceIntakeInput 
 const service = new InvoiceIntakeService(LIMITS)
 
 describe('InvoiceIntakeService', () => {
-  it('acepta una factura válida con su PDF y calcula el máximo con el porcentaje del pagador', () => {
+  it('acepta una factura válida con su PDF y calcula el máximo con el porcentaje del pagador', async () => {
     const xmlFile = xml('F001-123.xml')
     const pdfFile = pdf('f001-123.PDF')
-    const result = service.evaluate(input({ xmlFiles: [xmlFile], pdfFiles: [pdfFile] }))
+    const result = await service.evaluate(input({ xmlFiles: [xmlFile], pdfFiles: [pdfFile] }))
     expect(result).toEqual({
       ok: true,
       invoices: [
@@ -67,8 +67,8 @@ describe('InvoiceIntakeService', () => {
     })
   })
 
-  it('una factura sin PDF queda con pdf null y las facturas conservan el orden recibido', () => {
-    const result = service.evaluate(
+  it('una factura sin PDF queda con pdf null y las facturas conservan el orden recibido', async () => {
+    const result = await service.evaluate(
       input({
         xmlFiles: [xml('F001-124.xml', { seriesNumber: 'F001-124' }), xml('F001-123.xml')],
         pdfFiles: [pdf('F001-123.pdf')],
@@ -84,8 +84,89 @@ describe('InvoiceIntakeService', () => {
     expect(result.maxAmount).toBe('16992.00')
   })
 
-  it('junta en una sola respuesta los problemas de lectura, de emparejamiento y de reglas', () => {
-    const result = service.evaluate(
+  it('lee cada XML en el orden recibido; uno ilegible no impide leer los demás', async () => {
+    const result = await service.evaluate(
+      input({
+        xmlFiles: [
+          xml('F001-2.xml', { seriesNumber: 'F001-2' }),
+          upload('roto.xml', '%PDF-1.7 no soy xml'),
+          xml('F001-1.xml', { seriesNumber: 'F001-1', currency: 'EUR' }),
+        ],
+      }),
+    )
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.problems.map((p) => [p.code, p.file ?? p.invoice])).toEqual([
+      ['UNREADABLE_XML', 'roto.xml'],
+      ['CURRENCY_NOT_ALLOWED', 'F001-1'],
+    ])
+  })
+
+  it('cede el turno al event loop antes de cada XML: nunca lee dos seguidos sin soltarlo', async () => {
+    // Leer un XML de 1 MiB armado a propósito (miles de etiquetas o atributos distintos) lleva medio
+    // segundo o más de CPU; leer los 20 de una petición de corrido bloquearía el proceso entero
+    // (otras solicitudes y la sonda de vida) de 13 a 30 s. Aquí se registra cuándo se lee cada
+    // archivo (el acceso a su contenido) y cada vuelta del event loop (un setImmediate que se
+    // reprograma).
+    const events: string[] = []
+    const tracked = (name: string, seriesNumber: string): UploadedFile => {
+      const file = xml(name, { seriesNumber })
+      return {
+        originalname: name,
+        size: file.size,
+        get buffer() {
+          events.push(name)
+          return file.buffer
+        },
+      }
+    }
+    let running = true
+    const tick = () => {
+      if (!running) return
+      events.push('tick')
+      setImmediate(tick)
+    }
+    setImmediate(tick)
+    const result = await service.evaluate(
+      input({
+        xmlFiles: [
+          tracked('F001-1.xml', 'F001-1'),
+          tracked('F001-2.xml', 'F001-2'),
+          tracked('F001-3.xml', 'F001-3'),
+        ],
+        requestedAmount: '1.00' as Amount,
+      }),
+    )
+    running = false
+    const seen = [...events]
+    expect(result.ok).toBe(true)
+    expect(seen.filter((event) => event !== 'tick')).toEqual([
+      'F001-1.xml',
+      'F001-2.xml',
+      'F001-3.xml',
+    ])
+    // Entre dos lecturas siempre corrió el event loop.
+    expect(seen.join(' ')).toMatch(/F001-1\.xml( tick)+ F001-2\.xml( tick)+ F001-3\.xml/)
+  })
+
+  it('una fecha de emisión en el año 0000, que PostgreSQL no guarda, es un 422 con el archivo', async () => {
+    const result = await service.evaluate(
+      input({ xmlFiles: [xml('F001-123.xml', { issueDate: '0000-01-01' })] }),
+    )
+    expect(result).toEqual({
+      ok: false,
+      problems: [
+        expect.objectContaining({
+          code: 'XML_INVALID_FIELD',
+          field: 'issueDate',
+          file: 'F001-123.xml',
+        }),
+      ],
+    })
+  })
+
+  it('junta en una sola respuesta los problemas de lectura, de emparejamiento y de reglas', async () => {
+    const result = await service.evaluate(
       input({
         xmlFiles: [
           xml('F001-1.xml', { seriesNumber: 'F001-1', recipientRuc: '20100070970' }),
@@ -104,8 +185,8 @@ describe('InvoiceIntakeService', () => {
     ])
   })
 
-  it('si ningún XML se pudo leer, no agrega NO_INVOICES', () => {
-    const result = service.evaluate(
+  it('si ningún XML se pudo leer, no agrega NO_INVOICES', async () => {
+    const result = await service.evaluate(
       input({ xmlFiles: [upload('a.xml', 'hola'), upload('b.xml', '<a>')] }),
     )
     expect(result).toEqual({
@@ -117,17 +198,17 @@ describe('InvoiceIntakeService', () => {
     })
   })
 
-  it('sin ningún XML responde NO_INVOICES', () => {
-    const result = service.evaluate(input({ xmlFiles: [] }))
+  it('sin ningún XML responde NO_INVOICES', async () => {
+    const result = await service.evaluate(input({ xmlFiles: [] }))
     expect(result).toEqual({
       ok: false,
       problems: [expect.objectContaining({ code: 'NO_INVOICES' })],
     })
   })
 
-  it('aplica los topes por archivo con el nombre de cada uno', () => {
+  it('aplica los topes por archivo con el nombre de cada uno', async () => {
     const small = new InvoiceIntakeService({ maxXmlBytes: 100, maxPdfBytes: 20 })
-    const result = small.evaluate(
+    const result = await small.evaluate(
       input({ xmlFiles: [xml('F001-123.xml')], pdfFiles: [pdf('F001-123.pdf')] }),
     )
     expect(result).toEqual({
@@ -139,8 +220,8 @@ describe('InvoiceIntakeService', () => {
     })
   })
 
-  it('un monto mayor al máximo es AMOUNT_EXCEEDS_MAXIMUM con el máximo en el mensaje', () => {
-    const result = service.evaluate(input({ requestedAmount: '8496.01' as Amount }))
+  it('un monto mayor al máximo es AMOUNT_EXCEEDS_MAXIMUM con el máximo en el mensaje', async () => {
+    const result = await service.evaluate(input({ requestedAmount: '8496.01' as Amount }))
     expect(result).toEqual({
       ok: false,
       problems: [
@@ -153,8 +234,8 @@ describe('InvoiceIntakeService', () => {
     })
   })
 
-  it('con facturas inválidas no valida el monto: no agrega NO_MAXIMUM_AVAILABLE', () => {
-    const result = service.evaluate(
+  it('con facturas inválidas no valida el monto: no agrega NO_MAXIMUM_AVAILABLE', async () => {
+    const result = await service.evaluate(
       input({
         xmlFiles: [xml('F001-123.xml', { currency: 'EUR' })],
         requestedAmount: '1.00' as Amount,
@@ -165,8 +246,8 @@ describe('InvoiceIntakeService', () => {
     expect(result.problems.map((p) => p.code)).toEqual(['CURRENCY_NOT_ALLOWED'])
   })
 
-  it('usa el máximo de facturas del pagador', () => {
-    const result = service.evaluate(
+  it('usa el máximo de facturas del pagador', async () => {
+    const result = await service.evaluate(
       input({
         payer: { ...sea, maxInvoices: 1 },
         xmlFiles: [xml('F001-123.xml'), xml('F001-124.xml', { seriesNumber: 'F001-124' })],
@@ -178,8 +259,8 @@ describe('InvoiceIntakeService', () => {
     })
   })
 
-  it('el máximo de facturas cuenta los XML recibidos, también los que no se pudieron leer', () => {
-    const result = service.evaluate(
+  it('el máximo de facturas cuenta los XML recibidos, también los que no se pudieron leer', async () => {
+    const result = await service.evaluate(
       input({
         payer: { ...sea, maxInvoices: 1 },
         xmlFiles: [xml('a.xml'), upload('b.xml', 'no soy xml')],
@@ -193,8 +274,8 @@ describe('InvoiceIntakeService', () => {
     ])
   })
 
-  it('con más XML que el máximo y ninguno legible, informa cada archivo y el máximo', () => {
-    const result = service.evaluate(
+  it('con más XML que el máximo y ninguno legible, informa cada archivo y el máximo', async () => {
+    const result = await service.evaluate(
       input({
         payer: { ...sea, maxInvoices: 1 },
         xmlFiles: [upload('a.xml', 'hola'), upload('b.xml', '<a>')],
@@ -209,8 +290,8 @@ describe('InvoiceIntakeService', () => {
     ])
   })
 
-  it('con más XML que el máximo informa también los problemas de cada factura, en una sola respuesta', () => {
-    const result = service.evaluate(
+  it('con más XML que el máximo informa también los problemas de cada factura, en una sola respuesta', async () => {
+    const result = await service.evaluate(
       input({
         payer: { ...sea, maxInvoices: 1 },
         xmlFiles: [
@@ -230,8 +311,8 @@ describe('InvoiceIntakeService', () => {
     ])
   })
 
-  it('un XML con U+0000 en la razón social es UNREADABLE_XML con su nombre: 422, nunca un INSERT que falle', () => {
-    const result = service.evaluate(
+  it('un XML con U+0000 en la razón social es UNREADABLE_XML con su nombre: 422, nunca un INSERT que falle', async () => {
+    const result = await service.evaluate(
       input({ xmlFiles: [xml('F001-123.xml', { issuerName: 'PROV\u0000EEDOR' })] }),
     )
     expect(result).toEqual({
@@ -240,8 +321,8 @@ describe('InvoiceIntakeService', () => {
     })
   })
 
-  it('lo aceptado nunca lleva un carácter que PostgreSQL no guarda ni un sustituto suelto', () => {
-    const result = service.evaluate(
+  it('lo aceptado nunca lleva un carácter que PostgreSQL no guarda ni un sustituto suelto', async () => {
+    const result = await service.evaluate(
       input({
         xmlFiles: [
           upload(
@@ -261,8 +342,8 @@ describe('InvoiceIntakeService', () => {
     expect(codePoints.filter((cp) => cp < 0x20 || (cp >= 0xd800 && cp <= 0xdfff))).toEqual([])
   })
 
-  it('aplica la regla de la fecha de emisión futura (hoy es el de la solicitud)', () => {
-    const result = service.evaluate(
+  it('aplica la regla de la fecha de emisión futura (hoy es el de la solicitud)', async () => {
+    const result = await service.evaluate(
       input({ xmlFiles: [xml('F001-123.xml', { issueDate: '2026-09-25' })] }),
     )
     expect(result).toEqual({
@@ -271,8 +352,8 @@ describe('InvoiceIntakeService', () => {
     })
   })
 
-  it('aplica las reglas gemelas de las CHECK de facturas: 422 y nunca un INSERT que falle', () => {
-    const result = service.evaluate(
+  it('aplica las reglas gemelas de las CHECK de facturas: 422 y nunca un INSERT que falle', async () => {
+    const result = await service.evaluate(
       input({
         xmlFiles: [
           xml('F001-123.xml', {
@@ -298,8 +379,8 @@ describe('InvoiceIntakeService', () => {
     ])
   })
 
-  it('una factura repetida en la misma solicitud es DUPLICATE_INVOICE', () => {
-    const result = service.evaluate(
+  it('una factura repetida en la misma solicitud es DUPLICATE_INVOICE', async () => {
+    const result = await service.evaluate(
       input({
         xmlFiles: [xml('F001-123.xml'), xml('copia.xml', { seriesNumber: 'F001-00000123' })],
       }),
@@ -310,8 +391,8 @@ describe('InvoiceIntakeService', () => {
     })
   })
 
-  it('un pagador mal configurado es un error de la plataforma, no un problema del proveedor', () => {
-    expect(() => service.evaluate(input({ payer: { ...sea, advancePercent: 0 } }))).toThrow(
+  it('un pagador mal configurado es un error de la plataforma, no un problema del proveedor', async () => {
+    await expect(service.evaluate(input({ payer: { ...sea, advancePercent: 0 } }))).rejects.toThrow(
       RangeError,
     )
   })

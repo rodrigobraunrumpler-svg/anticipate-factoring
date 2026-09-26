@@ -3,6 +3,7 @@ import { VALIDATION_MESSAGES_ES } from '../errors/index.js'
 import { dniSchema, rucSchema } from '../identity/index.js'
 import { amountSchema } from '../money/index.js'
 import { slugSchema } from '../payer/index.js'
+import { isXmlText } from '../text/index.js'
 
 export const CONTACT_TIME_SLOTS = ['MORNING', 'AFTERNOON', 'ANY'] as const
 export type ContactTimeSlot = (typeof CONTACT_TIME_SLOTS)[number]
@@ -20,6 +21,17 @@ export const CAVALI_REGISTRATION_LABELS: Readonly<Record<CavaliRegistration, str
   NO: 'No',
   UNKNOWN: 'No sé',
 }
+
+/*
+ * Todo texto libre del formulario termina en una columna de texto (o en `utm`, que es jsonb) de
+ * `advance_requests`, `suppliers`, `legal_representatives` o `consents`, o se compara con una
+ * (`legal_document_versions.version`). `isXmlText` es la gemela del tipo de esas columnas: PostgreSQL
+ * no guarda U+0000 (22021 en texto, 22P05 en jsonb) y un sustituto suelto se guardaría cambiado por
+ * U+FFFD (en jsonb, 22P02). Sin esto, un envío que pasa el formulario haría fallar el INSERT (503 en
+ * cada reintento) o la lectura de las versiones legales (500), en vez de responder 400 con el campo.
+ * Los topes de largo ya cuentan puntos de código, como `char_length` y el `VARCHAR` de cada columna.
+ * Lo fija un test `(f)` de `database-structure.test.ts` contra las columnas reales.
+ */
 
 /** Debe coincidir con el tope que anuncia `FORM_MESSAGES.utmTooMany` (lo comprueba form.test.ts). */
 const MAX_UTM_KEYS = 10
@@ -52,7 +64,8 @@ const contactSchema = z
         .string({ error: FORM_MESSAGES.fullNameMin })
         .trim()
         .min(3, { error: FORM_MESSAGES.fullNameMin })
-        .max(120, { error: FORM_MESSAGES.fullNameMax }),
+        .max(120, { error: FORM_MESSAGES.fullNameMax })
+        .refine(isXmlText, { error: FORM_MESSAGES.fullName }),
       dni: dniSchema,
       mobile: mobileSchema,
       email: emailSchema,
@@ -62,6 +75,7 @@ const contactSchema = z
         .trim()
         .min(2, { error: FORM_MESSAGES.jobTitleMin })
         .max(80, { error: FORM_MESSAGES.jobTitleMax })
+        .refine(isXmlText, { error: FORM_MESSAGES.jobTitle })
         .optional(),
       contactTimeSlot: z.enum(CONTACT_TIME_SLOTS, { error: FORM_MESSAGES.contactTimeSlot }),
     },
@@ -84,6 +98,7 @@ const utmValueSchema = z
   .string({ error: FORM_MESSAGES.utmValueMax })
   .trim()
   .max(200, { error: FORM_MESSAGES.utmValueMax })
+  .refine(isXmlText, { error: FORM_MESSAGES.utmValue })
 const utmSchema = z
   .record(utmKeySchema, utmValueSchema, {
     error: (issue) => (issue.code === 'invalid_type' ? FORM_MESSAGES.utm : FORM_MESSAGES.utmKey),
@@ -102,7 +117,11 @@ const utmSchema = z
 const referrerSchema = z
   .string({ error: FORM_MESSAGES.referrer })
   .max(2000, { error: FORM_MESSAGES.referrerMax })
-  .pipe(z.httpUrl({ error: FORM_MESSAGES.referrer }))
+  .pipe(
+    z
+      .httpUrl({ error: FORM_MESSAGES.referrer })
+      .refine(isXmlText, { error: FORM_MESSAGES.referrer }),
+  )
   .optional()
   .catch(undefined)
 
@@ -128,7 +147,8 @@ export const advanceRequestFormSchema = z.object(
           .string({ error: FORM_MESSAGES.legalNameMin })
           .trim()
           .min(3, { error: FORM_MESSAGES.legalNameMin })
-          .max(200, { error: FORM_MESSAGES.legalNameMax }),
+          .max(200, { error: FORM_MESSAGES.legalNameMax })
+          .refine(isXmlText, { error: FORM_MESSAGES.legalName }),
       },
       { error: FORM_MESSAGES.company },
     ),
@@ -139,6 +159,7 @@ export const advanceRequestFormSchema = z.object(
           .string({ error: FORM_MESSAGES.purposeMax })
           .trim()
           .max(500, { error: FORM_MESSAGES.purposeMax })
+          .refine(isXmlText, { error: FORM_MESSAGES.purpose })
           .optional(),
       },
       { error: FORM_MESSAGES.financing },
@@ -147,15 +168,21 @@ export const advanceRequestFormSchema = z.object(
     consents: z.object(
       {
         terms: z.literal(true, { error: FORM_MESSAGES.terms }),
+        // Recortadas como todo texto del formulario: una versión en blanco es que falta (gemela de
+        // `btrim(document_version) <> ''` en consents), nunca un INSERT que falle.
         personalData: z.literal(true, { error: FORM_MESSAGES.personalData }),
         termsVersion: z
           .string({ error: FORM_MESSAGES.termsVersionMin })
+          .trim()
           .min(1, { error: FORM_MESSAGES.termsVersionMin })
-          .max(20, { error: FORM_MESSAGES.termsVersionMax }),
+          .max(20, { error: FORM_MESSAGES.termsVersionMax })
+          .refine(isXmlText, { error: FORM_MESSAGES.termsVersion }),
         privacyVersion: z
           .string({ error: FORM_MESSAGES.privacyVersionMin })
+          .trim()
           .min(1, { error: FORM_MESSAGES.privacyVersionMin })
-          .max(20, { error: FORM_MESSAGES.privacyVersionMax }),
+          .max(20, { error: FORM_MESSAGES.privacyVersionMax })
+          .refine(isXmlText, { error: FORM_MESSAGES.privacyVersion }),
       },
       { error: FORM_MESSAGES.consents },
     ),

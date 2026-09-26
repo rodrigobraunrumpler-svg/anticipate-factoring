@@ -7,15 +7,21 @@ import { VALIDATION_MESSAGES_ES } from '../errors/index.js'
  * Fecha de calendario sin hora ni zona: "2026-09-23". Tipo de plantilla anclado (rechaza un
  * `string` cualquiera en tiempo de compilación), pero no una unión: no fija los dígitos en el
  * tipo para que TypeScript no la expanda en un tipo literal con miles de miembros (eso inflaba
- * los `.d.ts` generados, ver STACK.md). El formato exacto (`AAAA-MM-DD`) lo garantiza en runtime
- * `ISO_DATE_FORMAT`/`isIsoDate`, no el tipo.
+ * los `.d.ts` generados, ver STACK.md). El formato exacto (`AAAA-MM-DD`, del 0001-01-01 al
+ * 9999-12-31) lo garantiza en runtime `ISO_DATE_FORMAT`/`isIsoDate`, no el tipo.
  */
 export type IsoDate = `${bigint}-${string}`
 
 /** Zona horaria de operación. Perú no tiene horario de verano. */
 export const LIMA_TIME_ZONE = 'America/Lima'
 
-const ISO_DATE_FORMAT = /^\d{4}-\d{2}-\d{2}$/
+/**
+ * Año de 0001 a 9999: el rango de cuatro cifras que guarda `date` de PostgreSQL (y `timestamptz`).
+ * PostgreSQL no tiene año 0 (`'0000-01-01'::date` es "date/time field value out of range"), aunque
+ * JS lo lea como el año 1 a. C. del calendario proléptico y `formatISO` lo devuelva igual. Es la
+ * gemela del tipo de las columnas de fecha: una fecha que cumple esto nunca hace fallar un INSERT.
+ */
+const ISO_DATE_FORMAT = /^(?!0000)\d{4}-\d{2}-\d{2}$/
 
 function parse(date: string): Date {
   if (!ISO_DATE_FORMAT.test(date)) throw new Error(`Fecha inválida: ${date}`)
@@ -40,8 +46,11 @@ export function daysBetween(from: IsoDate, to: IsoDate): number {
   return differenceInCalendarDays(parse(to), parse(from))
 }
 
+/** Lanza si `date` es inválida o si el resultado queda fuera del rango de `IsoDate`. */
 export function addDaysIso(date: IsoDate, days: number): IsoDate {
-  return formatISO(addDays(parse(date), days), { representation: 'date' }) as IsoDate
+  const result = formatISO(addDays(parse(date), days), { representation: 'date' })
+  if (!isIsoDate(result)) throw new Error(`Fecha fuera de rango: ${date} + ${days} días`)
+  return result
 }
 
 /** Fecha de calendario de `now` vista desde `timeZone`. `now` se recibe por parámetro: shared no consulta el reloj. */

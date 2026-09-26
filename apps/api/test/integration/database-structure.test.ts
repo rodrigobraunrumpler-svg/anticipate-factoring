@@ -1,4 +1,9 @@
-import { CLOSE_REASONS_BY_STATUS, TRANSITIONS } from '@anticipate/shared/advance-request'
+import {
+  advanceRequestFormSchema,
+  CLOSE_REASONS_BY_STATUS,
+  TRANSITIONS,
+} from '@anticipate/shared/advance-request'
+import { isIsoDate } from '@anticipate/shared/dates'
 import { isValidRuc } from '@anticipate/shared/identity'
 import { invoiceKey, parsedInvoiceSchema, parseUblInvoice } from '@anticipate/shared/invoice'
 import { publicPayerSchema } from '@anticipate/shared/payer'
@@ -6,6 +11,7 @@ import { buildInvoiceXml } from '@anticipate/shared/testing'
 import fc from 'fast-check'
 import pg from 'pg'
 import { afterAll, beforeEach, describe, expect, it } from 'vitest'
+import { dbDateToIso } from '#/infrastructure/prisma/db-values.js'
 import { newId } from '#/infrastructure/prisma/id.js'
 import { PrismaService } from '#/infrastructure/prisma/prisma.service.js'
 import { createTestApp } from '../support/app.js'
@@ -1552,6 +1558,367 @@ describe('reglas espejo de shared', () => {
     expect(await storedUnchanged('PROV\u0000EEDOR')).toBe(false)
     expect(await storedUnchanged('PROV\uD800EEDOR')).toBe(false)
     expect(accepts('PROV\u0000EEDOR') || accepts('PROV\uD800EEDOR')).toBe(false)
+  })
+
+  /** Tipo real de una columna (`character varying(120)`, `jsonb`), para probar contra él con un cast. */
+  async function columnType(table: string, column: string): Promise<string> {
+    const [row] = await queryRows<{ type: string }>(
+      `SELECT format_type(atttypid, atttypmod) AS type FROM pg_attribute
+        WHERE attrelid = $1::regclass AND attname = $2`,
+      [table, column],
+    )
+    if (row === undefined) throw new Error(`No existe ${table}.${column}`)
+    return row.type
+  }
+
+  /**
+   * Lo que hace la base con un valor en una columna: `stored`, lo que devuelve el cast al tipo de la
+   * columna; `castError`, el código si el cast falla; `insertError`, el código si el INSERT de la
+   * fila base con ese valor falla por algo que no es la FK.
+   */
+  type ColumnProbe = {
+    stored: unknown
+    castError: string | undefined
+    insertError: string | undefined
+  }
+
+  /**
+   * Prueba cada valor contra una columna real, en una sola transacción que nunca se confirma
+   * (SAVEPOINT por valor). La fila base de `table` cumple todas sus CHECK y solo falla por FK
+   * (23503) al terminar la sentencia, o no falla (tablas sin FK): cualquier otro código del INSERT es
+   * el tipo o una CHECK que rechazó el valor.
+   */
+  async function probeColumn(
+    table: string,
+    column: string,
+    values: readonly unknown[],
+    baseRow: () => Row,
+  ): Promise<ColumnProbe[]> {
+    const type = await columnType(table, column)
+    const client = await pool.connect()
+    const results: ColumnProbe[] = []
+    try {
+      await client.query('BEGIN')
+      for (const value of values) {
+        const result: ColumnProbe = {
+          stored: undefined,
+          castError: undefined,
+          insertError: undefined,
+        }
+        await client.query('SAVEPOINT probe')
+        try {
+          const rows = await client.query(`SELECT $1::${type} AS v`, [sqlValue(value)])
+          result.stored = rows.rows[0]?.v
+        } catch (error) {
+          result.castError = (error as SqlError).code
+        } finally {
+          await client.query('ROLLBACK TO SAVEPOINT probe')
+        }
+        try {
+          await insert(client, table, { ...baseRow(), [column]: value })
+        } catch (error) {
+          const code = (error as SqlError).code
+          if (code !== '23503') result.insertError = code
+        } finally {
+          await client.query('ROLLBACK TO SAVEPOINT probe')
+        }
+        results.push(result)
+      }
+      await client.query('ROLLBACK')
+    } finally {
+      client.release()
+    }
+    return results
+  }
+
+  it('(f) todo texto que acepta advanceRequestFormSchema se guarda sin cambios en sus columnas y cumple sus CHECK', async () => {
+    // Gemela del tipo de las columnas (y de sus CHECK) para cada texto libre del formulario: lo que
+    // el esquema acepta, ya recortado, llega igual a la base y nunca hace fallar el INSERT (un 503
+    // en cada reintento con la misma Idempotency-Key). PostgreSQL no guarda U+0000 (22021; en jsonb,
+    // 22P05) y un sustituto suelto llega cambiado por U+FFFD (en jsonb, 22P02).
+    const form = {
+      payerSlug: 'sea',
+      contact: {
+        fullName: 'Ana Pérez',
+        dni: '46728673',
+        mobile: '987654321',
+        email: 'ana@proveedor.pe',
+        isLegalRepresentative: true,
+        contactTimeSlot: 'MORNING',
+      },
+      company: { ruc: '20100070970', legalName: 'PROVEEDOR EJEMPLO S.A.C.' },
+      financing: { requestedAmount: '8000.00' },
+      cavaliRegistration: 'UNKNOWN',
+      consents: {
+        terms: true,
+        personalData: true,
+        termsVersion: '2026-09',
+        privacyVersion: '2026-09',
+      },
+      source: { utm: { utm_source: 'linkedin' }, referrer: 'https://www.linkedin.com/' },
+    }
+    const at = (value: unknown, path: readonly string[]): unknown =>
+      path.reduce<unknown>(
+        (node, key) => (node as Record<string, unknown> | undefined)?.[key],
+        value,
+      )
+    const withValue = (path: readonly string[], value: string): unknown => {
+      const copy = structuredClone(form) as Record<string, unknown>
+      const parent = at(copy, path.slice(0, -1)) as Record<string, unknown>
+      parent[path.at(-1) as string] = value
+      return copy
+    }
+    const legalVersionRow = (): Row => ({
+      type: 'TERMS',
+      version: '2026-09',
+      url: 'https://anticipate.pe/legal/terminos',
+      sha256: HEX_64,
+      published_at: NOW,
+    })
+    const base = (table: string) => () => BASE[table]?.() ?? {}
+    const forbidden = ['\u0000', '\u0001', '\u001F', '\uD800', '\uDFFF', '\uFFFE', '\uFFFF']
+    const hostileUnit = fc.oneof(
+      {
+        weight: 6,
+        arbitrary: fc.constantFrom(...'abcdefghijklmnopqrstuvwxyzÑñáéíóú0123456789 .-'),
+      },
+      { weight: 2, arbitrary: fc.constantFrom(...jsWhitespace) },
+      { weight: 1, arbitrary: fc.constantFrom(...astralChars) },
+      {
+        weight: 2,
+        arbitrary: fc.constantFrom(...forbidden, '\u007F', '\u0085', '\uE000', '\uFFFD'),
+      },
+    )
+    const random = (seed: number) =>
+      fc.sample(fc.string({ unit: hostileUnit, minLength: 0, maxLength: 24, size: 'max' }), {
+        numRuns: 150,
+        seed,
+      })
+    const edges = (max: number, prefix = '') => [
+      '',
+      ' ',
+      'ab',
+      'abc',
+      padded('abc'),
+      'Ñandú\tÁé\nCastañeda 😀 \uE000 \uFFFD',
+      ...forbidden.map((ch) => `a${ch}b`),
+      'a'.repeat(max - prefix.length),
+      `${'a'.repeat(max - prefix.length - 1)}😀`,
+      'a'.repeat(max - prefix.length + 1),
+    ]
+    const FIELDS: {
+      path: string[]
+      max: number
+      prefix?: string
+      targets: { table: string; column: string; row: () => Row }[]
+    }[] = [
+      {
+        path: ['contact', 'fullName'],
+        max: 120,
+        targets: [
+          { table: 'advance_requests', column: 'contact_full_name', row: base('advance_requests') },
+          {
+            table: 'legal_representatives',
+            column: 'full_name',
+            row: base('legal_representatives'),
+          },
+        ],
+      },
+      {
+        path: ['contact', 'jobTitle'],
+        max: 80,
+        targets: [
+          { table: 'advance_requests', column: 'contact_job_title', row: base('advance_requests') },
+          {
+            table: 'legal_representatives',
+            column: 'job_title',
+            row: base('legal_representatives'),
+          },
+        ],
+      },
+      {
+        path: ['company', 'legalName'],
+        max: 200,
+        targets: [
+          {
+            table: 'advance_requests',
+            column: 'supplier_legal_name',
+            row: base('advance_requests'),
+          },
+          { table: 'suppliers', column: 'legal_name', row: base('suppliers') },
+        ],
+      },
+      {
+        path: ['financing', 'purpose'],
+        max: 500,
+        targets: [{ table: 'advance_requests', column: 'purpose', row: base('advance_requests') }],
+      },
+      ...(['termsVersion', 'privacyVersion'] as const).map((key) => ({
+        path: ['consents', key],
+        max: 20,
+        targets: [
+          { table: 'consents', column: 'document_version', row: base('consents') },
+          { table: 'legal_document_versions', column: 'version', row: legalVersionRow },
+        ],
+      })),
+      {
+        path: ['source', 'referrer'],
+        max: 2000,
+        prefix: 'https://ejemplo.pe/',
+        targets: [{ table: 'advance_requests', column: 'referrer', row: base('advance_requests') }],
+      },
+    ]
+
+    for (const [i, field] of FIELDS.entries()) {
+      const prefix = field.prefix ?? ''
+      const candidates = [...edges(field.max, prefix), ...random(20260925 + i)].map(
+        (value) => `${prefix}${value}`,
+      )
+      const accepted: string[] = []
+      for (const candidate of candidates) {
+        const parsed = advanceRequestFormSchema.safeParse(withValue(field.path, candidate))
+        const value = parsed.success ? at(parsed.data, field.path) : undefined
+        // `purpose` vacío se guarda como NULL (Tarea 12: `financing.purpose || null`); el referrer
+        // que no pasa se descarta (`undefined`).
+        if (typeof value === 'string' && value !== '') accepted.push(value)
+      }
+      const label = field.path.join('.')
+      expect(accepted.length, label).toBeGreaterThan(20)
+      expect(candidates.length - accepted.length, label).toBeGreaterThan(5)
+      // Cada carácter prohibido, suelto entre dos letras, no llega a la base: el esquema lo rechaza
+      // (el referrer se descarta). Un par de sustitutos bien formado, que el azar también arma al
+      // juntar dos sueltos, es un carácter válido y sí pasa.
+      const reachesDatabase = (value: string) => {
+        const parsed = advanceRequestFormSchema.safeParse(withValue(field.path, value))
+        return parsed.success && at(parsed.data, field.path) !== undefined
+      }
+      expect(
+        forbidden.filter((ch) => reachesDatabase(`${prefix}a${ch}b`)),
+        label,
+      ).toEqual([])
+      for (const target of field.targets) {
+        const results = await probeColumn(target.table, target.column, accepted, target.row)
+        const broken = results
+          .map((result, j) => ({ ...result, value: JSON.stringify(accepted[j]).slice(0, 60) }))
+          .filter((result, j) => result.stored !== accepted[j] || result.insertError !== undefined)
+        expect(broken, `${label} → ${target.table}.${target.column}`).toEqual([])
+      }
+    }
+
+    // utm es jsonb: cada valor que acepta el esquema vuelve igual de un cast a jsonb y del INSERT.
+    const utmCandidates = [...edges(200), ...random(20260935)]
+    const utms: Record<string, string>[] = []
+    for (const candidate of utmCandidates) {
+      const parsed = advanceRequestFormSchema.safeParse(
+        withValue(['source', 'utm', 'utm_source'], candidate),
+      )
+      if (parsed.success && parsed.data.source?.utm) utms.push(parsed.data.source.utm)
+    }
+    expect(utms.length).toBeGreaterThan(20)
+    expect(utmCandidates.length - utms.length).toBeGreaterThan(5)
+    const utmResults = await probeColumn('advance_requests', 'utm', utms, base('advance_requests'))
+    const brokenUtm = utmResults.filter(
+      (result, j) =>
+        JSON.stringify(result.stored) !== JSON.stringify(utms[j]) ||
+        result.insertError !== undefined,
+    )
+    expect(brokenUtm).toEqual([])
+
+    // Los contraejemplos que motivan la gemela: la base no los guarda tal cual.
+    const [nul, surrogate] = await probeColumn(
+      'advance_requests',
+      'contact_full_name',
+      ['Ana\u0000Pérez', 'Ana\uD800Pérez'],
+      base('advance_requests'),
+    )
+    expect(nul).toMatchObject({ castError: '22021', insertError: '22021' })
+    expect(surrogate?.stored).toBe('Ana\uFFFDPérez')
+    const [jsonNul, jsonSurrogate] = await probeColumn(
+      'advance_requests',
+      'utm',
+      [{ utm_source: 'a\u0000b' }, { utm_source: 'a\uD800b' }],
+      base('advance_requests'),
+    )
+    expect(jsonNul).toMatchObject({ castError: '22P05', insertError: '22P05' })
+    expect(jsonSurrogate).toMatchObject({ castError: '22P02', insertError: '22P02' })
+  })
+
+  it('(f) una fecha que acepta isIsoDate se guarda igual en una columna date; el año 0000 no', async () => {
+    // Gemela del tipo `date`: PostgreSQL no tiene año 0 ("date/time field value out of range",
+    // 22008). Una factura con esa fecha pasaba la admisión y hacía fallar el INSERT (503 en cada
+    // reintento). Se prueba el cast con el texto y, en los extremos, el camino real de la API:
+    // `isoDateToDb` y Prisma en columnas `@db.Date`, leídas de vuelta con `dbDateToIso`.
+    const digits4 = digits(4)
+    const boundary = [
+      '0000-01-01',
+      '0000-02-29',
+      '0000-12-31',
+      '0001-01-01',
+      '0001-12-31',
+      '1582-10-10',
+      '1900-02-29',
+      '2000-02-29',
+      '2024-02-29',
+      '9999-12-31',
+    ]
+    const random = fc.sample(
+      fc.oneof(
+        fc
+          .date({
+            min: new Date('0000-01-01T00:00:00.000Z'),
+            max: new Date('9999-12-31T00:00:00.000Z'),
+            noInvalidDate: true,
+          })
+          .map((date) => date.toISOString().slice(0, 10)),
+        fc
+          .tuple(fc.constantFrom('0000', '0001', '2026', '9999'), digits(2), digits(2))
+          .map(([year, month, day]) => `${year}-${month}-${day}`),
+        digits4.map((year) => `${year}-02-29`),
+      ),
+      { numRuns: 1500, seed: 20260925 },
+    )
+    const values = [...boundary, ...random]
+    const accepted = values.filter((value) => isIsoDate(value))
+    const rows = await queryRows<{ v: string | null; ok: boolean }>(
+      `SELECT CASE WHEN pg_input_is_valid(v, 'date') THEN v::date::text END AS v,
+              pg_input_is_valid(v, 'date') AS ok
+         FROM unnest($1::text[]) WITH ORDINALITY AS t(v, n) ORDER BY n`,
+      [accepted],
+    )
+    const broken = accepted.filter((value, i) => !rows[i]?.ok || rows[i]?.v !== value)
+    expect(broken).toEqual([])
+    expect(accepted.length).toBeGreaterThan(500)
+    expect(values.length - accepted.length).toBeGreaterThan(100)
+    // El contraejemplo del hallazgo: ni shared ni la base lo aceptan.
+    expect(isIsoDate('0000-01-01')).toBe(false)
+    const [zero] = await queryRows<{ ok: boolean }>(
+      `SELECT pg_input_is_valid('0000-01-01', 'date') AS ok`,
+    )
+    expect(zero?.ok).toBe(false)
+
+    // Los extremos por el camino de la API: Prisma escribe y lee `@db.Date` sin correr el día.
+    await createCompleteAdvanceRequest(db.prisma, {
+      invoices: [
+        { issueDate: '0001-01-01', installments: [{ amount: '10620.00', dueDate: '0001-01-02' }] },
+        { issueDate: '9999-12-30', installments: [{ amount: '10620.00', dueDate: '9999-12-31' }] },
+      ],
+    })
+    const invoices = await db.prisma.invoice.findMany({
+      select: { issueDate: true, dueDate: true, installments: { select: { dueDate: true } } },
+      orderBy: { issueDate: 'asc' },
+    })
+    expect(
+      invoices.map((invoice) => [
+        dbDateToIso(invoice.issueDate),
+        dbDateToIso(invoice.dueDate),
+        ...invoice.installments.map((installment) => dbDateToIso(installment.dueDate)),
+      ]),
+    ).toEqual([
+      ['0001-01-01', '0001-01-02', '0001-01-02'],
+      ['9999-12-30', '9999-12-31', '9999-12-31'],
+    ])
+    const [request] = await db.prisma.advanceRequest.findMany({ select: { earliestDueDate: true } })
+    expect(request && dbDateToIso(request.earliestDueDate)).toBe('0001-01-02')
   })
 
   it('(g) transiciones y reglas de cierre de la base = TRANSITIONS y CLOSE_REASONS_BY_STATUS', async () => {

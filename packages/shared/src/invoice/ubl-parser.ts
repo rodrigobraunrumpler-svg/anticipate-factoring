@@ -7,9 +7,9 @@ import {
   VALIDATION_MESSAGES_ES,
 } from '../errors/index.js'
 import { type Amount, normalizeAmount } from '../money/index.js'
+import { isXmlCodePoint, isXmlText } from '../text/index.js'
 import type { PaymentTerms } from './codes.js'
 import { type Installment, type ParsedInvoice, parsedInvoiceSchema } from './parsed-invoice.js'
-import { isXmlCodePoint, isXmlText } from './xml-text.js'
 
 export type ParseResult = { ok: true; invoice: ParsedInvoice } | { ok: false; problem: Problem }
 

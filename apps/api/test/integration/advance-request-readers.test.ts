@@ -119,4 +119,32 @@ describe('PrismaLegalDocumentReader', () => {
     await expect(legalDocuments.isCurrent('TERMS', 'it-no-existe')).resolves.toBe(false)
     await expect(legalDocuments.isCurrent('PERSONAL_DATA', 'it-solo-terminos')).resolves.toBe(false)
   })
+
+  // Una versión que la columna no puede guardar no existe: el lector responde false (422
+  // CONSENT_VERSION_OUTDATED) en vez de lanzar. Con U+0000 la consulta fallaría (22021 → P2039, 500)
+  // y un sustituto suelto llegaría a la base cambiado por U+FFFD y podría coincidir con otra versión.
+  it.each([
+    ['U+0000', '2026\u000009'],
+    ['un sustituto suelto', '2026\uD80009'],
+    ['un control C0', '2026\u000109'],
+  ])('una versión con %s no está vigente, y el lector no lanza', async (_, version) => {
+    await expect(legalDocuments.isCurrent('TERMS', version)).resolves.toBe(false)
+    await expect(legalDocuments.isCurrent('PERSONAL_DATA', version)).resolves.toBe(false)
+  })
+
+  it('un sustituto suelto no coincide con la versión que tiene U+FFFD en su lugar', async () => {
+    await db.prisma.legalDocumentVersion.create({
+      data: legalVersion('TERMS', '2026\uFFFD09', null),
+    })
+    await expect(legalDocuments.isCurrent('TERMS', '2026\uFFFD09')).resolves.toBe(true)
+    await expect(legalDocuments.isCurrent('TERMS', '2026\uD80009')).resolves.toBe(false)
+  })
+
+  it('una versión más larga que la columna no está vigente, aunque empiece como una que sí', async () => {
+    const twenty = 'v'.repeat(20)
+    await db.prisma.legalDocumentVersion.create({ data: legalVersion('TERMS', twenty, null) })
+    await expect(legalDocuments.isCurrent('TERMS', twenty)).resolves.toBe(true)
+    await expect(legalDocuments.isCurrent('TERMS', `${twenty}v`)).resolves.toBe(false)
+    await expect(legalDocuments.isCurrent('TERMS', 'v'.repeat(5000))).resolves.toBe(false)
+  })
 })

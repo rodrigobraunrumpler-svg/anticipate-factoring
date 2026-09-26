@@ -119,6 +119,32 @@ describe('advanceRequestFormSchema', () => {
     }
   })
 
+  it('recorta la versión de términos y de privacidad; solo espacios es que falta', () => {
+    // Gemela de la CHECK `btrim(document_version) <> ''` de consents: una versión en blanco haría
+    // fallar el INSERT del consentimiento en vez de volver con su campo.
+    const r = advanceRequestFormSchema.parse({
+      ...valid,
+      consents: { ...valid.consents, termsVersion: ' 2026-09 ', privacyVersion: '\t2026-09\n' },
+    })
+    expect([r.consents.termsVersion, r.consents.privacyVersion]).toEqual(['2026-09', '2026-09'])
+    for (const blank of [' ', '\u2029', ' \u3000 ']) {
+      const terms = advanceRequestFormSchema.safeParse({
+        ...valid,
+        consents: { ...valid.consents, termsVersion: blank },
+      })
+      expect(terms.success).toBe(false)
+      if (!terms.success) expect(terms.error.issues[0]?.message).toBe(FORM_MESSAGES.termsVersionMin)
+      const privacy = advanceRequestFormSchema.safeParse({
+        ...valid,
+        consents: { ...valid.consents, privacyVersion: blank },
+      })
+      expect(privacy.success).toBe(false)
+      if (!privacy.success) {
+        expect(privacy.error.issues[0]?.message).toBe(FORM_MESSAGES.privacyVersionMin)
+      }
+    }
+  })
+
   it('rechaza más de 10 parámetros utm', () => {
     const utm = Object.fromEntries(
       Array.from({ length: 11 }, (_, i) => [`utm_key${String.fromCharCode(97 + i)}`, 'v']),
@@ -239,6 +265,124 @@ describe('advanceRequestFormSchema', () => {
           expect(issue.message).toBe(FORM_MESSAGES.utmKey)
         }
       }
+    })
+  })
+
+  describe('caracteres que la base no guarda (gemela del tipo de sus columnas)', () => {
+    /** Copia de `valid` con `value` en `path`. */
+    const withField = (path: readonly string[], value: unknown): unknown => {
+      const copy = structuredClone(valid) as Record<string, unknown>
+      let node = copy
+      for (const key of path.slice(0, -1)) node = node[key] as Record<string, unknown>
+      node[path.at(-1) as string] = value
+      return copy
+    }
+    // U+0000: PostgreSQL no lo guarda en texto (22021) ni en jsonb (22P05). Sustituto suelto: en
+    // texto llegaría cambiado por U+FFFD y en jsonb es 22P02. Control C0 y U+FFFF: XML 1.0 no los
+    // admite (misma regla que el lector del XML).
+    const FORBIDDEN = ['\u0000', '\uD800', '\uDFFF', '\u0001', '\u001F', '\uFFFE', '\uFFFF']
+    /** `U+0000` en vez del carácter crudo, para el nombre del test. */
+    const codeOf = (ch: string) =>
+      `U+${(ch.codePointAt(0) ?? 0).toString(16).toUpperCase().padStart(4, '0')}`
+    const FIELDS: { path: string[]; around: [string, string]; message: string }[] = [
+      { path: ['contact', 'fullName'], around: ['Ana', 'Pérez'], message: FORM_MESSAGES.fullName },
+      {
+        path: ['company', 'legalName'],
+        around: ['PROV', 'EEDOR S.A.C.'],
+        message: FORM_MESSAGES.legalName,
+      },
+      {
+        path: ['financing', 'purpose'],
+        around: ['Capital', 'de trabajo'],
+        message: FORM_MESSAGES.purpose,
+      },
+      {
+        path: ['consents', 'termsVersion'],
+        around: ['2026', '09'],
+        message: FORM_MESSAGES.termsVersion,
+      },
+      {
+        path: ['consents', 'privacyVersion'],
+        around: ['2026', '09'],
+        message: FORM_MESSAGES.privacyVersion,
+      },
+      {
+        path: ['source', 'utm', 'utm_source'],
+        around: ['linked', 'in'],
+        message: FORM_MESSAGES.utmValue,
+      },
+    ]
+
+    it.each(
+      FIELDS.flatMap((field) =>
+        FORBIDDEN.map((ch) => ({
+          ...field,
+          ch,
+          label: `${field.path.join('.')} con ${codeOf(ch)}`,
+        })),
+      ),
+    )('rechaza $label, con su mensaje', ({ path, around, message, ch }) => {
+      const r = advanceRequestFormSchema.safeParse(withField(path, `${around[0]}${ch}${around[1]}`))
+      expect(r.success).toBe(false)
+      if (!r.success) {
+        expect(r.error.issues.map((issue) => [issue.path.join('.'), issue.message])).toEqual([
+          [path.join('.'), message],
+        ])
+      }
+    })
+
+    it.each(FORBIDDEN.map((ch) => [codeOf(ch), ch]))(
+      'rechaza el cargo con %s, con su mensaje',
+      (_, ch) => {
+        const r = advanceRequestFormSchema.safeParse({
+          ...valid,
+          contact: { ...valid.contact, isLegalRepresentative: false, jobTitle: `Gere${ch}nte` },
+        })
+        expect(r.success).toBe(false)
+        if (!r.success) {
+          expect(r.error.issues.map((issue) => [issue.path.join('.'), issue.message])).toEqual([
+            ['contact.jobTitle', FORM_MESSAGES.jobTitle],
+          ])
+        }
+      },
+    )
+
+    it.each(FORBIDDEN.map((ch) => [codeOf(ch), ch]))(
+      'descarta una URL de referencia con %s, sin invalidar el formulario',
+      (_, ch) => {
+        const r = advanceRequestFormSchema.safeParse(
+          withField(['source', 'referrer'], `https://www.linkedin.com/x${ch}y`),
+        )
+        expect(r.success).toBe(true)
+        if (r.success) {
+          expect(r.data.source?.referrer).toBeUndefined()
+          expect(r.data.source?.utm).toEqual({ utm_source: 'linkedin' })
+        }
+      },
+    )
+
+    it('acepta tildes, eñes, tabulación, saltos de línea, emoji y caracteres de uso privado', () => {
+      const text = 'Ñandú\tÁéíóú\nCastañeda 😀 \uE000 \uFFFD'
+      const r = advanceRequestFormSchema.parse({
+        ...valid,
+        contact: {
+          ...valid.contact,
+          fullName: text,
+          isLegalRepresentative: false,
+          jobTitle: text,
+        },
+        company: { ...valid.company, legalName: text },
+        financing: { ...valid.financing, purpose: text },
+        source: { utm: { utm_source: text }, referrer: 'https://ejemplo.pe/ñandú?q=😀' },
+      })
+      expect([
+        r.contact.fullName,
+        r.contact.jobTitle,
+        r.company.legalName,
+        r.financing.purpose,
+        r.source?.utm?.utm_source,
+      ]).toEqual([text, text, text, text, text])
+      expect(r.source?.referrer).toBe('https://ejemplo.pe/ñandú?q=😀')
     })
   })
 

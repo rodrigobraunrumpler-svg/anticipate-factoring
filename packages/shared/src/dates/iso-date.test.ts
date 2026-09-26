@@ -11,14 +11,28 @@ import {
 } from './iso-date.js'
 
 describe('isIsoDate', () => {
-  it.each(['2026-09-23', '2024-02-29'])('acepta %s', (v) => {
-    expect(isIsoDate(v)).toBe(true)
-  })
+  it.each(['2026-09-23', '2024-02-29', '2000-02-29', '0001-01-01', '9999-12-31'])(
+    'acepta %s',
+    (v) => {
+      expect(isIsoDate(v)).toBe(true)
+    },
+  )
 
   it.each(['2026-9-3', '23/09/2026', '2026-13-01', '2023-02-29', '2026-09-23T00:00:00Z', ''])(
     'rechaza %s',
     (v) => {
       expect(isIsoDate(v)).toBe(false)
+    },
+  )
+
+  // Gemela del tipo `date` de PostgreSQL, que no tiene año 0 ("date/time field value out of
+  // range"): JS lo lee como el año 1 a. C. del calendario proléptico y lo devolvería igual, así que
+  // una factura con esa fecha pasaría la admisión y haría fallar el INSERT (503 en cada reintento).
+  it.each(['0000-01-01', '0000-02-29', '0000-12-31', '1900-02-29', '10000-01-01', '-0001-01-01'])(
+    'rechaza %s, que PostgreSQL no guarda en una columna date',
+    (v) => {
+      expect(isIsoDate(v)).toBe(false)
+      expect(isoDateSchema.safeParse(v).success).toBe(false)
     },
   )
 })
@@ -40,6 +54,18 @@ describe('addDaysIso', () => {
   it('suma días de calendario cruzando mes y año', () => {
     expect(addDaysIso('2026-09-01', 90)).toBe('2026-11-30')
     expect(addDaysIso('2026-12-31', 1)).toBe('2027-01-01')
+  })
+
+  it('llega a los extremos del rango y lanza si el resultado queda fuera', () => {
+    // El tipo no admite ceros a la izquierda en el año (`${bigint}`): el año 0001 va con cast.
+    expect(addDaysIso('0001-01-02' as IsoDate, -1)).toBe('0001-01-01')
+    expect(addDaysIso('9999-12-30', 1)).toBe('9999-12-31')
+    expect(() => addDaysIso('0001-01-01' as IsoDate, -1)).toThrow('Fecha fuera de rango')
+    expect(() => addDaysIso('9999-12-31', 1)).toThrow('Fecha fuera de rango')
+  })
+
+  it('lanza si la fecha de partida es inválida', () => {
+    expect(() => addDaysIso('0000-01-01' as IsoDate, 1)).toThrow()
   })
 })
 

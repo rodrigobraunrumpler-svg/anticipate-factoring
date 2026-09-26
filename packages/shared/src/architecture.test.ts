@@ -16,8 +16,10 @@ const ALLOWED: Record<string, readonly string[]> = {
   money: ['errors'],
   dates: ['errors'],
   user: ['errors'],
-  invoice: ['errors', 'money', 'dates'],
-  'advance-request': ['errors', 'identity', 'money', 'dates', 'user', 'payer'],
+  // Qué caracteres admite un texto que llega de afuera (XML 1.0 y columnas de texto de la base).
+  text: [],
+  invoice: ['errors', 'money', 'dates', 'text'],
+  'advance-request': ['errors', 'identity', 'money', 'dates', 'user', 'payer', 'text'],
   'supplier-document': ['errors', 'dates'],
   payer: ['errors', 'identity', 'money'],
   // Contrato HTTP de la API (sobres, códigos de error y su estado): solo necesita `Problem` y el texto.

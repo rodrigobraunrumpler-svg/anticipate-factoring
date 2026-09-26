@@ -1,8 +1,8 @@
 import { z } from 'zod'
 import { isoDateSchema } from '../dates/index.js'
 import type { Amount } from '../money/index.js'
+import { isXmlText } from '../text/index.js'
 import { PAYMENT_TERMS } from './codes.js'
-import { isXmlText } from './xml-text.js'
 
 // El límite de 12 dígitos en la parte entera refleja la columna Decimal(14, 2) de PostgreSQL
 // (STACK.md §9, D14), igual que AMOUNT_FORMAT en money/amount.ts.
