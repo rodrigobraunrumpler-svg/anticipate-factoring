@@ -11,7 +11,7 @@ de Prisma (7.10.0 exacto) lee `apps/api/prisma.config.ts`.
 |---|---|
 | `DATABASE_DIRECT_URL` | La que usa la CLI siempre que existe. En producción es obligatoria: `DATABASE_URL` pasa por el pooler de Neon (PgBouncer en modo transacción) y una migración nunca va por el pooler. |
 | `DATABASE_URL` | La de la app. La CLI la usa solo fuera de producción y si falta la directa. |
-| `SHADOW_DATABASE_URL` | Base desechable (`anticipate_shadow` en local) para `migrate dev` y `db:check-drift`. Prisma la vacía cada vez: tiene que ser local y nunca la misma base que se migra. |
+| `SHADOW_DATABASE_URL` | Base desechable (`anticipate_shadow` en local) para `migrate dev` y `db:check-drift`. Prisma la vacía cada vez: tiene que ser local, llevar `shadow` en el nombre y llamarse distinto de la base que se migra. |
 
 `apps/api/prisma.config.ts` pasa las variables por la guarda de `apps/api/prisma/cli-guard.ts`
 (probada en `cli-guard.test.ts`), que se niega a correr antes de conectarse si:
@@ -22,9 +22,16 @@ de Prisma (7.10.0 exacto) lee `apps/api/prisma.config.ts`.
   y la base no es local (`localhost`, `127.x.x.x`, `::1`, el servicio `postgres` de Compose o un
   socket Unix). Así `migrate dev`, `migrate reset` y `db push` nunca tocan una base remota, y
   tampoco un comando que la guarda no reconoce;
-- la sombra no es local, o es la misma base que se migra: compara host, puerto y nombre de la base,
-  no el texto de la URL (`postgres://otro@127.0.0.1:5433/anticipate?schema=public` es la misma base
-  que `postgresql://anticipate@127.0.0.1:5433/anticipate`).
+- la sombra no es local, su base no lleva `shadow` en el nombre, o se llama igual que la base que
+  se migra (sin distinguir mayúsculas). Solo cuenta el nombre de la base, no el host ni el puerto:
+  el mismo servidor se alcanza escrito de muchas formas (`localhost`, `127.0.0.1`, `127.1`, `::1`,
+  un socket Unix, el nombre de la máquina, dos puertos de Docker hacia el mismo contenedor, un
+  túnel), así que `postgresql://…@localhost:5433/anticipate` como sombra de
+  `postgresql://…@127.0.0.1:5433/anticipate` se rechaza aunque los hosts se escriban distinto. El
+  nombre sí es exacto: en un servidor, dos nombres distintos son dos bases distintas. Exigir
+  `shadow` en el nombre impide además que la sombra sea otra base con datos (`anticipate` mientras
+  se migra `anticipate_test`). Con sombra, la URL que se migra tiene que nombrar su base, y ninguna
+  de las dos puede traerla en el parámetro `dbname`, que libpq usa en vez de la ruta.
 
 El comando sale de los argumentos de la CLI sin depender de su posición (`prisma --config x migrate
 dev` también es `migrate dev`). `generate`, `validate`, `format` y `version` no se conectan y reciben

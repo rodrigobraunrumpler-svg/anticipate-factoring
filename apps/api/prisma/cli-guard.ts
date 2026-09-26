@@ -13,8 +13,16 @@
  * 4. Solo `migrate deploy`, `migrate status`, `migrate resolve`, `migrate diff` y `db seed` (que tiene
  *    su propia guarda) corren contra una base que no es local. `migrate dev`, `migrate reset`,
  *    `db push` y cualquier otro comando que se conecta, reconocido o no, exigen una base local.
- * 5. La sombra (`SHADOW_DATABASE_URL`), que Prisma vacía cada vez que la usa, tiene que ser local y
- *    nunca la misma base que se migra: se comparan host, puerto y base, no el texto de la URL.
+ * 5. La sombra (`SHADOW_DATABASE_URL`), que Prisma vacía cada vez que la usa, tiene que ser local,
+ *    llevar `shadow` en el nombre de su base (`anticipate_shadow`) y no llamarse como la base que se
+ *    migra (sin distinguir mayúsculas). La URL que se migra tiene que nombrar su base, y ninguna la
+ *    trae en el parámetro `dbname` (libpq lo usa en vez de la ruta). No se comparan host ni puerto:
+ *    el mismo servidor se alcanza escrito de muchas formas (`localhost`, `127.0.0.1`, `127.1`,
+ *    `::1`, un socket Unix, el nombre de la máquina, un alias de /etc/hosts, dos puertos de Docker
+ *    hacia el mismo contenedor, un túnel) y ninguna lista de alias las cubre todas. El nombre de la
+ *    base sí es exacto: en un servidor, dos nombres distintos son dos bases distintas. Y `shadow` en
+ *    el nombre impide que la sombra sea otra base con datos del mismo servidor (la de desarrollo
+ *    mientras se migra la de tests).
  */
 
 /** URL de relleno para los comandos que no se conectan. */
@@ -50,7 +58,8 @@ const VALUE_FLAGS: ReadonlySet<string> = new Set(['--config', '--schema'])
 /** Hosts locales por nombre; además, todo 127.x.x.x y un socket Unix (`/var/run/postgresql`). */
 const LOCAL_HOST_NAMES: ReadonlySet<string> = new Set(['localhost', '::1', 'postgres'])
 
-const DEFAULT_PORT = '5432'
+/** La sombra es una base desechable que lo dice en su nombre (regla 5). */
+const SHADOW_NAME = /shadow/i
 
 /**
  * El comando de la CLI a partir de `process.argv` (`migrate dev`, `db push`, `generate`, o `''`
@@ -76,9 +85,9 @@ export function parsePrismaCommand(argv: readonly string[]): string {
   return command
 }
 
-type Target = { hosts: string[]; port: string; database: string }
+type Target = { hosts: string[]; database: string }
 
-/** Host, puerto y base de una URL de PostgreSQL, en minúsculas y con el puerto por defecto. */
+/** Los hosts (en minúsculas) y el nombre de la base de una URL de PostgreSQL. */
 function targetOf(variable: string, value: string): Target {
   let url: URL
   try {
@@ -101,13 +110,18 @@ function targetOf(variable: string, value: string): Target {
     )
     .filter((name) => name !== '')
   if (hosts.length === 0) throw new Error(`${variable} no indica el host de la base.`)
+  // libpq también acepta la base como parámetro (`?dbname=`) y reemplaza a la de la ruta: la guarda
+  // no puede saber cuál usa cada cliente, así que la base va solo en la ruta.
+  if ([...url.searchParams.keys()].some((key) => key.toLowerCase() === 'dbname')) {
+    throw new Error(`${variable} lleva el parámetro dbname: la base va solo en la ruta de la URL.`)
+  }
   let database: string
   try {
     database = decodeURIComponent(url.pathname.slice(1))
   } catch {
     throw new Error(`${variable} tiene un nombre de base ilegible.`)
   }
-  return { hosts, port: url.port || DEFAULT_PORT, database }
+  return { hosts, database }
 }
 
 const isLocalHost = (host: string): boolean =>
@@ -119,11 +133,12 @@ const isLocal = (target: Target): boolean => target.hosts.every(isLocalHost)
 const isPooler = (target: Target): boolean =>
   target.hosts.some((host) => /-pooler(\.|$)/.test(host))
 
-const sameDatabase = (a: Target, b: Target): boolean =>
-  a.port === b.port &&
-  a.database === b.database &&
-  a.hosts.length === b.hosts.length &&
-  a.hosts.every((host, index) => host === b.hosts[index])
+/**
+ * Si dos URLs pueden ser la misma base (regla 5): mismo nombre de base, sin distinguir mayúsculas
+ * (del lado seguro: PostgreSQL sí las distingue), escriban como escriban el host y el puerto.
+ */
+const sameDatabaseName = (a: Target, b: Target): boolean =>
+  a.database.toLowerCase() === b.database.toLowerCase()
 
 /** La URL que usa la CLI (regla 2). */
 function cliUrl(env: NodeJS.ProcessEnv): { variable: string; value: string } {
@@ -174,9 +189,19 @@ export function resolveCliDatasource(
       'SHADOW_DATABASE_URL no es local: Prisma vacía la base sombra cada vez que la usa.',
     )
   }
-  if (sameDatabase(target, shadowTarget)) {
+  if (target.database === '') {
     throw new Error(
-      `SHADOW_DATABASE_URL es la misma base que ${variable} (mismo host, puerto y base): Prisma la vacía cada vez que la usa.`,
+      `${variable} no nombra la base (PostgreSQL usaría la del usuario): con SHADOW_DATABASE_URL, la URL que se migra tiene que nombrarla para comprobar que no es la sombra.`,
+    )
+  }
+  if (sameDatabaseName(target, shadowTarget)) {
+    throw new Error(
+      `SHADOW_DATABASE_URL nombra la misma base que ${variable}: Prisma la vacía cada vez que la usa. Con el mismo nombre de base se toman como la misma, escriban como escriban el host y el puerto (localhost, 127.0.0.1, ::1, un socket o un túnel pueden llegar al mismo servidor).`,
+    )
+  }
+  if (!SHADOW_NAME.test(shadowTarget.database)) {
+    throw new Error(
+      'SHADOW_DATABASE_URL tiene que nombrar una base desechable con «shadow» en el nombre (como anticipate_shadow): Prisma la vacía cada vez que la usa, y así nunca es otra base con datos.',
     )
   }
   return { url: value, shadowDatabaseUrl: shadow }

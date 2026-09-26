@@ -179,7 +179,145 @@ describe('resolveCliDatasource', () => {
     ).toContain('SHADOW_DATABASE_URL')
   })
 
-  it('compara el puerto por defecto con el explícito', () => {
+  it('la sombra escrita con otro nombre del mismo servidor local sigue siendo la misma base (localhost y 127.0.0.1)', () => {
+    // El caso que vació la base principal: db:check-drift con 127.0.0.1 en la directa y localhost
+    // en la sombra, las dos en el mismo PostgreSQL.
+    expect(
+      errorOf(() =>
+        resolveCliDatasource(
+          {
+            DATABASE_DIRECT_URL: 'postgresql://anticipate:anticipate@127.0.0.1:5433/anticipate',
+            SHADOW_DATABASE_URL: 'postgresql://anticipate:anticipate@localhost:5433/anticipate',
+          },
+          argv('migrate', 'diff', '--from-migrations', 'prisma/migrations', '--exit-code'),
+        ),
+      ),
+    ).toMatch(/SHADOW_DATABASE_URL nombra la misma base que DATABASE_DIRECT_URL/)
+  })
+
+  it.each([
+    // Alias del mismo servidor local: loopback, IPv6, socket Unix y listas de hosts en otro orden.
+    ['postgresql://a:b@localhost:5433/anticipate', 'postgresql://a:b@[::1]:5433/anticipate'],
+    ['postgresql://a:b@127.0.0.1:5433/anticipate', 'postgresql://a:b@127.0.0.2:5433/anticipate'],
+    [
+      'postgresql://a:b@127.0.0.1:5433/anticipate',
+      'postgresql://a:b@localhost:5433/anticipate?host=/var/run/postgresql',
+    ],
+    [
+      'postgresql://a:b@localhost,127.0.0.1:5433/anticipate',
+      'postgresql://a:b@127.0.0.1,localhost:5433/anticipate',
+    ],
+    // El servidor no se puede identificar por cómo se escribe: 127.1 y un nombre de /etc/hosts
+    // llegan al loopback, y dos puertos de Docker pueden ir al mismo contenedor.
+    ['postgresql://a:b@127.1:5433/anticipate', 'postgresql://a:b@localhost:5433/anticipate'],
+    [
+      'postgresql://a:b@mi-maquina.lan:5433/anticipate',
+      'postgresql://a:b@127.0.0.1:5433/anticipate',
+    ],
+    ['postgresql://a:b@localhost:5433/anticipate', 'postgresql://a:b@localhost:5434/anticipate'],
+    // Mayúsculas en el nombre: del lado seguro, se tratan como la misma base.
+    ['postgresql://a:b@localhost:5433/anticipate', 'postgresql://a:b@localhost:5433/Anticipate'],
+  ])(
+    'la sombra con el mismo nombre de base se rechaza sin importar el host ni el puerto (%s, %s)',
+    (main, shadow) => {
+      expect(
+        errorOf(() =>
+          resolveCliDatasource(
+            { DATABASE_DIRECT_URL: main, SHADOW_DATABASE_URL: shadow },
+            argv('migrate', 'diff'),
+          ),
+        ),
+      ).toMatch(/SHADOW_DATABASE_URL nombra la misma base/)
+    },
+  )
+
+  it.each([
+    // Una base con datos del mismo servidor, aunque no sea la que se migra: la de desarrollo
+    // mientras se migra la de tests, o la de tests.
+    [
+      'postgresql://a:b@127.0.0.1:5433/anticipate_test',
+      'postgresql://a:b@localhost:5433/anticipate',
+    ],
+    [
+      'postgresql://a:b@127.0.0.1:5433/anticipate',
+      'postgresql://a:b@127.0.0.1:5433/anticipate_test',
+    ],
+    ['postgresql://a:b@127.0.0.1:5433/anticipate', 'postgresql://a:b@127.0.0.1:5433/postgres'],
+  ])(
+    'la sombra tiene que ser una base desechable con «shadow» en el nombre (%s, %s)',
+    (main, shadow) => {
+      expect(
+        errorOf(() =>
+          resolveCliDatasource(
+            { DATABASE_DIRECT_URL: main, SHADOW_DATABASE_URL: shadow },
+            argv('migrate', 'dev'),
+          ),
+        ),
+      ).toMatch(/SHADOW_DATABASE_URL.*«shadow» en el nombre/)
+    },
+  )
+
+  it.each([
+    [
+      'DATABASE_DIRECT_URL',
+      'postgresql://a:b@127.0.0.1:5433/anticipate_test?dbname=anticipate_shadow',
+      LOCAL_SHADOW,
+    ],
+    [
+      'SHADOW_DATABASE_URL',
+      LOCAL,
+      'postgresql://a:b@127.0.0.1:5433/anticipate_shadow?DBNAME=anticipate',
+    ],
+  ])(
+    '%s no puede llevar la base en el parámetro dbname (libpq lo usa en vez de la ruta)',
+    (variable, main, shadow) => {
+      expect(
+        errorOf(() =>
+          resolveCliDatasource(
+            { DATABASE_DIRECT_URL: main, SHADOW_DATABASE_URL: shadow },
+            argv('migrate', 'diff'),
+          ),
+        ),
+      ).toBe(`${variable} lleva el parámetro dbname: la base va solo en la ruta de la URL.`)
+    },
+  )
+
+  it('con sombra, la URL que se migra tiene que nombrar su base (sin nombre, PostgreSQL usa el del usuario)', () => {
+    expect(
+      errorOf(() =>
+        resolveCliDatasource(
+          {
+            DATABASE_DIRECT_URL: 'postgresql://anticipate_shadow:x@127.0.0.1:5433',
+            SHADOW_DATABASE_URL: LOCAL_SHADOW,
+          },
+          argv('migrate', 'diff'),
+        ),
+      ),
+    ).toMatch(/DATABASE_DIRECT_URL no nombra la base/)
+  })
+
+  it.each([
+    [LOCAL, LOCAL_SHADOW, ['migrate', 'dev']],
+    [LOCAL, 'postgresql://a:b@localhost:5433/Anticipate_Shadow', ['migrate', 'diff']],
+    [NEON_DIRECT, 'postgresql://a:b@localhost:5433/neondb_shadow', ['migrate', 'diff']],
+    [
+      'postgresql://a:b@127.0.0.1:5433/anticipate_test',
+      'postgresql://a:b@[::1]:5433/anticipate_shadow',
+      ['migrate', 'diff'],
+    ],
+  ])(
+    'una sombra local con «shadow» en el nombre y otro nombre de base pasa (%s, %s)',
+    (main, shadow, args) => {
+      expect(
+        resolveCliDatasource(
+          { DATABASE_DIRECT_URL: main, SHADOW_DATABASE_URL: shadow },
+          argv(...args),
+        ),
+      ).toEqual({ url: main, shadowDatabaseUrl: shadow })
+    },
+  )
+
+  it('con el mismo nombre de base, el puerto por defecto y el explícito tampoco la salvan', () => {
     expect(
       errorOf(() =>
         resolveCliDatasource(

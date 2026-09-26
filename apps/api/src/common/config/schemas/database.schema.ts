@@ -31,13 +31,18 @@ export const databaseShape = {
 const databaseSchema = z.object(databaseShape)
 export type DatabaseEnvironment = z.output<typeof databaseSchema>
 
+/**
+ * Si dos URLs pueden ser la misma base: mismo nombre de base, sin distinguir mayúsculas, escriban
+ * como escriban el host y el puerto. El mismo servidor se alcanza de muchas formas (`localhost`,
+ * `127.0.0.1`, `::1`, un socket, dos puertos de Docker, un túnel) y ninguna lista de alias las cubre
+ * todas; el nombre de la base sí es exacto. Es la misma regla que la guarda de la CLI
+ * (`prisma/cli-guard.ts`, regla 5), que además exige `shadow` en el nombre de la sombra.
+ */
 function sameDatabase(first: string, second: string | undefined): boolean {
   if (second === undefined) return false
   const a = postgresTarget(first)
   const b = postgresTarget(second)
-  return (
-    a !== null && b !== null && a.host === b.host && a.port === b.port && a.database === b.database
-  )
+  return a !== null && b !== null && a.database.toLowerCase() === b.database.toLowerCase()
 }
 
 export function refineDatabase(env: DatabaseEnvironment, ctx: z.RefinementCtx): void {

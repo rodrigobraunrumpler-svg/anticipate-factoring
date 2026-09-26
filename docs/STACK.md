@@ -422,7 +422,7 @@ PostgreSQL 18 en todos los entornos (D48), con `uuidv7()` nativo para las claves
 |---|---|---|
 | La API | `DATABASE_URL` | La cadena *pooled* de Neon, con un pool de `pg` acotado por `DATABASE_POOL_MAX`, `DATABASE_CONNECTION_TIMEOUT_MS` y `DATABASE_IDLE_TIMEOUT_MS` |
 | La CLI de Prisma (migraciones) | `DATABASE_DIRECT_URL` | La conexión directa. Es obligatoria en producción. La guarda de la CLI (`apps/api/prisma/cli-guard.ts`) rechaza un host `*-pooler` en todo entorno y solo deja correr `migrate dev`, `migrate reset` y `db push` contra una base local |
-| La revisión de deriva | `SHADOW_DATABASE_URL` | Una base sombra local, distinta de la que se migra (se compara host, puerto y base) |
+| La revisión de deriva | `SHADOW_DATABASE_URL` | Una base sombra local con `shadow` en el nombre y un nombre de base distinto del de la que se migra (el host no cuenta: `localhost` y `127.0.0.1` pueden ser el mismo servidor) |
 
 Tres límites se fijan en la base con `ALTER DATABASE` y no en el pool, porque el pooler de Neon rechaza esos parámetros al conectar (D52):
 

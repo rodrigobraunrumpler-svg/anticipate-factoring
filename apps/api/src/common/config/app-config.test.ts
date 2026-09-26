@@ -238,6 +238,21 @@ describe('parseConfig', () => {
     ).not.toThrow()
   })
 
+  it.each([
+    // El mismo servidor local escrito de otra forma, otro puerto (Docker puede mapear dos al mismo
+    // contenedor) o el nombre en mayúsculas: el nombre de la base basta para tratarlas como la misma.
+    'postgresql://anticipate:anticipate@localhost:5432/anticipate',
+    'postgresql://anticipate:anticipate@[::1]:5433/anticipate',
+    'postgresql://otro:otra@127.0.0.1:5432/Anticipate?host=/var/run/postgresql',
+  ])(
+    'la base shadow con el mismo nombre de base que la de la app se rechaza, sea cual sea el host (%s)',
+    (shadow) => {
+      expect(problemsOf({ ...REQUIRED_ONLY, SHADOW_DATABASE_URL: shadow })).toEqual([
+        'SHADOW_DATABASE_URL: debe apuntar a una base distinta de DATABASE_URL y DATABASE_DIRECT_URL: Prisma la vacía cada vez que la usa',
+      ])
+    },
+  )
+
   it('las cabeceras no pueden esperar más que la petición entera', () => {
     expect(problemsOf({ ...REQUIRED_ONLY, SERVER_HEADERS_TIMEOUT_MS: '130000' })).toEqual([
       'SERVER_HEADERS_TIMEOUT_MS: debe ser menor o igual que SERVER_REQUEST_TIMEOUT_MS',
