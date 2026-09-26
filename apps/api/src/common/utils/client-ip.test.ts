@@ -39,4 +39,17 @@ describe('resolveClientIp', () => {
     expect(resolveClientIp(requestFrom({ remoteAddress: '::1' }), false)).toBe('::1')
     expect(resolveClientIp(requestFrom({}), false)).toBe(UNKNOWN_CLIENT_IP)
   })
+
+  it('una req.ip que no es una IP válida para inet se reemplaza por UNKNOWN_CLIENT_IP', () => {
+    // Detrás de un proxy de confianza, Express toma de X-Forwarded-For lo que venga, sin validarlo.
+    for (const ip of ['no-es-una-ip', '1.2.3', '', 'fe80::1%eth0']) {
+      expect(resolveClientIp(requestFrom({ ip, remoteAddress: '127.0.0.1' }), false)).toBe(
+        UNKNOWN_CLIENT_IP,
+      )
+    }
+    expect(resolveClientIp(requestFrom({ remoteAddress: 'fe80::1%eth0' }), false)).toBe(
+      UNKNOWN_CLIENT_IP,
+    )
+    expect(resolveClientIp(requestFrom({ ip: '::ffff:127.0.0.1' }), false)).toBe('::ffff:127.0.0.1')
+  })
 })

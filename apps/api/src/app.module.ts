@@ -11,6 +11,12 @@ import { NotificationsInfrastructureModule } from '#/infrastructure/notification
 import { PrismaModule } from '#/infrastructure/prisma/index.js'
 import { StorageModule } from '#/infrastructure/storage/s3/index.js'
 import { TimeModule } from '#/infrastructure/time/index.js'
+import { AdvanceRequestsModule } from '#/modules/advance-requests/advance-requests.module.js'
+import {
+  ADVANCE_REQUEST_OUTBOX_HANDLERS,
+  SupplierConfirmationEmailHandler,
+  TeamAlertEmailHandler,
+} from '#/modules/advance-requests/index.js'
 import { HealthChecksModule } from '#/modules/health-checks/index.js'
 import { OutboxModule } from '#/modules/outbox/index.js'
 import { PayersModule } from '#/modules/payers/payers.module.js'
@@ -40,8 +46,12 @@ export class AppModule {
         PayersModule,
         NotificationsInfrastructureModule,
         OutboxModule,
-        // La Tarea 12 pasa AdvanceRequestsModule, sus dos handlers y ADVANCE_REQUEST_OUTBOX_HANDLERS.
-        OutboxPublisherModule.forRoot({ imports: [], handlers: [], requiredHandlers: [] }),
+        AdvanceRequestsModule,
+        OutboxPublisherModule.forRoot({
+          imports: [AdvanceRequestsModule],
+          handlers: [SupplierConfirmationEmailHandler, TeamAlertEmailHandler],
+          requiredHandlers: Object.values(ADVANCE_REQUEST_OUTBOX_HANDLERS),
+        }),
         ...extraModules,
       ],
       providers: [

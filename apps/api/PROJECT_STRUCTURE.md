@@ -59,7 +59,7 @@ apps/api/
 | `middleware/` | `correlation-id.middleware.ts`, `content-length-limit.middleware.ts`, `body-parser-error.middleware.ts` (errores de body-parser con su tipo, para `AllExceptionsFilter`), `index.ts` | Piezas de Express que corren antes de los guards |
 | `time/` | `clock.ts` | Puerto `Clock` y token `CLOCK` |
 | `types/` | `express.d.ts`, `paginated-list.ts` | `Request.correlationId` y listas paginadas |
-| `utils/` | `client-ip.ts`, `correlation-id.ts`, `build-pagination-meta.ts` | Utilidades genéricas que usan dos partes o más |
+| `utils/` | `client-ip.ts`, `correlation-id.ts`, `build-pagination-meta.ts`, `uuid.ts` | Utilidades genéricas que usan dos partes o más |
 | `exceptions/` | `application-error.ts` y los errores de la aplicación, `index.ts` | Errores con código público, sin Nest |
 | `filters/` | `all-exceptions.filter.ts`, `default-http-error-code.map.ts`, `index.ts` | Todo error sale con el sobre de error (`APP_FILTER`) |
 | `interceptors/` | `response-envelope.interceptor.ts`, `multipart-files.interceptor.ts` | Sobre de éxito (`APP_INTERCEPTOR`) y multipart |
