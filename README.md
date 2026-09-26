@@ -60,15 +60,64 @@ pnpm infra:up
 - **Correos.** Ningún test envía correo real: los de integración usan el transporte en memoria, salvo el test dedicado a Mailpit.
 - **Tests de integración.** `pnpm test:integration` corre con Turborepo en modo estricto de variables: los tests toman su configuración solo de `apps/api/.env.test` y nunca de las variables del shell, así un `DATABASE_URL` exportado no puede apuntarlos a la base de desarrollo.
 
+## API
+
+`apps/api` es la API: NestJS 12 en ESM y Prisma 7.10 sobre PostgreSQL 18, con módulos por capas y todas las respuestas en el sobre de `@anticipate/shared/api`. Su estructura y sus reglas de dependencia están en [`apps/api/PROJECT_STRUCTURE.md`](apps/api/PROJECT_STRUCTURE.md), y las decisiones, en `docs/STACK.md` (D37 a D52).
+
+Para correrla en local, con la infraestructura levantada (`pnpm infra:up`):
+
+1. `cp apps/api/.env.example apps/api/.env` y `cp apps/api/.env.test.example apps/api/.env.test`. Las plantillas traen los puertos por defecto.
+2. `pnpm db:migrate` aplica las migraciones en la base `anticipate` y `pnpm db:seed` carga los datos de ejemplo (pagador SEA).
+3. `pnpm dev` compila `shared` y `emails`, genera el cliente de Prisma y levanta la API con recarga en caliente.
+
+| Qué | Por defecto | Con el 5432 y el 4000 ocupados |
+|---|---|---|
+| API con `pnpm dev` (`PORT` en `apps/api/.env`) | `http://localhost:4000` | `http://localhost:4001` |
+| Swagger (fuera de producción) | `http://localhost:4000/docs` | `http://localhost:4001/docs` |
+| Imagen con `pnpm api:image` (`API_PORT` en `.env`) | `http://localhost:4000` | `http://localhost:4001` |
+| PostgreSQL (`POSTGRES_PORT` en `.env` y las URLs de `apps/api/.env` y `apps/api/.env.test`) | `127.0.0.1:5432` | `127.0.0.1:5433` |
+| Correos (Mailpit) | `http://localhost:8025` | `http://localhost:8025` |
+
+En la máquina de desarrollo actual, el 5432 y el 4000 los ocupa otro proyecto:
+- el `.env` de la raíz fija `POSTGRES_PORT=5433` y `API_PORT=4001`;
+- `apps/api/.env` y `apps/api/.env.test` usan `PORT=4001` y `127.0.0.1:5433` en `DATABASE_URL`, `DATABASE_DIRECT_URL` y `SHADOW_DATABASE_URL`.
+
+Los defectos de las plantillas (5432 y 4000) son los de CI.
+
+| Método y ruta | Qué hace |
+|---|---|
+| `GET /api/v1/payers` | Pagadores activos, con sus campos públicos, para la landing |
+| `POST /api/v1/advance-requests` | Recibe una solicitud en multipart: campo `form` con el JSON del formulario, archivos `xml` y `pdf`, y las cabeceras `x-turnstile-token` e `Idempotency-Key`. Contrato completo en `docs/STACK.md` (sección 8, D38 y D45) |
+| `GET /health` | Liveness: el proceso responde |
+| `GET /health/readiness` | Readiness: base, almacenamiento y backlog del outbox; 503 si algo falla |
+
+La imagen de producción (`apps/api/Dockerfile`) se arma con `turbo prune` y `pnpm deploy --prod`: sin devDependencies, sin el CLI de Prisma y sin root. Las migraciones nunca corren al arrancar. Se aplican antes con la etapa `migrate` de la misma imagen, que exige la URL directa de la base:
+
+```bash
+docker build -f apps/api/Dockerfile --target migrate -t anticipate-api-migrate:local .
+docker run --rm --network anticipate_default \
+  -e DATABASE_DIRECT_URL=postgresql://anticipate:anticipate@postgres:5432/anticipate \
+  anticipate-api-migrate:local
+pnpm api:image
+```
+
+`pnpm api:image` levanta la imagen contra la base `anticipate` de desarrollo: al arrancar, la API corre el publicador del outbox y el mantenimiento (purga, barrido de huérfanos y borrado diferido) sobre esa base y sobre el bucket `anticipate-local`, igual que `pnpm dev`.
+
 ## CI
 
-GitHub Actions (`.github/workflows/ci.yml`, permisos de solo lectura) corre `pnpm lint` y luego tipos, tests y build con Turborepo: en un pull request solo sobre lo afectado (`turbo run typecheck test build --affected`, comparando con `main`) y en `main` sobre todo el monorepo. Al final construye `@anticipate/shared` y corre su `check:package` (publint y attw). Un push nuevo a un PR cancela la corrida anterior; en `main` cada commit se verifica completo.
+GitHub Actions (`.github/workflows/ci.yml`, permisos de solo lectura) tiene tres jobs:
+
+- `verify`: `pnpm lint` y luego tipos, tests y build con Turborepo. En un pull request corre solo sobre lo afectado (`turbo run typecheck test build --affected`, comparando con `main`) y en `main` sobre todo el monorepo. Al final construye `@anticipate/shared` y corre su `check:package` (publint y attw).
+- `integration`: levanta la infraestructura con Docker Compose, la misma definición que en local. Revisa la deriva entre el esquema de Prisma y las migraciones con la base sombra (`pnpm db:check-drift`) y corre los tests de integración de la API, que incluyen las reglas de migración y el test estructural de la base. En un pull request corre solo lo afectado.
+- `image`: construye la etapa `migrate` y la imagen de la API. Comprueba que `migrate` se niega a migrar sin `DATABASE_DIRECT_URL`, migra una base vacía, levanta la imagen con el perfil `api` y hace una prueba de humo contra `/health`, `/health/readiness` y `GET /api/v1/payers`. No publica nada.
+
+Un push nuevo a un PR cancela la corrida anterior; en `main` cada commit se verifica completo.
 
 ## Estructura
 
 - `packages/shared`: esquemas, reglas de negocio, lector de XML y máquina de estados. Sin código de servidor ni de navegador: su `tsconfig.src.json` compila el código sin tipos de Node ni del DOM (`tsconfig.json` es la del editor y los tests, con modo estricto y tipos de Node) y el test de arquitectura limita qué paquetes importa cada dominio. La fábrica de XML de prueba se publica aparte, en `@anticipate/shared/testing`.
 - `packages/config`: presets de TypeScript. La configuración de Biome vive en `biome.json`, en la raíz.
-- `apps/`: landing, admin y api (fases siguientes).
+- `apps/api`: la API (NestJS 12 y Prisma 7.10); ver la sección API. La landing y el admin llegan en fases siguientes.
 - `docker/`: scripts de inicialización de los servicios locales de `docker-compose.yml`.
 
 ## Convenciones
