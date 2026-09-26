@@ -32,20 +32,27 @@ export function nextPassDelayMs(input: {
 /**
  * Corre el publicador si `OUTBOX_POLLER_ENABLED`: una pasada al arrancar, otra cuando vence la espera
  * de `nextPassDelayMs` y otra en cuanto `OUTBOX_WAKE_UP` avisa. Nunca hay dos pasadas a la vez: un
- * aviso durante una pasada programa otra al terminar. Al apagar deja de programar y avisa a la pasada
+ * aviso durante una pasada corre otra al terminar. Al apagar deja de programar y avisa a la pasada
  * en curso, que no reclama más, devuelve a `PENDING` lo reclamado sin empezar y solo termina el envío
  * en curso (como mucho `OUTBOX_HANDLER_TIMEOUT_MS`); después la espera. El pool de la base se cierra
  * más tarde, en `onApplicationShutdown`.
+ *
+ * Las pasadas corren en un solo bucle que empieza al arrancar la app, fuera de toda petición. Un aviso
+ * solo marca y despierta la espera del bucle: la pasada nunca corre en el contexto asíncrono de quien
+ * avisa. Si corriera ahí, heredaría el de la petición HTTP que llamó a `notify()` (el logger de
+ * nestjs-pino con su `correlationId`), y también sus temporizadores y todas las pasadas siguientes.
  */
 @Injectable()
 export class OutboxPublisherScheduler implements OnApplicationBootstrap, OnModuleDestroy {
   private readonly logger = new Logger(OutboxPublisherScheduler.name)
   /** Se aborta al apagar: la pasada en curso lo recibe en `execute`. */
   private readonly stopping = new AbortController()
-  private active = false
-  private rerun = false
-  private current: Promise<void> | null = null
-  private timer: ReturnType<typeof setTimeout> | null = null
+  /** El bucle de pasadas, o `null` si el sondeo está apagado. */
+  private loop: Promise<void> | null = null
+  /** Hubo un aviso que la pasada en curso (o la próxima) todavía no atendió. */
+  private woken = false
+  /** Corta la espera entre pasadas; `null` mientras no se espera. */
+  private interruptWait: (() => void) | null = null
   private unsubscribe: (() => void) | null = null
 
   constructor(
@@ -55,63 +62,74 @@ export class OutboxPublisherScheduler implements OnApplicationBootstrap, OnModul
   ) {}
 
   onApplicationBootstrap(): void {
-    if (!this.config.outbox.pollerEnabled) return
-    this.active = true
+    if (!this.config.outbox.pollerEnabled || this.loop !== null) return
     this.unsubscribe = this.wakeUp.subscribe(() => this.wake())
-    this.wake()
+    // `pass` no lanza; esto solo evita un rechazo sin atender si algo del propio bucle fallara.
+    this.loop = this.runLoop().catch((error: unknown) => {
+      this.logger.error({ err: error }, 'se detuvo el bucle del publicador del outbox')
+    })
   }
 
   async onModuleDestroy(): Promise<void> {
-    this.active = false
     this.stopping.abort()
     this.unsubscribe?.()
     this.unsubscribe = null
-    this.clearTimer()
-    await this.current
+    this.interruptWait?.()
+    await this.loop
   }
 
-  /** Una pasada ya o, si hay una en curso, otra apenas termine. */
+  /**
+   * Una pasada ya o, si hay una en curso, otra apenas termine. No corre nada aquí: lo llama
+   * `notify()`, dentro de la petición que encoló.
+   */
   wake(): void {
-    if (!this.active) return
-    if (this.current !== null) {
-      this.rerun = true
-      return
-    }
-    this.clearTimer()
-    this.current = this.run()
+    if (this.loop === null || this.stopping.signal.aborted) return
+    this.woken = true
+    this.interruptWait?.()
   }
 
-  private async run(): Promise<void> {
+  private async runLoop(): Promise<void> {
+    while (!this.stopping.signal.aborted) {
+      const delayMs = await this.pass()
+      if (this.stopping.signal.aborted) break
+      await this.waitUpTo(delayMs)
+    }
+  }
+
+  /** Corre `execute` hasta que no queden avisos sin atender y devuelve la espera hasta la próxima. */
+  private async pass(): Promise<number> {
     let processed = 0
     let nextDueMs: number | null = null
     try {
       do {
-        this.rerun = false
+        this.woken = false
         const result = await this.publish.execute({ signal: this.stopping.signal })
         const count = result.published + result.retried + result.deadLettered + result.leaseLost
         processed += count
         if (count > 0) this.logger.log(result, 'outbox procesado')
-      } while (this.rerun && this.active)
-      if (this.active) nextDueMs = await this.publish.nextDueInMs()
+      } while (this.woken && !this.stopping.signal.aborted)
+      if (!this.stopping.signal.aborted) nextDueMs = await this.publish.nextDueInMs()
     } catch (error) {
       this.logger.error({ err: error }, 'falló una pasada del publicador del outbox')
-    } finally {
-      this.current = null
     }
-    if (!this.active) return
     const pollIntervalMs = this.config.outbox.pollIntervalMs
-    const delayMs = this.rerun ? 0 : nextPassDelayMs({ processed, nextDueMs, pollIntervalMs })
-    this.rerun = false
-    this.clearTimer()
-    this.timer = setTimeout(() => {
-      this.timer = null
-      this.wake()
-    }, delayMs)
-    this.timer.unref()
+    return this.woken ? 0 : nextPassDelayMs({ processed, nextDueMs, pollIntervalMs })
   }
 
-  private clearTimer(): void {
-    if (this.timer !== null) clearTimeout(this.timer)
-    this.timer = null
+  /**
+   * Espera `delayMs`, o menos si llega un aviso o el apagado. Siempre con un temporizador, aunque sea de
+   * 0 ms: entre dos pasadas el bucle cede el turno al resto del proceso.
+   */
+  private waitUpTo(delayMs: number): Promise<void> {
+    return new Promise((resolve) => {
+      const done = () => {
+        clearTimeout(timer)
+        this.interruptWait = null
+        resolve()
+      }
+      const timer = setTimeout(done, this.woken ? 0 : delayMs)
+      timer.unref()
+      this.interruptWait = done
+    })
   }
 }

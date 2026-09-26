@@ -4,12 +4,15 @@ import { Test, type TestingModule } from '@nestjs/testing'
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AppConfigModule } from '#/common/config/index.js'
 import {
+  BrevoEmailSender,
   FakeEmailSender,
   NotificationsInfrastructureModule,
 } from '#/infrastructure/notifications/index.js'
 import { newId } from '#/infrastructure/prisma/id.js'
 import { PrismaModule } from '#/infrastructure/prisma/prisma.module.js'
+import type { PrismaService } from '#/infrastructure/prisma/prisma.service.js'
 import { insertOutboxMessages } from '#/infrastructure/prisma/repositories/outbox/outbox-rows.js'
+import { PrismaOutboxEventRepository } from '#/infrastructure/prisma/repositories/outbox/prisma-outbox-event.repository.js'
 import {
   EMAIL_SENDER,
   type EmailSenderPort,
@@ -149,6 +152,17 @@ function only<T>(items: readonly T[]): T {
 
 const claim = () =>
   repository.claimDue({ handlers: [TEST_HANDLER], leaseSeconds: 120, batchSize: 50 })
+
+/** Opciones de un publicador armado a mano: otra réplica, o la versión anterior durante un despliegue. */
+const OTHER_PUBLISHER_OPTIONS = {
+  leaseSeconds: 120,
+  batchSize: 20,
+  handlerTimeoutMs: 5_000,
+  baseDelayMs: 30_000,
+  maxDelayMs: 3_600_000,
+  requiredHandlers: [TEST_HANDLER],
+}
+const silentLogger = { warn: () => {}, error: () => {} }
 
 /** La espera de los pendientes ya venció. */
 const makeDue = () =>
@@ -302,6 +316,70 @@ describe('PublishOutboxEventsUseCase contra PostgreSQL', () => {
       lastError: 'EMAIL_PERMANENT',
       leaseToken: null,
     })
+  })
+
+  it('una racha de 401 de Brevo (clave rotada o IP no autorizada) se reintenta con EMAIL_ACCOUNT y no pierde ningún correo', async () => {
+    await enqueue([message(), message(), message()])
+    // fetch falso: nunca se llama a la API real de Brevo.
+    const brevoFetch = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ code: 'unauthorized', message: 'Key not found' }), {
+          status: 401,
+        }),
+    )
+    vi.stubGlobal('fetch', brevoFetch)
+    const brevo = new BrevoEmailSender({
+      apiKey: 'xkeysib-prueba',
+      fromEmail: 'no-reply@anticipate.local',
+      fromName: 'Anticipate',
+      requestTimeoutMs: 5_000,
+    })
+    const alerts = vi.fn()
+    const viaBrevo = new PublishOutboxEventsUseCase(
+      repository,
+      [{ handler: TEST_HANDLER, handle: (event, signal) => brevo.send(emailOf(event), signal) }],
+      OTHER_PUBLISHER_OPTIONS,
+      { warn: () => {}, error: alerts },
+    )
+    try {
+      await expect(viaBrevo.execute()).resolves.toEqual({
+        published: 0,
+        retried: 3,
+        deadLettered: 0,
+        leaseLost: 0,
+      })
+      for (const row of await rows()) {
+        expect(row).toMatchObject({
+          status: 'PENDING',
+          attempts: 1,
+          lastError: 'EMAIL_ACCOUNT',
+          leaseToken: null,
+        })
+      }
+      expect(alerts).toHaveBeenCalledTimes(3)
+      expect(alerts).toHaveBeenCalledWith(
+        expect.objectContaining({ failureCode: 'EMAIL_ACCOUNT', detail: 'Brevo 401 unauthorized' }),
+        expect.any(String),
+      )
+      expect(JSON.stringify(alerts.mock.calls)).not.toContain('xkeysib-prueba')
+
+      // Se corrige la clave: el intento siguiente de cada correo sale.
+      brevoFetch.mockImplementation(
+        async () => new Response(JSON.stringify({ messageId: '<ok@brevo>' }), { status: 201 }),
+      )
+      await makeDue()
+      await expect(viaBrevo.execute()).resolves.toMatchObject({ published: 3, deadLettered: 0 })
+      for (const row of await rows()) {
+        expect(row).toMatchObject({
+          status: 'PUBLISHED',
+          attempts: 2,
+          providerMessageId: '<ok@brevo>',
+        })
+      }
+      expect(brevoFetch).toHaveBeenCalledTimes(6)
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 
   it('al agotar los intentos queda en DEAD_LETTER con el código del último fallo', async () => {
@@ -539,15 +617,8 @@ describe('PublishOutboxEventsUseCase contra PostgreSQL', () => {
     const other = new PublishOutboxEventsUseCase(
       repository,
       [{ handler: TEST_HANDLER, handle: (event, signal) => mailer.send(emailOf(event), signal) }],
-      {
-        leaseSeconds: 120,
-        batchSize: 20,
-        handlerTimeoutMs: 5_000,
-        baseDelayMs: 30_000,
-        maxDelayMs: 3_600_000,
-        requiredHandlers: [TEST_HANDLER],
-      },
-      { warn: () => {} },
+      OTHER_PUBLISHER_OPTIONS,
+      silentLogger,
     )
     let otherResult: PublishOutboxEventsResult | undefined
     handler.before = async (event) => {
@@ -598,6 +669,52 @@ describe('PublishOutboxEventsUseCase contra PostgreSQL', () => {
     await expect(publisher.execute()).resolves.toMatchObject({ published: 2, leaseLost: 0 })
   })
 
+  it('un reclamo no espera ni toma las filas que otro reclamo tiene bloqueadas en su transacción (SKIP LOCKED)', async () => {
+    await enqueue(Array.from({ length: 20 }, () => message()))
+    let release = () => {}
+    const held = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    let locked = () => {}
+    const lockedByA = new Promise<void>((resolve) => {
+      locked = resolve
+    })
+    let claimedByA: ClaimedOutboxEvent[] = []
+    // A: el mismo reclamo, en una conexión propia, con la transacción abierta (sus filas bloqueadas).
+    const a = db.prisma.$transaction(
+      async (tx) => {
+        const inTransaction = new PrismaOutboxEventRepository(tx as unknown as PrismaService)
+        claimedByA = await inTransaction.claimDue({
+          handlers: [TEST_HANDLER],
+          leaseSeconds: 120,
+          batchSize: 10,
+        })
+        locked()
+        await held
+      },
+      { timeout: 15_000 },
+    )
+    let b: Promise<ClaimedOutboxEvent[]> | undefined
+    try {
+      await lockedByA
+      // B: el publicador, por el pool de la app, mientras A sigue con sus filas bloqueadas.
+      const startedAt = performance.now()
+      b = claim()
+      const claimedByB = await Promise.race([b, sleep(2_000).then(() => 'bloqueado' as const)])
+      expect(claimedByB).not.toBe('bloqueado')
+      expect(performance.now() - startedAt).toBeLessThan(1_000)
+      const idsA = claimedByA.map((event) => event.id)
+      const idsB = (claimedByB as ClaimedOutboxEvent[]).map((event) => event.id)
+      expect(idsA).toHaveLength(10)
+      expect(idsB).toHaveLength(10)
+      expect(new Set([...idsA, ...idsB]).size).toBe(20)
+    } finally {
+      release()
+      await a
+      await b?.catch(() => [])
+    }
+  })
+
   it('dos procesos que reclaman a la vez nunca toman la misma fila', async () => {
     await enqueue(Array.from({ length: 20 }, () => message()))
     const [a, b] = await Promise.all([claim(), claim()])
@@ -621,6 +738,24 @@ describe('PublishOutboxEventsUseCase contra PostgreSQL', () => {
       lastError: 'UNEXPECTED',
       leaseToken: null,
     })
+  })
+
+  it('markPublished guarda el providerMessageId hasta el largo de la columna (VARCHAR(255))', async () => {
+    await enqueue([message()])
+    const claimed = only(await claim())
+    const attemptToken = await repository.startAttempt({
+      id: claimed.id,
+      leaseToken: claimed.leaseToken,
+      leaseSeconds: 120,
+    })
+    await expect(
+      repository.markPublished({
+        id: claimed.id,
+        leaseToken: attemptToken ?? '',
+        providerMessageId: `<${'x'.repeat(300)}@brevo>`,
+      }),
+    ).resolves.toBe(true)
+    expect(only(await rows()).providerMessageId).toBe(`<${'x'.repeat(254)}`)
   })
 
   it('la purga borra en lotes solo los PUBLISHED más viejos que la retención', async () => {
@@ -744,15 +879,19 @@ describe('OutboxPublisherScheduler', () => {
   })
 
   it('programa la pasada siguiente con el próximo available_at', async () => {
-    const running = await startScheduler((compiled) => {
-      compiled
-        .get<FakeEmailSender>(EMAIL_SENDER)
-        .failNext(new RetryableEmailError('Brevo 429 too_many_requests', 1))
-    })
+    const running = await startScheduler(
+      (compiled) => {
+        compiled
+          .get<FakeEmailSender>(EMAIL_SENDER)
+          .failNext(new RetryableEmailError('Brevo 429 too_many_requests', 1))
+      },
+      { OUTBOX_BASE_DELAY_MS: '1000' },
+    )
     try {
       await enqueue([message()])
       running.get<OutboxWakeUpSignal>(OUTBOX_WAKE_UP).notify()
-      // El primer intento se reprograma a 1 s; nadie más avisa y el sondeo es de una hora.
+      // El primer intento se reprograma a 1 o 2 s (la exponencial de 1 s con su jitter, que es más que
+      // lo que pidió el proveedor); nadie más avisa y el sondeo es de una hora.
       await waitForStatus('PUBLISHED', 2)
     } finally {
       await running.close()

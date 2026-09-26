@@ -13,8 +13,9 @@ export type OutgoingEmail = {
 }
 
 /**
- * Envío de un correo. Los errores que lanza un adaptador son `RetryableEmailError` o
- * `PermanentEmailError`, y su mensaje nunca lleva datos personales (queda en los logs).
+ * Envío de un correo. Los errores que lanza un adaptador son `RetryableEmailError` (o su caso
+ * `EmailAccountError`) o `PermanentEmailError`, y su mensaje nunca lleva datos personales ni secretos:
+ * solo el estado y un código del proveedor (queda en los logs).
  *
  * `signal` es el tope de quien envía (el publicador del outbox lo aborta al vencer el tope del
  * handler, medido desde que el handler empezó). Con la señal ya abortada el adaptador no abre
@@ -28,19 +29,44 @@ export interface EmailSenderPort {
 
 export const EMAIL_SENDER = Symbol('EMAIL_SENDER')
 
-/** El envío puede funcionar más tarde: red, 429 o 5xx del proveedor. */
+/**
+ * El envío puede funcionar más tarde: red, tope de la petición, 408, 425, 429 o 5xx del proveedor. El
+ * publicador lo reintenta con los intentos del evento y espera exponencial.
+ */
 export class RetryableEmailError extends Error {
-  /** Espera que pidió el proveedor, en segundos (por ejemplo, el reinicio del límite de Brevo). */
+  /**
+   * Espera mínima que pidió el proveedor, en segundos (`Retry-After`, el reinicio del límite de Brevo).
+   * Solo un número finito y no negativo: cualquier otro valor se descarta aquí, sin lanzar, porque un
+   * error que falla al construirse taparía el fallo que describe.
+   */
   readonly retryAfterSeconds: number | undefined
 
   constructor(message: string, retryAfterSeconds?: number) {
     super(message)
     this.name = 'RetryableEmailError'
-    this.retryAfterSeconds = retryAfterSeconds
+    this.retryAfterSeconds =
+      retryAfterSeconds !== undefined &&
+      Number.isFinite(retryAfterSeconds) &&
+      retryAfterSeconds >= 0
+        ? retryAfterSeconds
+        : undefined
   }
 }
 
-/** Reintentar no cambia nada: dirección inválida, credenciales o remitente rechazados. */
+/**
+ * El proveedor rechaza la cuenta, no el mensaje: clave inválida o rotada, IP no autorizada, sin
+ * créditos o sin permiso para enviar. Mientras dura, falla todo envío, así que es reintentable (un
+ * reintento sale en cuanto alguien lo corrige) y el publicador lo registra como error con el código
+ * `EMAIL_ACCOUNT` para alertar.
+ */
+export class EmailAccountError extends RetryableEmailError {
+  constructor(message: string, retryAfterSeconds?: number) {
+    super(message, retryAfterSeconds)
+    this.name = 'EmailAccountError'
+  }
+}
+
+/** Reintentar no cambia nada: el proveedor rechaza este mensaje (dirección o contenido inválidos). */
 export class PermanentEmailError extends Error {
   constructor(message: string) {
     super(message)

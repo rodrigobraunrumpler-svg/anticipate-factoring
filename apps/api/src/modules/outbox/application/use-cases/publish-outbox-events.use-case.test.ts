@@ -1,5 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { PermanentEmailError, RetryableEmailError } from '#/modules/notifications/index.js'
+import {
+  EmailAccountError,
+  PermanentEmailError,
+  RetryableEmailError,
+} from '#/modules/notifications/index.js'
 import { OutboxAggregateNotFoundError } from '../../domain/exceptions/outbox-failure-code.js'
 import type { ClaimedOutboxEvent } from '../../domain/types/outbox-event.types.js'
 import type { OutboxEventHandler } from '../ports/outbox-event-handler.port.js'
@@ -112,7 +116,7 @@ const OPTIONS: PublishOutboxEventsOptions = {
   maxDelayMs: 3_600_000,
   requiredHandlers: [],
 }
-const logger = { warn: vi.fn() }
+const logger = { warn: vi.fn(), error: vi.fn() }
 const noJitter = () => 0.5
 const sent = async () => ({ providerMessageId: null })
 
@@ -120,18 +124,46 @@ function useCase(
   repository: OutboxEventRepositoryPort,
   handlers: OutboxEventHandler[],
   options: Partial<PublishOutboxEventsOptions> = {},
+  random: () => number = noJitter,
 ) {
   return new PublishOutboxEventsUseCase(
     repository,
     handlers,
     { ...OPTIONS, ...options },
     logger,
-    noJitter,
+    random,
   )
+}
+
+/** Los segundos con que se reprograma un evento en su intento `attempts` que falla con `error`. */
+async function delayAfter(
+  error: Error,
+  {
+    attempts = 1,
+    options = {},
+    random = noJitter,
+  }: { attempts?: number; options?: Partial<PublishOutboxEventsOptions>; random?: () => number },
+): Promise<number | undefined> {
+  const { repository } = fakeRepository([[claimed({ attempts, maxAttempts: 20 })]])
+  await useCase(
+    repository,
+    [handlerThat(async () => Promise.reject(error))],
+    options,
+    random,
+  ).execute()
+  return repository.reschedule.mock.calls[0]?.[0].delaySeconds
+}
+
+/** Un `RetryableEmailError` con una espera que el constructor ya no deja pasar (un adaptador con un defecto). */
+function withRawRetryAfter(retryAfterSeconds: number): RetryableEmailError {
+  const error = new RetryableEmailError('Brevo 429 sin código')
+  Object.defineProperty(error, 'retryAfterSeconds', { value: retryAfterSeconds })
+  return error
 }
 
 beforeEach(() => {
   logger.warn.mockClear()
+  logger.error.mockClear()
 })
 
 describe('PublishOutboxEventsUseCase', () => {
@@ -216,6 +248,11 @@ describe('PublishOutboxEventsUseCase', () => {
         retried: true,
       },
       {
+        error: new EmailAccountError('Brevo 401 unauthorized'),
+        code: 'EMAIL_ACCOUNT',
+        retried: true,
+      },
+      {
         error: new PermanentEmailError('Brevo 400 invalid_parameter'),
         code: 'EMAIL_PERMANENT',
         retried: false,
@@ -235,20 +272,95 @@ describe('PublishOutboxEventsUseCase', () => {
     }
   })
 
-  it('reprograma con espera exponencial o con la que pidió el proveedor, acotada al máximo', async () => {
-    const backoff = fakeRepository([[claimed({ attempts: 2 })]])
-    await useCase(backoff.repository, [
-      handlerThat(async () => Promise.reject(new RetryableEmailError('Brevo 503 sin código'))),
-    ]).execute()
-    expect(backoff.repository.reschedule).toHaveBeenCalledWith(
-      expect.objectContaining({ delaySeconds: 60, failureCode: 'EMAIL_RETRYABLE' }),
-    )
+  it('reprograma con espera exponencial', async () => {
+    const error = new RetryableEmailError('Brevo 503 sin código')
+    await expect(delayAfter(error, { attempts: 1 })).resolves.toBe(30)
+    await expect(delayAfter(error, { attempts: 2 })).resolves.toBe(60)
+    await expect(delayAfter(error, { attempts: 8 })).resolves.toBe(3_600)
+  })
 
-    const asked = fakeRepository([[claimed()], [claimed()]])
-    const failing = handlerThat(async () => Promise.reject(new RetryableEmailError('Brevo 429', 7)))
-    await useCase(asked.repository, [failing]).execute()
-    await useCase(asked.repository, [failing], { maxDelayMs: 5_000 }).execute()
-    expect(asked.repository.reschedule.mock.calls.map(([p]) => p.delaySeconds)).toEqual([7, 5])
+  it('la espera que pidió el proveedor es un mínimo: nunca acorta la exponencial y respeta el tope', async () => {
+    // Pide menos que la exponencial: vale la exponencial (una racha de 429 no quema intentos en segundos).
+    await expect(
+      delayAfter(new RetryableEmailError('Brevo 429', 7), { attempts: 1 }),
+    ).resolves.toBe(30)
+    // Pide más: vale lo que pidió.
+    await expect(
+      delayAfter(new RetryableEmailError('Brevo 429', 120), { attempts: 1 }),
+    ).resolves.toBe(120)
+    // Nunca más que maxDelayMs.
+    await expect(
+      delayAfter(new RetryableEmailError('Brevo 503', 7_200), {
+        attempts: 1,
+        options: { maxDelayMs: 60_000 },
+      }),
+    ).resolves.toBe(60)
+  })
+
+  it('el jitter mueve la espera ±10 % y nunca la lleva más allá de maxDelayMs', async () => {
+    const error = new RetryableEmailError('Brevo 503 sin código')
+    await expect(delayAfter(error, { attempts: 2, random: () => 1 })).resolves.toBe(66)
+    await expect(delayAfter(error, { attempts: 2, random: () => 0 })).resolves.toBe(54)
+    await expect(delayAfter(error, { attempts: 8, random: () => 1 })).resolves.toBe(3_600)
+    await expect(delayAfter(error, { attempts: 8, random: () => 0 })).resolves.toBe(3_240)
+  })
+
+  it('una espera pedida que no es finita o es negativa se ignora: usa la exponencial y el lote sigue', async () => {
+    for (const invalid of [Number.NaN, Number.POSITIVE_INFINITY, -5]) {
+      const { repository } = fakeRepository([[claimed({ id: ID_1 }), claimed({ id: ID_2 })]])
+      const handler = handlerThat(async (event) => {
+        if (event.id === ID_1) throw withRawRetryAfter(invalid)
+        return { providerMessageId: 'msg-2' }
+      })
+      await expect(useCase(repository, [handler]).execute()).resolves.toEqual({
+        published: 1,
+        retried: 1,
+        deadLettered: 0,
+        leaseLost: 0,
+      })
+      expect(repository.reschedule).toHaveBeenCalledWith(
+        expect.objectContaining({ id: ID_1, delaySeconds: 30, failureCode: 'EMAIL_RETRYABLE' }),
+      )
+    }
+  })
+
+  it('la cuenta del proveedor rechazada se reintenta con EMAIL_ACCOUNT y se registra como error, sin datos del correo', async () => {
+    const event = claimed()
+    const { repository } = fakeRepository([[event]])
+    const error = new EmailAccountError('Brevo 401 unauthorized')
+    await expect(
+      useCase(repository, [handlerThat(async () => Promise.reject(error))]).execute(),
+    ).resolves.toMatchObject({ retried: 1, deadLettered: 0 })
+    expect(repository.reschedule).toHaveBeenCalledWith(
+      expect.objectContaining({ id: event.id, delaySeconds: 30, failureCode: 'EMAIL_ACCOUNT' }),
+    )
+    expect(logger.error).toHaveBeenCalledTimes(1)
+    const [context, message] = logger.error.mock.calls[0] as [Record<string, unknown>, string]
+    expect(context).toEqual({
+      eventId: event.id,
+      handler: HANDLER,
+      attempts: 1,
+      maxAttempts: 8,
+      failureCode: 'EMAIL_ACCOUNT',
+      detail: 'Brevo 401 unauthorized',
+      correlationId: 'corr-1',
+      err: error,
+    })
+    expect(message).toMatch(/cuenta/)
+    expect(logger.warn).not.toHaveBeenCalled()
+  })
+
+  it('en el último intento, la cuenta rechazada pasa a DEAD_LETTER con EMAIL_ACCOUNT', async () => {
+    const { repository } = fakeRepository([[claimed({ attempts: 8, maxAttempts: 8 })]])
+    await useCase(repository, [
+      handlerThat(async () =>
+        Promise.reject(new EmailAccountError('Brevo 402 not_enough_credits')),
+      ),
+    ]).execute()
+    expect(repository.reschedule).not.toHaveBeenCalled()
+    expect(repository.markDeadLetter).toHaveBeenCalledWith(
+      expect.objectContaining({ failureCode: 'EMAIL_ACCOUNT' }),
+    )
   })
 
   it('al vencer handlerTimeoutMs avisa al handler y reprograma con HANDLER_TIMEOUT cuando terminó', async () => {

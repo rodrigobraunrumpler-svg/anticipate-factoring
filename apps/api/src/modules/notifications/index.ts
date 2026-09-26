@@ -1,5 +1,6 @@
 export {
   EMAIL_SENDER,
+  EmailAccountError,
   type EmailRecipient,
   type EmailSenderPort,
   type OutgoingEmail,

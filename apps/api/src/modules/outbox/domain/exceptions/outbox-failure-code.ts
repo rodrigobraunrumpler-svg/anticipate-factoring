@@ -1,8 +1,14 @@
 import type { OutboxAggregate } from '../types/outbox-event.types.js'
 
-/** Catálogo cerrado de `outbox_events.last_error`: nunca un texto libre, que podría llevar datos personales. */
+/**
+ * Catálogo cerrado de `outbox_events.last_error`: nunca un texto libre, que podría llevar datos
+ * personales. `EMAIL_ACCOUNT` es el proveedor rechazando la cuenta (clave, IP, créditos o permisos): se
+ * reintenta como `EMAIL_RETRYABLE`, pero pide que alguien actúe, y una fila en `DEAD_LETTER` con ese
+ * código se puede reenviar en cuanto la cuenta se corrige.
+ */
 export const OUTBOX_FAILURE_CODES = [
   'EMAIL_RETRYABLE',
+  'EMAIL_ACCOUNT',
   'EMAIL_PERMANENT',
   'HANDLER_TIMEOUT',
   'HANDLER_MISSING',

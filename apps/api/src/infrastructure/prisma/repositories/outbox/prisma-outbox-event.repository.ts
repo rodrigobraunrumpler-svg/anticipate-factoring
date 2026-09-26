@@ -9,8 +9,11 @@ import { type OutboxEventRow, toClaimedOutboxEvent } from './mappers/outbox-even
 
 /** Tope de cada conteo de `countBacklog`: acota el costo de la readiness con un backlog enorme. */
 const BACKLOG_COUNT_CAP = 1000
-/** Largo de `outbox_events.provider_message_id`. */
-const PROVIDER_MESSAGE_ID_MAX_LENGTH = 200
+/**
+ * Largo de `outbox_events.provider_message_id` (`VARCHAR(255)` en el esquema y en la migración `init`):
+ * se recorta a este largo para que un id más largo del proveedor nunca haga fallar `markPublished`.
+ */
+const PROVIDER_MESSAGE_ID_MAX_LENGTH = 255
 /** Un evento cuyo último intento empezó y nunca informó su resultado (el proceso cayó con el arriendo tomado). */
 const LAST_ATTEMPT_WITHOUT_RESULT: OutboxFailureCode = 'UNEXPECTED'
 

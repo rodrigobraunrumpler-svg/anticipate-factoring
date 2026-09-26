@@ -1,4 +1,8 @@
-import { PermanentEmailError, RetryableEmailError } from '#/modules/notifications/index.js'
+import {
+  EmailAccountError,
+  PermanentEmailError,
+  RetryableEmailError,
+} from '#/modules/notifications/index.js'
 import {
   OutboxDeadLetterError,
   type OutboxFailureCode,
@@ -33,15 +37,21 @@ export type PublishOutboxEventsResult = {
   leaseLost: number
 }
 
-/** Lo que usa del logger de Nest (con nestjs-pino): contexto estructurado y mensaje. */
+/**
+ * Lo que usa del logger de Nest (con nestjs-pino): contexto estructurado y mensaje. `error` es lo que
+ * pide que alguien actúe (la cuenta del proveedor de correo rechazada): el nivel sirve para alertar.
+ */
 export interface OutboxLogger {
   warn(context: Record<string, unknown>, message: string): void
+  error(context: Record<string, unknown>, message: string): void
 }
 
 type Failure = {
   code: OutboxFailureCode
   retryable: boolean
   retryAfterSeconds: number | undefined
+  /** Pide que alguien actúe: se registra como error. */
+  alert: boolean
 }
 
 /** Cómo terminó un handler. */
@@ -291,34 +301,57 @@ export class PublishOutboxEventsUseCase {
 
   private async fail(event: ClaimedOutboxEvent, error: unknown, result: PublishOutboxEventsResult) {
     const failure = classifyFailure(error)
-    this.logger.warn(
-      {
-        eventId: event.id,
-        handler: event.handler,
-        attempts: event.attempts,
-        maxAttempts: event.maxAttempts,
-        failureCode: failure.code,
-        correlationId: event.correlationId,
-        err: error,
-      },
-      'falló un evento del outbox',
-    )
+    const context = {
+      eventId: event.id,
+      handler: event.handler,
+      attempts: event.attempts,
+      maxAttempts: event.maxAttempts,
+      failureCode: failure.code,
+      // Solo el de un error del puerto de correo, que por contrato no lleva datos personales ni
+      // secretos (el estado y el código del proveedor). El de cualquier otro error puede traerlos.
+      ...(isEmailError(error) ? { detail: error.message } : {}),
+      correlationId: event.correlationId,
+      err: error,
+    }
+    if (failure.alert) {
+      this.logger.error(
+        context,
+        'el proveedor de correo rechaza la cuenta (clave, IP, créditos o permisos): el evento se reintenta hasta que se corrija',
+      )
+    } else {
+      this.logger.warn(context, 'falló un evento del outbox')
+    }
     if (!failure.retryable || event.attempts >= event.maxAttempts) {
       await this.deadLetter(event, failure.code, result)
       return
     }
-    const delayMs =
-      failure.retryAfterSeconds === undefined
-        ? outboxBackoff(event.attempts, this.options, this.random() * 2 - 1)
-        : Math.min(failure.retryAfterSeconds * 1000, this.options.maxDelayMs)
     const written = await this.repository.reschedule({
       id: event.id,
       leaseToken: event.leaseToken,
-      delaySeconds: Math.max(1, Math.ceil(delayMs / 1000)),
+      delaySeconds: this.retryDelaySeconds(event.attempts, failure.retryAfterSeconds),
       failureCode: failure.code,
     })
     if (written) result.retried++
     else this.leaseLost(event, 'reschedule', result)
+  }
+
+  /**
+   * Segundos hasta el próximo intento: la espera exponencial con jitter o la que pidió el proveedor, la
+   * mayor, nunca más que `maxDelayMs`. Lo pedido es un mínimo y no reemplaza a la exponencial: una racha
+   * de reinicios cortos del límite no gasta los intentos en segundos. Una espera pedida que no es un
+   * número finito y no negativo se ignora. Se redondea hacia arriba, a un segundo como mínimo.
+   */
+  private retryDelaySeconds(attempts: number, retryAfterSeconds: number | undefined): number {
+    const { maxDelayMs } = this.options
+    const backoffMs = outboxBackoff(attempts, this.options, this.random() * 2 - 1)
+    const askedMs =
+      retryAfterSeconds !== undefined &&
+      Number.isFinite(retryAfterSeconds) &&
+      retryAfterSeconds >= 0
+        ? retryAfterSeconds * 1000
+        : 0
+    const delayMs = Math.min(Math.max(backoffMs, askedMs), maxDelayMs)
+    return Math.max(1, Math.ceil(delayMs / 1000))
   }
 
   private async deadLetter(
@@ -404,18 +437,30 @@ function indexHandlers(
   return index
 }
 
+function isEmailError(error: unknown): error is RetryableEmailError | PermanentEmailError {
+  return error instanceof RetryableEmailError || error instanceof PermanentEmailError
+}
+
 function classifyFailure(error: unknown): Failure {
-  if (error instanceof HandlerTimeoutError) {
-    return { code: 'HANDLER_TIMEOUT', retryable: true, retryAfterSeconds: undefined }
+  const retry = (code: OutboxFailureCode, retryAfterSeconds?: number, alert = false): Failure => ({
+    code,
+    retryable: true,
+    retryAfterSeconds,
+    alert,
+  })
+  const deadLetter = (code: OutboxFailureCode): Failure => ({
+    code,
+    retryable: false,
+    retryAfterSeconds: undefined,
+    alert: false,
+  })
+  if (error instanceof HandlerTimeoutError) return retry('HANDLER_TIMEOUT')
+  // Antes que RetryableEmailError, de la que hereda.
+  if (error instanceof EmailAccountError) {
+    return retry('EMAIL_ACCOUNT', error.retryAfterSeconds, true)
   }
-  if (error instanceof RetryableEmailError) {
-    return { code: 'EMAIL_RETRYABLE', retryable: true, retryAfterSeconds: error.retryAfterSeconds }
-  }
-  if (error instanceof PermanentEmailError) {
-    return { code: 'EMAIL_PERMANENT', retryable: false, retryAfterSeconds: undefined }
-  }
-  if (error instanceof OutboxDeadLetterError) {
-    return { code: error.failureCode, retryable: false, retryAfterSeconds: undefined }
-  }
-  return { code: 'UNEXPECTED', retryable: true, retryAfterSeconds: undefined }
+  if (error instanceof RetryableEmailError) return retry('EMAIL_RETRYABLE', error.retryAfterSeconds)
+  if (error instanceof PermanentEmailError) return deadLetter('EMAIL_PERMANENT')
+  if (error instanceof OutboxDeadLetterError) return deadLetter(error.failureCode)
+  return retry('UNEXPECTED')
 }

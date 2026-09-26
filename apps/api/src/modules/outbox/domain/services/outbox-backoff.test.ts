@@ -15,8 +15,19 @@ describe('outboxBackoff', () => {
     expect(outboxBackoff(2, options, -1)).toBe(54_000)
   })
 
-  it('rechaza intentos o jitter fuera de rango', () => {
+  it('el jitter nunca pasa el tope: con el tope alcanzado solo puede bajar', () => {
+    expect(outboxBackoff(8, options, 1)).toBe(3_600_000)
+    expect(outboxBackoff(9, options, 1)).toBe(3_600_000)
+    expect(outboxBackoff(9, options, -1)).toBe(3_240_000)
+    const short = { baseDelayMs: 30_000, maxDelayMs: 10_000 }
+    expect(outboxBackoff(1, short, 1)).toBe(10_000)
+    expect(outboxBackoff(1, short, -1)).toBe(9_000)
+  })
+
+  it('rechaza intentos, jitter u opciones fuera de rango', () => {
     expect(() => outboxBackoff(0, options, 0)).toThrow(RangeError)
     expect(() => outboxBackoff(1, options, 2)).toThrow(RangeError)
+    expect(() => outboxBackoff(1, { ...options, maxDelayMs: Number.NaN }, 0)).toThrow(RangeError)
+    expect(() => outboxBackoff(1, { ...options, baseDelayMs: -1 }, 0)).toThrow(RangeError)
   })
 })
