@@ -11,7 +11,24 @@ de Prisma (7.10.0 exacto) lee `apps/api/prisma.config.ts`.
 |---|---|
 | `DATABASE_DIRECT_URL` | La que usa la CLI siempre que existe. En producción es obligatoria: `DATABASE_URL` pasa por el pooler de Neon (PgBouncer en modo transacción) y una migración nunca va por el pooler. |
 | `DATABASE_URL` | La de la app. La CLI la usa solo fuera de producción y si falta la directa. |
-| `SHADOW_DATABASE_URL` | Base desechable (`anticipate_shadow` en local) para `migrate dev` y `db:check-drift`. Prisma la vacía cada vez: nunca puede ser la misma base que se migra. |
+| `SHADOW_DATABASE_URL` | Base desechable (`anticipate_shadow` en local) para `migrate dev` y `db:check-drift`. Prisma la vacía cada vez: tiene que ser local y nunca la misma base que se migra. |
+
+`apps/api/prisma.config.ts` pasa las variables por la guarda de `apps/api/prisma/cli-guard.ts`
+(probada en `cli-guard.test.ts`), que se niega a correr antes de conectarse si:
+
+- la URL que usa la CLI o la sombra apuntan al pooler de Neon (un host `*-pooler`), en cualquier
+  entorno;
+- el comando no es `migrate deploy`, `migrate status`, `migrate resolve`, `migrate diff` ni `db seed`
+  y la base no es local (`localhost`, `127.x.x.x`, `::1`, el servicio `postgres` de Compose o un
+  socket Unix). Así `migrate dev`, `migrate reset` y `db push` nunca tocan una base remota, y
+  tampoco un comando que la guarda no reconoce;
+- la sombra no es local, o es la misma base que se migra: compara host, puerto y nombre de la base,
+  no el texto de la URL (`postgres://otro@127.0.0.1:5433/anticipate?schema=public` es la misma base
+  que `postgresql://anticipate@127.0.0.1:5433/anticipate`).
+
+El comando sale de los argumentos de la CLI sin depender de su posición (`prisma --config x migrate
+dev` también es `migrate dev`). `generate`, `validate`, `format` y `version` no se conectan y reciben
+una URL de relleno.
 
 ## Comandos
 
@@ -21,8 +38,14 @@ de Prisma (7.10.0 exacto) lee `apps/api/prisma.config.ts`.
 | `pnpm --filter @anticipate/api db:migrate:create --name <nombre> < /dev/null` | Genera la migración de un cambio del esquema **sin aplicarla**, para revisarla y envolverla. |
 | `pnpm db:migrate --name <nombre> < /dev/null` | Aplica en la base local las migraciones pendientes (y crea una si el esquema cambió). |
 | `pnpm --filter @anticipate/api db:migrate:deploy` | Aplica las pendientes sin generar nada: es lo único que corre en CI, en los tests y en producción. |
+| `pnpm --filter @anticipate/api db:migrate:status` | Qué migraciones están aplicadas, pendientes o fallidas en la base de `DATABASE_DIRECT_URL`. No cambia nada. |
+| `pnpm --filter @anticipate/api db:migrate:resolve --rolled-back <carpeta>` | Marca como deshecha una migración que falló, para que `migrate deploy` la vuelva a intentar (ver «Si una migración falla»). |
 | `pnpm db:check-drift` | Sale con código 0 si aplicar todas las migraciones da exactamente el esquema; si no, muestra la diferencia y sale con 2. |
 | `pnpm db:seed` | Datos de ejemplo para desarrollo local (se niega a correr contra una base remota o con `NODE_ENV=production`). |
+
+Los scripts `db:*` de la raíz (`db:generate`, `db:migrate`, `db:seed` y `db:check-drift`) llaman a
+los de `@anticipate/api` con `--fail-if-no-match`; `db:migrate:create`, `db:migrate:deploy`,
+`db:migrate:status` y `db:migrate:resolve` se llaman con `pnpm --filter @anticipate/api`.
 
 `< /dev/null` hace que `migrate dev` corra sin preguntar. Nunca se usa `prisma migrate reset`: para
 empezar de cero en local, `pnpm infra:reset && pnpm infra:up` y luego `pnpm db:migrate`. Si
@@ -125,4 +148,39 @@ Las migraciones corren una sola vez por despliegue, antes de actualizar la API, 
 `prisma migrate deploy` y `DATABASE_DIRECT_URL` (el rol dueño de las tablas, sin pooler). Si fallan,
 el despliegue se detiene y la versión anterior sigue atendiendo: por eso cada migración tiene que ser
 compatible con el código que ya está corriendo (reglas 3 y 4). `migrate dev`, `db:seed` y
-`migrate reset` nunca corren fuera de local.
+`migrate reset` nunca corren fuera de local: la guarda de la CLI se niega.
+
+## Si una migración falla
+
+Una migración envuelta en `BEGIN … COMMIT` (regla 1) que falla no deja nada a medias: PostgreSQL
+deshace toda la transacción. Pero Prisma anota el intento en `_prisma_migrations` como fallido
+(`finished_at` vacío) y todo `migrate deploy` posterior se detiene con `P3009` hasta resolverlo. Los
+pasos, con la `DATABASE_DIRECT_URL` del entorno afectado:
+
+1. **Ver cuál falló y por qué.** `pnpm --filter @anticipate/api db:migrate:status` muestra la
+   migración fallida. Prisma 7.10 no muestra la causa: con una migración envuelta informa solo
+   `current transaction is aborted, commands ignored until end of transaction block`, y la columna
+   `logs` de `_prisma_migrations` queda vacía. La causa real (por ejemplo, `check constraint … is
+   violated by some row`) está en el log de PostgreSQL (en Neon, en el monitoreo del proyecto), justo
+   antes de esa línea. Si no se ve, se reproduce con `psql -v ON_ERROR_STOP=1 -f migration.sql`
+   contra una rama de Neon o una copia local, nunca contra la base del entorno: si esta vez no
+   falla, su `COMMIT` la aplicaría sin que Prisma la anote. Un `lock_timeout` o un
+   `statement_timeout` es transitorio; una CHECK que no valida por filas existentes o un error del
+   SQL no lo son.
+2. **Confirmar que no quedó nada.** En una migración envuelta basta con comprobar que su primer
+   cambio no existe (por ejemplo, que la CHECK o la columna nueva no está). Una migración con
+   `CREATE INDEX CONCURRENTLY` no va en una transacción: si falla, deja el índice `INVALID`; se
+   borra con `DROP INDEX CONCURRENTLY IF EXISTS <índice>` antes de seguir.
+3. **Marcarla como deshecha.**
+   `pnpm --filter @anticipate/api db:migrate:resolve --rolled-back <carpeta>` (por ejemplo,
+   `20260926152054_stored_files_key_check`). Nunca `--applied`: diría que el cambio está en la base
+   cuando la transacción lo deshizo.
+4. **Corregir la causa.** Si fue transitoria, no hay nada que cambiar. Si son datos (filas que no
+   cumplen una CHECK nueva), se corrigen con un script revisado antes de reintentar. Si es el SQL de
+   la migración y esa migración no llegó a aplicarse bien en ningún entorno, se corrige su
+   `migration.sql` en un commit; si ya se aplicó en otro entorno, no se edita (paso 6 del flujo): se
+   corrige con una migración nueva y la fallida se resuelve como deshecha en el entorno donde falló.
+5. **Volver a aplicar.** `pnpm --filter @anticipate/api db:migrate:deploy` (o el despliegue) y
+   `db:migrate:status` debe mostrar la base al día.
+
+Nunca se usa `prisma migrate reset` para salir de una migración fallida: borra la base.

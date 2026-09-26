@@ -91,7 +91,7 @@ Los defectos de las plantillas (5432 y 4000) son los de CI.
 | `GET /health` | Liveness: el proceso responde |
 | `GET /health/readiness` | Readiness: base, almacenamiento y backlog del outbox; 503 si algo falla |
 
-La imagen de producción (`apps/api/Dockerfile`) se arma con `turbo prune` y `pnpm deploy --prod`: sin devDependencies, sin el CLI de Prisma y sin root. Las migraciones nunca corren al arrancar. Se aplican antes con la etapa `migrate` de la misma imagen, que exige la URL directa de la base:
+La imagen de producción (`apps/api/Dockerfile`) se arma con `turbo prune` y `pnpm deploy --prod`: sin devDependencies, sin el CLI de Prisma y sin root. Las migraciones nunca corren al arrancar. Se aplican antes con la etapa `migrate` de la misma imagen, que exige la URL directa de la base y se niega a migrar por el pooler de Neon (`apps/api/prisma/cli-guard.ts`; si una migración falla, ver «Si una migración falla» en `docs/database/migrations.md`):
 
 ```bash
 docker build -f apps/api/Dockerfile --target migrate -t anticipate-api-migrate:local .

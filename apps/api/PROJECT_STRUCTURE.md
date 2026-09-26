@@ -14,7 +14,7 @@ El árbol es el del paso 2 completo. No se crean carpetas vacías: cada carpeta 
 apps/api/
 ├── package.json · nest-cli.json · tsconfig.json · tsconfig.build.json · vitest.config.ts
 ├── .env.example · .env.test.example · prisma.config.ts · Dockerfile
-├── prisma/               schema.prisma, migrations/ y seed.ts
+├── prisma/               schema.prisma, migrations/, seed.ts y cli-guard.ts (la guarda de la CLI)
 ├── src/
 │   ├── main.ts · app.module.ts · app.setup.ts · architecture.test.ts
 │   ├── bootstrap/        contrato HTTP de la app: prefijo, versión, helmet, CORS, parser de JSON,
@@ -106,6 +106,11 @@ Cada archivo de `src` (salvo `infrastructure/prisma/generated/` y los `*.test.ts
 | 9 | `bootstrap` | `bootstrap/**`, `common/**`, `@nestjs/*` y los paquetes de arranque (`helmet`, `nestjs-pino`, `pino`, `pino-http`, `express`, `node:*`) |
 | 10 | `health-checks` | su carpeta, `bootstrap/constants.ts` (las rutas de las sondas), `common/**`, `infrastructure/**` (indicadores), `modules/*/index.ts`, `@nestjs/*` |
 | — | `root` | todo, salvo la regla 6 |
+
+Además de las capas, la regla 11 revisa el código (`src` y `prisma/seed.ts`) contra `schema.prisma`: ninguna
+operación única de Prisma (`findUnique`, `findUniqueOrThrow`, `update`, `delete`, `upsert` ni un `connect`,
+`connectOrCreate`, `set`, `disconnect`, `update` o `upsert` anidado) usa el campo de un `@@unique` parcial.
+Prisma lo expone en el `WhereUniqueInput`, pero ignora el predicado y toca una fila cualquiera (D40).
 
 Además, Biome prohíbe importar `randomUUID` (y el import por defecto o de namespace de `node:crypto`) en
 `src/**`, salvo en `common/utils/correlation-id.ts`: las claves primarias son UUIDv7 y salen de `newId()`

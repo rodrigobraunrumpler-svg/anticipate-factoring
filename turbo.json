@@ -10,7 +10,7 @@
     "test": { "dependsOn": ["^build"] },
     "dev": { "cache": false, "persistent": true },
     "db:generate": {
-      "inputs": ["prisma/**/*.prisma", "prisma.config.ts"],
+      "inputs": ["prisma/**/*.prisma", "prisma.config.ts", "prisma/cli-guard.ts"],
       "outputs": ["src/infrastructure/prisma/generated/**"]
     },
     "test:integration": { "dependsOn": ["^build", "db:generate"], "cache": false },

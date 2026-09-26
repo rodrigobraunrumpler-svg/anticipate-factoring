@@ -20,7 +20,8 @@ export default defineConfig({
         extends: true,
         test: {
           name: 'api:unit',
-          include: ['src/**/*.test.ts'],
+          // prisma/: la guarda de la CLI (cli-guard.ts), que prisma.config.ts no puede exportar.
+          include: ['src/**/*.test.ts', 'prisma/**/*.test.ts'],
           environment: 'node',
         },
       },
