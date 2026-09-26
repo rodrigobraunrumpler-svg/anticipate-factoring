@@ -115,12 +115,18 @@ function targetOf(variable: string, value: string): Target {
   if ([...url.searchParams.keys()].some((key) => key.toLowerCase() === 'dbname')) {
     throw new Error(`${variable} lleva el parámetro dbname: la base va solo en la ruta de la URL.`)
   }
+  // Prisma se conecta al primer segmento de la ruta (y con el primero vacío, a la base del usuario):
+  // con `/a/b` o `//b` la base real no es la que se leería aquí, así que la ruta tiene un solo segmento.
+  const multiSegment = () =>
+    new Error(`${variable} tiene una ruta con más de un segmento: la base va sola, como /nombre.`)
+  if (/^\/[^/]*\//.test(url.pathname)) throw multiSegment()
   let database: string
   try {
     database = decodeURIComponent(url.pathname.slice(1))
   } catch {
     throw new Error(`${variable} tiene un nombre de base ilegible.`)
   }
+  if (database.includes('/')) throw multiSegment()
   return { hosts, database }
 }
 

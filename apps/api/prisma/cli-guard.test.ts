@@ -179,6 +179,37 @@ describe('resolveCliDatasource', () => {
     ).toContain('SHADOW_DATABASE_URL')
   })
 
+  it.each([
+    // Prisma se conecta al primer segmento de la ruta, y con el primero vacío a la base del usuario:
+    // las dos sombras de abajo vaciarían `anticipate` aunque su nombre "parezca" otro.
+    ['postgresql://anticipate:anticipate@localhost:5433/anticipate/shadow'],
+    ['postgresql://anticipate:anticipate@localhost:5433//anticipate_shadow'],
+    ['postgresql://anticipate:anticipate@localhost:5433/anticipate%2Fshadow'],
+  ])('una sombra con más de un segmento en la ruta se rechaza: %s', (shadow) => {
+    expect(
+      errorOf(() =>
+        resolveCliDatasource(
+          { DATABASE_DIRECT_URL: LOCAL, SHADOW_DATABASE_URL: shadow },
+          argv('migrate', 'diff', '--from-migrations', 'prisma/migrations', '--exit-code'),
+        ),
+      ),
+    ).toMatch(/SHADOW_DATABASE_URL tiene una ruta con más de un segmento/)
+  })
+
+  it('la URL que se migra tampoco puede tener más de un segmento en la ruta', () => {
+    expect(
+      errorOf(() =>
+        resolveCliDatasource(
+          {
+            DATABASE_DIRECT_URL: 'postgresql://anticipate:anticipate@127.0.0.1:5433/anticipate/x',
+            SHADOW_DATABASE_URL: LOCAL_SHADOW,
+          },
+          argv('migrate', 'deploy'),
+        ),
+      ),
+    ).toMatch(/DATABASE_DIRECT_URL tiene una ruta con más de un segmento/)
+  })
+
   it('la sombra escrita con otro nombre del mismo servidor local sigue siendo la misma base (localhost y 127.0.0.1)', () => {
     // El caso que vació la base principal: db:check-drift con 127.0.0.1 en la directa y localhost
     // en la sombra, las dos en el mismo PostgreSQL.
