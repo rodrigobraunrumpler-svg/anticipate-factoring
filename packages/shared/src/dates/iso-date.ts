@@ -1,5 +1,11 @@
 import { TZDate } from '@date-fns/tz'
-import { addDays, differenceInCalendarDays, format, formatISO, isValid, parseISO } from 'date-fns'
+// Función por función y no desde el índice de date-fns, que carga todos sus módulos (architecture.test.ts).
+import { addDays } from 'date-fns/addDays'
+import { differenceInCalendarDays } from 'date-fns/differenceInCalendarDays'
+import { format } from 'date-fns/format'
+import { formatISO } from 'date-fns/formatISO'
+import { isValid } from 'date-fns/isValid'
+import { parseISO } from 'date-fns/parseISO'
 import { z } from 'zod'
 import { VALIDATION_MESSAGES_ES } from '../errors/index.js'
 

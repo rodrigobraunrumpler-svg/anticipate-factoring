@@ -204,6 +204,14 @@ describe('arquitectura de shared', () => {
     expect(bad, JSON.stringify(bad, null, 2)).toEqual([])
   })
 
+  it('date-fns se importa función por función (`date-fns/addDays`), nunca desde su índice', () => {
+    // El índice de date-fns carga sus ~250 módulos: unos 0,9 s en Node, que paga el arranque de la API
+    // y de cada worker del lector de XML (D53). Función por función, unos 0,1 s. En los bundles del
+    // navegador da igual (el tree shaking deja lo mismo).
+    const bad = packages.filter((p) => p.specifier === 'date-fns')
+    expect(bad, JSON.stringify(bad, null, 2)).toEqual([])
+  })
+
   it('toda dependencia de runtime está asignada a algún dominio', () => {
     const assigned = new Set([...PACKAGES_FOR_ALL, ...Object.values(ALLOWED_PACKAGES).flat()])
     expect([...DEPENDENCIES].filter((d) => !assigned.has(d))).toEqual([])
