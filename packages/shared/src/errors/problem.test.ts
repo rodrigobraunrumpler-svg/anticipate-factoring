@@ -69,6 +69,10 @@ describe('códigos de la recepción de solicitudes y de las reglas nuevas', () =
         'El archivo factura.xml tiene el mismo nombre que otro XML adjunto (sin contar mayúsculas ni extensión). Cambia el nombre de uno de ellos, y el de su PDF si lo adjuntas, para que cada factura tenga un nombre distinto.',
       ],
       [
+        createProblem('INVALID_FILE_NAME', { data: { file: 'factura…', max: 255 } }),
+        'El archivo «factura…» tiene un nombre que no podemos usar: debe tener hasta 255 caracteres y ningún carácter de control. Cámbiale el nombre y vuelve a adjuntarlo.',
+      ],
+      [
         createProblem('INVOICE_ALREADY_IN_OPEN_REQUEST', { data: { invoice: 'F001-123' } }),
         'La factura F001-123 ya está en otra solicitud en curso.',
       ],
@@ -133,8 +137,30 @@ describe('problemSchema', () => {
     for (const problem of produced) expect(problemSchema.parse(problem)).toEqual(problem)
   })
 
-  it('acepta el nombre de archivo tal como llegó, aunque venga vacío', () => {
-    const p = createProblem('INVALID_PDF', { file: '', data: { file: '' } })
+  it('acepta en file un nombre de archivo tal como llegó', () => {
+    for (const name of ['Factura ñandú (1).pdf', 'comillas "dobles".xml', 'a'.repeat(255)]) {
+      const p = createProblem('INVALID_PDF', { file: name, data: { file: name } })
+      expect(problemSchema.parse(p)).toEqual(p)
+    }
+  })
+
+  it('rechaza en file lo que no es un nombre de archivo (isFileName): la API nunca lo repite', () => {
+    for (const name of [
+      '',
+      'a'.repeat(256),
+      'a\u0000.pdf',
+      'a\n.pdf',
+      'a\u0085.pdf',
+      'a\uD800.pdf',
+    ]) {
+      const p = createProblem('INVALID_PDF', { file: name })
+      expect(problemSchema.safeParse(p).success, JSON.stringify(name)).toBe(false)
+    }
+  })
+
+  it('acepta INVALID_FILE_NAME, que muestra el nombre en params y no lleva file', () => {
+    const p = createProblem('INVALID_FILE_NAME', { data: { file: 'x…', max: 255 } })
+    expect(p).not.toHaveProperty('file')
     expect(problemSchema.parse(p)).toEqual(p)
   })
 

@@ -46,6 +46,8 @@ export const MESSAGES_ES: Readonly<Record<ProblemCode, string>> = {
   PDF_WITHOUT_XML: 'El PDF {file} no corresponde a ninguna factura XML adjunta.',
   DUPLICATE_FILE_NAME:
     'El archivo {file} tiene el mismo nombre que otro XML adjunto (sin contar mayúsculas ni extensión). Cambia el nombre de uno de ellos, y el de su PDF si lo adjuntas, para que cada factura tenga un nombre distinto.',
+  INVALID_FILE_NAME:
+    'El archivo «{file}» tiene un nombre que no podemos usar: debe tener hasta {max} caracteres y ningún carácter de control. Cámbiale el nombre y vuelve a adjuntarlo.',
   INVOICE_ALREADY_IN_OPEN_REQUEST: 'La factura {invoice} ya está en otra solicitud en curso.',
   CONSENT_VERSION_OUTDATED:
     'Los términos o la política de privacidad cambiaron. Recarga la página y acéptalos de nuevo.',

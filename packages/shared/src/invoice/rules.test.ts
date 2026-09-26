@@ -316,6 +316,24 @@ describe('validateInvoices · reglas del conjunto', () => {
     )
   })
 
+  it('invoiceFiles solo admite nombres de archivo (isFileName): cada problema los repite', () => {
+    const one = [invoice({ currency: 'EUR' })]
+    for (const name of ['', 'x'.repeat(256), 'a\u0000.xml', 'a\n.xml', 'a\uD800.xml']) {
+      expect(
+        () => validateInvoices(one, ctx, { invoiceFiles: [name] }),
+        JSON.stringify(name),
+      ).toThrow('invoiceFiles trae un nombre que no es de archivo (isFileName)')
+    }
+    // El mensaje nunca repite el nombre, que puede ser enorme.
+    expect(() => validateInvoices(one, ctx, { invoiceFiles: ['x'.repeat(16_000)] })).toThrow(
+      /^invoiceFiles trae un nombre que no es de archivo \(isFileName\)$/,
+    )
+    const accepted = validateInvoices(one, ctx, { invoiceFiles: ['a'.repeat(255)] })
+    expect(accepted.problems.map((p) => [p.code, p.file])).toEqual([
+      ['CURRENCY_NOT_ALLOWED', 'a'.repeat(255)],
+    ])
+  })
+
   it('las facturas con problemas no cuentan para el máximo', () => {
     const r = validateInvoices(
       [invoice(), invoice({ seriesNumber: 'F001-9', paymentTerms: 'Contado', installments: [] })],

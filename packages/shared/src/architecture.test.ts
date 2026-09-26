@@ -8,10 +8,11 @@ const SRC = fileURLToPath(new URL('.', import.meta.url))
 /**
  * Qué dominios puede importar cada dominio. Agregar un dominio = agregar su fila; el test falla si
  * falta. `errors` es la capa base (códigos, `Problem` y todo el texto en español) y cualquier dominio
- * puede importarla; ella no importa a nadie, así que no crea ciclos.
+ * puede importarla; ella solo importa `text` (qué es un nombre de archivo en `Problem.file`), que no
+ * importa a nadie, así que no crea ciclos.
  */
 const ALLOWED: Record<string, readonly string[]> = {
-  errors: [],
+  errors: ['text'],
   identity: ['errors'],
   money: ['errors'],
   dates: ['errors'],

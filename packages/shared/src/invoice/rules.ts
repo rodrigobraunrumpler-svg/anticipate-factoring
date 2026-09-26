@@ -11,6 +11,7 @@ import {
   percentOf,
   toCents,
 } from '../money/index.js'
+import { isFileName } from '../text/index.js'
 import { DOCUMENT_TYPE, documentTypeName } from './codes.js'
 import type { ParsedInvoice } from './parsed-invoice.js'
 
@@ -307,7 +308,8 @@ export type ValidateInvoicesOptions = {
    * Nombre del archivo de cada factura, en el mismo orden que `invoices` (un nombre por factura). Con
    * él, cada problema de una factura (sus reglas y `DUPLICATE_INVOICE`) lleva en `file` el archivo
    * que la trajo, así se marca la fila exacta aunque dos archivos traigan la misma serie-número. Los
-   * problemas del conjunto no son de un archivo y no lo llevan.
+   * problemas del conjunto no son de un archivo y no lo llevan. Cada nombre tiene que cumplir
+   * `isFileName` de `text`, como exige `problemSchema`: se repite en cada problema de su factura.
    */
   invoiceFiles?: readonly string[]
 }
@@ -326,8 +328,9 @@ const emptyResult = (problems: Problem[]): ValidationResult => ({
  * de cada factura y del conjunto (así el proveedor sabe cuáles quitar), pero no calcula un máximo,
  * porque la solicitud no se puede crear así.
  *
- * Lanza `RangeError` si `options.invoiceFiles` no trae exactamente un nombre por factura: es un error
- * de quien llama, nunca un problema de las facturas.
+ * Lanza `RangeError` si `options.invoiceFiles` no trae exactamente un nombre por factura, o si alguno
+ * no es un nombre de archivo (`isFileName`): es un error de quien llama, nunca un problema de las
+ * facturas. Quien recibe los archivos rechaza antes esos nombres, con su propio problema.
  */
 export function validateInvoices(
   invoices: readonly ParsedInvoice[],
@@ -339,6 +342,10 @@ export function validateInvoices(
     throw new RangeError(
       `invoiceFiles trae ${invoiceFiles.length} nombres para ${invoices.length} facturas`,
     )
+  }
+  // El mensaje no repite el nombre: puede ser justamente uno sin tope.
+  if (invoiceFiles !== undefined && !invoiceFiles.every(isFileName)) {
+    throw new RangeError('invoiceFiles trae un nombre que no es de archivo (isFileName)')
   }
   const xmlFileCount = Math.max(options.xmlFileCount ?? invoices.length, invoices.length)
   if (xmlFileCount === 0) {
