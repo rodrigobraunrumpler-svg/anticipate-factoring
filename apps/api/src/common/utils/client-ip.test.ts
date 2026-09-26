@@ -1,16 +1,21 @@
 import type { Request } from 'express'
 import { describe, expect, it } from 'vitest'
-import { resolveClientIp, UNKNOWN_CLIENT_IP } from './client-ip.js'
+import { diagnoseClientIp, resolveClientIp, UNKNOWN_CLIENT_IP } from './client-ip.js'
 
 function requestFrom(options: {
   ip?: string
   remoteAddress?: string
-  cloudflareIp?: string
+  cloudflareIp?: string | undefined
+  forwardedFor?: string
 }): Request {
+  const headers: Record<string, string | undefined> = {
+    'cf-connecting-ip': options.cloudflareIp,
+    'x-forwarded-for': options.forwardedFor,
+  }
   return {
     ip: options.ip,
     socket: { remoteAddress: options.remoteAddress },
-    get: (name: string) => (name === 'cf-connecting-ip' ? options.cloudflareIp : undefined),
+    get: (name: string) => headers[name.toLowerCase()],
   } as unknown as Request
 }
 
@@ -51,5 +56,92 @@ describe('resolveClientIp', () => {
       UNKNOWN_CLIENT_IP,
     )
     expect(resolveClientIp(requestFrom({ ip: '::ffff:127.0.0.1' }), false)).toBe('::ffff:127.0.0.1')
+  })
+})
+
+describe('diagnoseClientIp', () => {
+  const PROXY = '172.17.0.1'
+  const EDGE = '172.70.1.1'
+  const VISITOR = '190.40.0.1'
+
+  it('confiando en Cloudflare, una petición con CF-Connecting-IP válida está bien', () => {
+    expect(
+      diagnoseClientIp(
+        requestFrom({
+          ip: PROXY,
+          remoteAddress: PROXY,
+          cloudflareIp: VISITOR,
+          forwardedFor: `${VISITOR}, ${EDGE}`,
+        }),
+        true,
+      ),
+    ).toBeNull()
+  })
+
+  it('confiando en Cloudflare, una petición que llega por un proxy sin CF-Connecting-IP válida es un aviso', () => {
+    for (const cloudflareIp of [undefined, 'no-es-una-ip']) {
+      expect(
+        diagnoseClientIp(
+          requestFrom({ ip: PROXY, remoteAddress: PROXY, cloudflareIp, forwardedFor: VISITOR }),
+          true,
+        ),
+      ).toBe('cloudflare-header-missing')
+    }
+    // Sin proxy ni Cloudflare (la sonda de Docker desde 127.0.0.1): nada que avisar.
+    expect(
+      diagnoseClientIp(requestFrom({ ip: '127.0.0.1', remoteAddress: '127.0.0.1' }), true),
+    ).toBeNull()
+  })
+
+  it('sin confiar en Cloudflare, si Cloudflare informa otra IP que la que se usa, es un aviso', () => {
+    // El borde de Cloudflare o el proxy como IP de todos los visitantes.
+    expect(
+      diagnoseClientIp(
+        requestFrom({
+          ip: EDGE,
+          remoteAddress: PROXY,
+          cloudflareIp: VISITOR,
+          forwardedFor: `${VISITOR}, ${EDGE}`,
+        }),
+        false,
+      ),
+    ).toBe('cloudflare-header-ignored')
+    expect(
+      diagnoseClientIp(
+        requestFrom({ ip: PROXY, remoteAddress: PROXY, cloudflareIp: VISITOR }),
+        false,
+      ),
+    ).toBe('cloudflare-header-ignored')
+    // TRUST_PROXY que incluye los rangos de Cloudflare: la IP usada es la del visitante.
+    expect(
+      diagnoseClientIp(
+        requestFrom({
+          ip: VISITOR,
+          remoteAddress: PROXY,
+          cloudflareIp: VISITOR,
+          forwardedFor: `${VISITOR}, ${EDGE}`,
+        }),
+        false,
+      ),
+    ).toBeNull()
+  })
+
+  it('sin confiar en Cloudflare, un X-Forwarded-For que trust proxy no usó es un aviso', () => {
+    // req.ip es la del socket: Express ignoró la cabecera porque el proxy no es de confianza.
+    expect(
+      diagnoseClientIp(
+        requestFrom({ ip: PROXY, remoteAddress: PROXY, forwardedFor: VISITOR }),
+        false,
+      ),
+    ).toBe('forwarded-for-untrusted')
+    // Proxy de confianza: req.ip sale de la cabecera.
+    expect(
+      diagnoseClientIp(
+        requestFrom({ ip: VISITOR, remoteAddress: PROXY, forwardedFor: VISITOR }),
+        false,
+      ),
+    ).toBeNull()
+    // Conexión directa, sin proxy.
+    expect(diagnoseClientIp(requestFrom({ ip: VISITOR, remoteAddress: VISITOR }), false)).toBeNull()
   })
 })

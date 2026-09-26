@@ -16,11 +16,12 @@ import {
   createCorsOptions,
   createHelmetOptions,
   HEALTH_PATHS,
+  isHealthRequest,
   setupSwagger,
 } from '#/bootstrap/index.js'
 import type { AppConfig } from '#/common/config/index.js'
 import { bodyParserErrorMiddleware } from '#/common/middleware/body-parser-error.middleware.js'
-import { CorrelationIdMiddleware } from '#/common/middleware/index.js'
+import { CorrelationIdMiddleware, createClientIpProbe } from '#/common/middleware/index.js'
 import { validationExceptionFactory } from '#/common/validation/validation-exception.factory.js'
 
 /**
@@ -35,9 +36,10 @@ export const NEST_APP_OPTIONS = {
 } as const satisfies NestApplicationOptions
 
 /**
- * Contrato HTTP compartido por producción y tests: logger, proxies de confianza, id de correlación,
- * helmet, CORS, parser de JSON, prefijo `api` (sin las sondas), versión en la URI, tiempos del servidor
- * y Swagger fuera de producción. No crea la app ni abre el puerto: eso lo hace `main.ts`.
+ * Contrato HTTP compartido por producción y tests: logger, proxies de confianza (y el aviso si no
+ * coinciden con lo que llega), id de correlación, helmet, CORS, parser de JSON, prefijo `api` (sin las
+ * sondas), versión en la URI, tiempos del servidor y Swagger fuera de producción. No crea la app ni
+ * abre el puerto: eso lo hace `main.ts`.
  */
 export function setupApp(app: NestExpressApplication, config: AppConfig): NestExpressApplication {
   app.useLogger(app.get(Logger))
@@ -45,6 +47,13 @@ export function setupApp(app: NestExpressApplication, config: AppConfig): NestEx
   app.set('query parser', 'simple')
   const correlationId = new CorrelationIdMiddleware()
   app.use(correlationId.use.bind(correlationId))
+  app.use(
+    createClientIpProbe({
+      trustProxy: config.trustProxy,
+      trustCloudflareHeaders: config.trustCloudflareHeaders,
+      skip: isHealthRequest,
+    }),
+  )
   app.use(helmet(createHelmetOptions(config.nodeEnv)))
   app.enableCors(createCorsOptions(config.corsOrigins))
   configureBodyParsers(app)

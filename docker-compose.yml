@@ -80,6 +80,12 @@ services:
       NODE_ENV: production
       PORT: "4000"
       LOG_LEVEL: info
+      # En producción estas tres son obligatorias. Esta imagen no tiene proxy ni Cloudflare delante y
+      # ningún navegador le envía solicitudes (el captcha no es real): un origen https de relleno y la
+      # IP de la conexión.
+      CORS_ORIGINS: https://anticipate.test
+      TRUST_PROXY: "false"
+      TRUST_CLOUDFLARE_HEADERS: "false"
       DATABASE_URL: postgresql://anticipate:anticipate@postgres:5432/anticipate
       DATABASE_DIRECT_URL: postgresql://anticipate:anticipate@postgres:5432/anticipate
       S3_ENDPOINT: http://s3mock:9090

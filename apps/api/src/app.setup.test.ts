@@ -1,9 +1,9 @@
 import type { Server } from 'node:http'
-import { Body, Controller, Get, HttpCode, Inject, Module, Post, Req } from '@nestjs/common'
+import { Body, Controller, Get, HttpCode, Inject, Logger, Module, Post, Req } from '@nestjs/common'
 import type { NestExpressApplication } from '@nestjs/platform-express'
 import type { Request } from 'express'
 import request from 'supertest'
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { APP_CONFIG, type AppConfig } from '#/common/config/index.js'
 import { SubmitThrottle } from '#/common/decorators/submit-throttle.decorator.js'
 import { CLOCK, type Clock } from '#/common/time/clock.js'
@@ -255,6 +255,57 @@ describe('límites de peticiones', () => {
     } finally {
       await behindProxy.close()
       await direct.close()
+    }
+  })
+})
+
+describe('aviso de la IP del cliente mal configurada', () => {
+  it('detrás de un proxy que TRUST_PROXY no reconoce, o con Cloudflare ignorado, registra un error una vez por problema', async () => {
+    const errors = vi.spyOn(Logger.prototype, 'error')
+    const app = await createTestApp({ env: { TRUST_PROXY: 'false' }, extraModules: [ProbeModule] })
+    try {
+      const http = app.getHttpServer()
+      const misconfigurations = () =>
+        errors.mock.calls
+          .map(([context]) => (context as { misconfiguration?: string }).misconfiguration)
+          .filter((kind) => kind !== undefined)
+      // Las sondas no se revisan: el monitoreo puede llegar por el proxy sin pasar por Cloudflare.
+      await request(http).get('/health').set('x-forwarded-for', '203.0.113.7').expect(200)
+      expect(misconfigurations()).toEqual([])
+      for (let n = 0; n < 3; n += 1) {
+        const res = await request(http)
+          .get('/api/v1/probe')
+          .set('x-forwarded-for', '203.0.113.7')
+          .expect(200)
+        expect(res.body.data.clientIp).toMatch(/127\.0\.0\.1$/)
+      }
+      await request(http).get('/api/v1/probe').set('cf-connecting-ip', '203.0.113.8').expect(200)
+      await request(http).get('/api/v1/probe').set('cf-connecting-ip', '203.0.113.9').expect(200)
+      expect(misconfigurations()).toEqual(['forwarded-for-untrusted', 'cloudflare-header-ignored'])
+      expect(JSON.stringify(errors.mock.calls)).not.toContain('203.0.113')
+    } finally {
+      errors.mockRestore()
+      await app.close()
+    }
+  })
+
+  it('con la IP bien resuelta no registra nada', async () => {
+    const errors = vi.spyOn(Logger.prototype, 'error')
+    const app = await createTestApp({
+      env: { TRUST_CLOUDFLARE_HEADERS: 'true' },
+      extraModules: [ProbeModule],
+    })
+    try {
+      const res = await request(app.getHttpServer())
+        .get('/api/v1/probe')
+        .set('cf-connecting-ip', '203.0.113.8')
+        .set('x-forwarded-for', '203.0.113.8')
+        .expect(200)
+      expect(res.body.data.clientIp).toBe('203.0.113.8')
+      expect(errors).not.toHaveBeenCalled()
+    } finally {
+      errors.mockRestore()
+      await app.close()
     }
   })
 })

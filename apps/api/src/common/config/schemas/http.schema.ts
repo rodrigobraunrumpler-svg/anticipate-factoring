@@ -1,8 +1,18 @@
 import { isIP } from 'node:net'
 import { z } from 'zod'
-import { flag, integer } from './env-values.js'
+import { integer } from './env-values.js'
+import type { RuntimeEnvironment } from './runtime.schema.js'
 
 const NAMED_PROXY_SUBNETS = new Set(['loopback', 'linklocal', 'uniquelocal'])
+
+/**
+ * Valores de desarrollo de las variables HTTP. Fuera de producción se usan si la variable falta; en
+ * producción cada una es obligatoria (`refineHttp`): con estos valores, detrás del proxy de STACK §12,
+ * el navegador bloquea los envíos de la landing real y todos los visitantes comparten la IP del proxy.
+ */
+export const DEVELOPMENT_CORS_ORIGINS = ['http://localhost:4321', 'http://localhost:3000'] as const
+export const DEVELOPMENT_TRUST_PROXY = 'loopback'
+export const DEVELOPMENT_TRUST_CLOUDFLARE_HEADERS = false
 
 /** Un origen exacto: esquema, host y puerto, sin ruta ni barra final, como lo envía el navegador. */
 function isExactOrigin(value: string): boolean {
@@ -46,11 +56,28 @@ function parseTrustProxy(raw: string): false | number | string | null {
   return entries.every(isTrustedProxyEntry) ? entries.join(',') : null
 }
 
-/** Transporte HTTP: CORS, proxies de confianza y tiempos del servidor de Node. */
+/** `localhost`, un subdominio de `.localhost`, una IP de loopback (`127.0.0.0/8`, `::1`) o la IP sin especificar. */
+function isLocalHostname(hostname: string): boolean {
+  const host = hostname.replace(/^\[(.*)\]$/, '$1').toLowerCase()
+  if (host === 'localhost' || host.endsWith('.localhost')) return true
+  if (host === '::1' || host === '::' || host === '0.0.0.0') return true
+  return isIP(host) === 4 && host.startsWith('127.')
+}
+
+/** Un origen que un navegador de la landing o del admin publicados puede enviar: https y no local. */
+function isPublishedOrigin(origin: string): boolean {
+  const url = new URL(origin)
+  return url.protocol === 'https:' && !isLocalHostname(url.hostname)
+}
+
+/**
+ * Transporte HTTP: CORS, proxies de confianza y tiempos del servidor de Node. `CORS_ORIGINS`,
+ * `TRUST_PROXY` y `TRUST_CLOUDFLARE_HEADERS` no tienen valor por defecto en el esquema: fuera de
+ * producción `toHttpConfig` usa los de desarrollo y en producción `refineHttp` exige cada una.
+ */
 export const httpShape = {
   CORS_ORIGINS: z
     .string()
-    .default('http://localhost:4321,http://localhost:3000')
     .transform((value, ctx) => {
       const origins = parseOrigins(value)
       if (origins === null) {
@@ -62,10 +89,10 @@ export const httpShape = {
         return z.NEVER
       }
       return origins
-    }),
+    })
+    .optional(),
   TRUST_PROXY: z
     .string()
-    .default('loopback')
     .transform((value, ctx) => {
       const trustProxy = parseTrustProxy(value)
       if (trustProxy === null) {
@@ -77,8 +104,12 @@ export const httpShape = {
         return z.NEVER
       }
       return trustProxy
-    }),
-  TRUST_CLOUDFLARE_HEADERS: flag(false),
+    })
+    .optional(),
+  TRUST_CLOUDFLARE_HEADERS: z
+    .enum(['true', 'false'], { error: 'debe ser true o false' })
+    .transform((value) => value === 'true')
+    .optional(),
   SERVER_REQUEST_TIMEOUT_MS: integer({ fallback: 120_000, min: 1_000, max: 3_600_000 }),
   SERVER_HEADERS_TIMEOUT_MS: integer({ fallback: 20_000, min: 1_000, max: 600_000 }),
   SERVER_KEEP_ALIVE_TIMEOUT_MS: integer({ fallback: 65_000, min: 1_000, max: 600_000 }),
@@ -87,7 +118,20 @@ export const httpShape = {
 const httpSchema = z.object(httpShape)
 export type HttpEnvironment = z.output<typeof httpSchema>
 
-export function refineHttp(env: HttpEnvironment, ctx: z.RefinementCtx): void {
+/** Por qué cada variable HTTP sin valor por defecto es obligatoria en producción. */
+const PRODUCTION_REQUIRED_MESSAGES = {
+  CORS_ORIGINS:
+    'es obligatoria en producción: los orígenes de la landing y del admin (https://anticipate.pe,https://admin.anticipate.pe); con los de desarrollo el navegador bloquea cada envío',
+  TRUST_PROXY:
+    'es obligatoria en producción: los proxies delante de la API (docs/STACK.md, sección 12); con el valor de desarrollo detrás de un proxy todos los visitantes comparten su IP (un solo cupo del límite de envíos y la IP del proxy en los consentimientos)',
+  TRUST_CLOUDFLARE_HEADERS:
+    'es obligatoria en producción: true si el servidor solo acepta tráfico de Cloudflare, false si no (docs/STACK.md, sección 12)',
+} as const
+
+export function refineHttp(
+  env: HttpEnvironment & Pick<RuntimeEnvironment, 'NODE_ENV'>,
+  ctx: z.RefinementCtx,
+): void {
   if (env.SERVER_HEADERS_TIMEOUT_MS > env.SERVER_REQUEST_TIMEOUT_MS) {
     ctx.addIssue({
       code: 'custom',
@@ -95,13 +139,29 @@ export function refineHttp(env: HttpEnvironment, ctx: z.RefinementCtx): void {
       message: 'debe ser menor o igual que SERVER_REQUEST_TIMEOUT_MS',
     })
   }
+  if (env.NODE_ENV !== 'production') return
+  // Un olvido aquí no se ve: la API arranca, la readiness sale bien y la prueba de humo (sin
+  // navegador) pasa, pero el navegador bloquea los envíos o todos los visitantes comparten una IP.
+  for (const key of ['CORS_ORIGINS', 'TRUST_PROXY', 'TRUST_CLOUDFLARE_HEADERS'] as const) {
+    if (env[key] === undefined) {
+      ctx.addIssue({ code: 'custom', path: [key], message: PRODUCTION_REQUIRED_MESSAGES[key] })
+    }
+  }
+  if (env.CORS_ORIGINS !== undefined && !env.CORS_ORIGINS.every(isPublishedOrigin)) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['CORS_ORIGINS'],
+      message:
+        'en producción cada origen debe ser https y no puede ser localhost ni una IP de loopback: son los de la landing y el admin publicados (https://anticipate.pe)',
+    })
+  }
 }
 
 export function toHttpConfig(env: HttpEnvironment) {
   return {
-    corsOrigins: env.CORS_ORIGINS,
-    trustProxy: env.TRUST_PROXY,
-    trustCloudflareHeaders: env.TRUST_CLOUDFLARE_HEADERS,
+    corsOrigins: env.CORS_ORIGINS ?? [...DEVELOPMENT_CORS_ORIGINS],
+    trustProxy: env.TRUST_PROXY ?? DEVELOPMENT_TRUST_PROXY,
+    trustCloudflareHeaders: env.TRUST_CLOUDFLARE_HEADERS ?? DEVELOPMENT_TRUST_CLOUDFLARE_HEADERS,
     server: {
       requestTimeoutMs: env.SERVER_REQUEST_TIMEOUT_MS,
       headersTimeoutMs: env.SERVER_HEADERS_TIMEOUT_MS,

@@ -32,8 +32,7 @@ async function bootstrap(): Promise<void> {
     throw error
   }
   const logger = new Logger('Bootstrap')
-  for (const line of startupBannerLines({ nodeEnv: config.nodeEnv, port: config.port }))
-    logger.log(line)
+  for (const line of startupBannerLines(config)) logger.log(line)
 }
 
 bootstrap().catch((error: unknown) => {

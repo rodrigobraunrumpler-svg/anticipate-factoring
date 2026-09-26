@@ -23,12 +23,18 @@ const PRODUCTION = {
   ...REQUIRED_ONLY,
   NODE_ENV: 'production',
   CORS_ORIGINS: 'https://anticipate.pe,https://admin.anticipate.pe',
+  TRUST_PROXY: '172.17.0.1',
+  TRUST_CLOUDFLARE_HEADERS: 'true',
   S3_ENDPOINT: 'https://cuenta.r2.cloudflarestorage.com',
   MAIL_TRANSPORT: 'brevo',
   BREVO_API_KEY: 'xkeysib-clave-de-produccion',
   ADMIN_BASE_URL: 'https://admin.anticipate.pe',
   TURNSTILE_SECRET_KEY: '0x4AAAAAAAclave-de-produccion',
+  TURNSTILE_EXPECTED_HOSTNAME: 'anticipate.pe',
 }
+
+const PRODUCTION_ORIGIN_MESSAGE =
+  'en producción cada origen debe ser https y no puede ser localhost ni una IP de loopback: son los de la landing y el admin publicados (https://anticipate.pe)'
 
 const TURNSTILE_TEST_KEY_MESSAGE =
   'es una clave de prueba de Cloudflare: en producción usa la clave secreta del panel de Turnstile'
@@ -39,6 +45,38 @@ const PRODUCTION_GUARDS: ReadonlyArray<readonly [key: string, value: string, mes
   ...TURNSTILE_TEST_SECRET_KEYS.map(
     (key) => ['TURNSTILE_SECRET_KEY', key, TURNSTILE_TEST_KEY_MESSAGE] as const,
   ),
+  // Los valores de desarrollo, un origen http o uno local: el navegador bloquearía cada envío de la
+  // landing real sin que la API registre nada.
+  ...[
+    'http://localhost:4321,http://localhost:3000',
+    'https://anticipate.pe,http://localhost:4321',
+    'http://anticipate.pe',
+    'https://localhost',
+    'https://landing.localhost:8443',
+    'https://127.0.0.1',
+    'https://127.8.9.10:4321',
+    'https://[::1]:4321',
+    'https://0.0.0.0',
+  ].map(
+    (origins) =>
+      ['CORS_ORIGINS', `https://anticipate.pe,${origins}`, PRODUCTION_ORIGIN_MESSAGE] as const,
+  ),
+]
+
+/** Variables sin valor por defecto en producción: su valor de desarrollo rompe la API detrás de un proxy. */
+const PRODUCTION_REQUIRED: ReadonlyArray<readonly [key: string, message: string]> = [
+  [
+    'CORS_ORIGINS',
+    'es obligatoria en producción: los orígenes de la landing y del admin (https://anticipate.pe,https://admin.anticipate.pe); con los de desarrollo el navegador bloquea cada envío',
+  ],
+  [
+    'TRUST_PROXY',
+    'es obligatoria en producción: los proxies delante de la API (docs/STACK.md, sección 12); con el valor de desarrollo detrás de un proxy todos los visitantes comparten su IP (un solo cupo del límite de envíos y la IP del proxy en los consentimientos)',
+  ],
+  [
+    'TRUST_CLOUDFLARE_HEADERS',
+    'es obligatoria en producción: true si el servidor solo acepta tráfico de Cloudflare, false si no (docs/STACK.md, sección 12)',
+  ],
 ]
 
 /** Los problemas que reporta `parseConfig`; falla si la configuración es válida. */
@@ -329,17 +367,81 @@ describe('parseConfig', () => {
     expect(problemsOf({ ...PRODUCTION, [key]: value })).toEqual([`${key}: ${message}`])
   })
 
+  it.each(PRODUCTION_REQUIRED)('producción exige %s explícita', (key, message) => {
+    expect(problemsOf({ ...PRODUCTION, [key]: undefined })).toEqual([`${key}: ${message}`])
+    // Vacía cuenta como ausente.
+    expect(problemsOf({ ...PRODUCTION, [key]: '  ' })).toEqual([`${key}: ${message}`])
+  })
+
+  it('producción acepta cualquier decisión explícita sobre los proxies, también la de desarrollo', () => {
+    for (const [trustProxy, expected] of [
+      ['loopback', 'loopback'],
+      ['false', false],
+      ['1', 1],
+      ['10.0.0.0/8', '10.0.0.0/8'],
+    ] as const) {
+      for (const trustCloudflareHeaders of ['true', 'false']) {
+        const config = parseConfig({
+          ...PRODUCTION,
+          TRUST_PROXY: trustProxy,
+          TRUST_CLOUDFLARE_HEADERS: trustCloudflareHeaders,
+        })
+        expect(config.trustProxy).toBe(expected)
+        expect(config.trustCloudflareHeaders).toBe(trustCloudflareHeaders === 'true')
+      }
+    }
+  })
+
+  it('fuera de producción CORS_ORIGINS, TRUST_PROXY y TRUST_CLOUDFLARE_HEADERS conservan su valor de desarrollo', () => {
+    for (const NODE_ENV of ['development', 'test']) {
+      const config = parseConfig({ ...REQUIRED_ONLY, NODE_ENV })
+      expect(config.corsOrigins).toEqual(['http://localhost:4321', 'http://localhost:3000'])
+      expect(config.trustProxy).toBe('loopback')
+      expect(config.trustCloudflareHeaders).toBe(false)
+    }
+  })
+
+  it('TURNSTILE_EXPECTED_HOSTNAME se compara en minúsculas, como lo devuelve Cloudflare', () => {
+    expect(
+      parseConfig({ ...PRODUCTION, TURNSTILE_EXPECTED_HOSTNAME: 'Anticipate.PE' }).turnstile
+        .expectedHostname,
+    ).toBe('anticipate.pe')
+  })
+
+  it('en producción TURNSTILE_EXPECTED_HOSTNAME es el host de uno de los CORS_ORIGINS', () => {
+    // El widget corre en la misma página que envía el formulario: su host es el del origen.
+    expect(
+      parseConfig({ ...PRODUCTION, TURNSTILE_EXPECTED_HOSTNAME: 'admin.anticipate.pe' }).turnstile
+        .expectedHostname,
+    ).toBe('admin.anticipate.pe')
+    for (const hostname of ['anticipate.com', 'www.anticipate.pe', 'anticipate.pe.']) {
+      expect(problemsOf({ ...PRODUCTION, TURNSTILE_EXPECTED_HOSTNAME: hostname })).toEqual([
+        'TURNSTILE_EXPECTED_HOSTNAME: debe ser el host de uno de los CORS_ORIGINS (el de la landing): el widget corre en la página que envía el formulario, y con otro host cada envío recibe 403',
+      ])
+    }
+    // Sin la variable no se compara el host, como en desarrollo.
+    expect(
+      parseConfig({ ...PRODUCTION, TURNSTILE_EXPECTED_HOSTNAME: undefined }).turnstile
+        .expectedHostname,
+    ).toBeUndefined()
+  })
+
   it('producción acepta la infraestructura local de la imagen (pnpm api:image)', () => {
+    // Los mismos valores que el servicio `api` de docker-compose.yml.
     const config = parseConfig({
       ...REQUIRED_ONLY,
       NODE_ENV: 'production',
+      CORS_ORIGINS: 'https://anticipate.test',
+      TRUST_PROXY: 'false',
+      TRUST_CLOUDFLARE_HEADERS: 'false',
       S3_ENDPOINT: 'http://s3mock:9090',
       MAIL_TRANSPORT: 'smtp',
       SMTP_HOST: 'mailpit',
       TURNSTILE_SECRET_KEY: 'local-image-smoke-test-not-a-secret',
     })
     expect(config.storage.endpoint).toBe('http://s3mock:9090')
-    expect(config.corsOrigins).toEqual(['http://localhost:4321', 'http://localhost:3000'])
+    expect(config.corsOrigins).toEqual(['https://anticipate.test'])
+    expect(config.trustProxy).toBe(false)
   })
 
   it('devuelve la configuración congelada: nadie la cambia después de arrancar', () => {
