@@ -146,7 +146,7 @@
 1. **Dos envíos simultáneos con la misma factura.** Solo uno recibe 201. El otro recibe 422 `BUSINESS_RULES_VIOLATED` con `INVOICE_ALREADY_IN_OPEN_REQUEST`, sea por la verificación previa (`findInvoiceKeysInOpenRequests`) o por el índice único parcial `invoices_open_invoice_key_key`, que resuelve la carrera (`invoice-conflict`). Los objetos que el perdedor ya subió se borran y sus filas de `stored_files` quedan `DELETED`. Una factura de una solicitud `WITHDRAWN` o `REJECTED` queda libre; una `DISBURSED` sigue bloqueada para siempre. Tests: Tarea 12 (carrera por HTTP) y Tarea 7 (cascada del estado a la factura).
 2. **La transacción falla después de subir los archivos.** Si la base cae entre la subida y el `COMMIT`, la API responde 503 `SERVICE_UNAVAILABLE`, borra los objetos (`deleteQuietly`) y marca `DELETED` las filas de lo que borró (`releaseFiles`). Lo que no pudo borrar queda `PENDING`. El barrido lo pasa a `DELETED` al vencer `STORAGE_ORPHAN_GRACE_MINUTES` y el borrado diferido elimina el objeto. No queda en el bucket ningún objeto sin fila ni ninguna fila `ATTACHED` sin solicitud. Tests: Tarea 12 (fallo en la transacción) y Tarea 13 (barrido y borrado diferido).
 3. **Un cuerpo de 200 MB y un XML grande.** Un cuerpo que declara más de `UPLOAD_MAX_BODY_BYTES` recibe 413 `PAYLOAD_TOO_LARGE` antes de leerse: no se consulta el captcha ni corre multer. Un envío sin `Content-Length` (chunked) recibe 411 `LENGTH_REQUIRED`. Un XML mayor que `UPLOAD_MAX_XML_BYTES` dentro de un cuerpo pequeño recibe 422 con `XML_TOO_LARGE` y el nombre del archivo en `file`. Un PDF mayor que `UPLOAD_MAX_PDF_BYTES` recibe `FILE_TOO_LARGE`. El lector XML nunca procesa más de `maxLength`. Tests: Tarea 12, con los topes bajados por configuración.
-4. **Brevo responde 429, 500 o no responde.** La solicitud ya está guardada y el proveedor ya tiene su 201: el correo sale después. Un error reintentable (`RetryableEmailError`, o `HANDLER_TIMEOUT` si se agota `OUTBOX_HANDLER_TIMEOUT_MS`) reprograma el evento con `outboxBackoff` o con el `retryAfterSeconds` del proveedor. Un error permanente, un payload inválido o un agregado inexistente lo pasan a `DEAD_LETTER` con su código. Al agotar `maxAttempts` también queda en `DEAD_LETTER`, y la readiness lo informa. Nunca se envía dos veces: la clave de idempotencia de Brevo es el id del evento y el arriendo se renueva antes de cada envío. Tests: Tarea 10, y Tarea 13 para la readiness.
+4. **Brevo responde 429, 500 o no responde.** La solicitud ya está guardada y el proveedor ya tiene su 201: el correo sale después. Un error reintentable (`RetryableEmailError`, o `HANDLER_TIMEOUT` si se agota `OUTBOX_HANDLER_TIMEOUT_MS`) reprograma el evento con `outboxBackoff` o con el `retryAfterSeconds` del proveedor. Un error permanente, un payload inválido o un agregado inexistente lo pasan a `DEAD_LETTER` con su código. Al agotar `maxAttempts` también queda en `DEAD_LETTER`, y la readiness lo informa. Nunca se envía dos veces: la clave de idempotencia de Brevo es el id del evento y el arriendo se renueva antes de cada envío. Al vencer el tope, la `AbortSignal` que el publicador le pasa al handler, y que el handler le pasa a `send`, corta el envío, y la fila no se suelta hasta que el handler termina. Tests: Tarea 10, Tarea 12 para los handlers y Tarea 13 para la readiness.
 5. **La API se reinicia con eventos en `PROCESSING`.** Al vencer `lock_expires_at`, otra instancia los reclama con un token nuevo. Las escrituras tardías de la instancia anterior devuelven `false`, se descartan y quedan en el log. Un evento `PUBLISHED` nunca se reenvía ni se modifica (trigger `outbox_events_guard`). El apagado deja de programar pasadas, espera la que está en curso y recién entonces se cierra el pool. Una versión que no conoce un handler no reclama sus filas. Tests: Tarea 10, y Tarea 7 para el trigger.
 6. **Idempotencia y reintentos.**
    - El mismo `Idempotency-Key` con la misma huella (formulario normalizado + archivos) devuelve el mismo 201, con el mismo `publicCode` y `Idempotent-Replayed: true`, sin subir ni guardar nada.
@@ -17321,6 +17321,14 @@ git commit -m "feat(api): lista pública de pagadores por capas con sobre y cach
 
 ### Task 10: Outbox y correo
 
+> **Estado tras ejecutarla** (`969accf` y la corrección `7808690`): el código de esta sección es el de la primera versión. La revisión cambió estos contratos, y lo vigente es lo del repositorio:
+> - `OutboxEventHandler.handle(event, signal: AbortSignal)` y `EmailSenderPort.send(email, signal: AbortSignal)`, con `signal` obligatoria. El tope del handler llega hasta el adaptador, y el publicador espera a que el handler termine antes de escribir el resultado y soltar la fila.
+> - `claimDue` ya no cuenta el intento. `renewLease` pasó a ser `startAttempt({ id, leaseToken, leaseSeconds }): Promise<string | null>`, que cuenta el intento al empezar y cambia el token del reclamo por el del intento. Se suman `releaseClaims({ claims: readonly OutboxClaim[] }): Promise<number>` y `type OutboxClaim = { id; leaseToken }`.
+> - `PublishOutboxEventsUseCase.execute({ maxBatches?, signal? })`, donde `signal` es el apagado del scheduler.
+> - `FakeEmailSender.send(email, signal)` empieza con `signal.throwIfAborted()`, como un adaptador real.
+>
+> La Tarea 12 ya está escrita con estas firmas.
+
 **Files:**
 - Create: `apps/api/src/modules/notifications/application/ports/email-sender.port.ts`, `apps/api/src/modules/notifications/index.ts`
 - Create: `apps/api/src/modules/outbox/domain/types/outbox-event.types.ts`, `apps/api/src/modules/outbox/domain/exceptions/outbox-failure-code.ts`, `apps/api/src/modules/outbox/domain/services/outbox-backoff.ts`, `apps/api/src/modules/outbox/domain/services/outbox-message.ts`, `apps/api/src/modules/outbox/application/ports/outbox-event-repository.port.ts`, `apps/api/src/modules/outbox/application/ports/outbox-event-handler.port.ts`, `apps/api/src/modules/outbox/application/services/outbox-wake-up.signal.ts`, `apps/api/src/modules/outbox/application/use-cases/publish-outbox-events.use-case.ts`, `apps/api/src/modules/outbox/application/use-cases/purge-published-events.use-case.ts`, `apps/api/src/modules/outbox/outbox.module.ts`, `apps/api/src/modules/outbox/index.ts`
@@ -22143,20 +22151,28 @@ git commit -m "feat(api): admisión de facturas y lectores de condiciones del pa
   - Tarea 6: `PrismaService` (`#/infrastructure/prisma/prisma.service.js`), `newId(): string` (`#/infrastructure/prisma/id.js`), `isUniqueViolation(error: unknown, indexName: string): boolean` que compara `meta.driverAdapterError.cause.constraint.index` (`#/infrastructure/prisma/prisma-errors.js`), `isoDateToDb(date: IsoDate): Date` y `decimalToAmount(value: Prisma.Decimal): Amount` (`#/infrastructure/prisma/db-values.js`), el cliente generado (`Prisma`, `PrismaClient` en `#/infrastructure/prisma/generated/client.js`), la secuencia `advance_request_code_seq`, los índices `advance_requests_idempotency_key_key` e `invoices_open_invoice_key_key`, `legal_representatives(supplier_id, dni)` único (`supplierId_dni`); `createTestPrisma(): { prisma: PrismaClient; close(): Promise<void> }`, `truncateAll(prisma)`, `createPayer(prisma)` (SEA: RUC `20131312955`, 80 %, 15 días, PEN y USD).
   - Tarea 7: las CHECK y triggers de la migración `integrity` (los tests de integración corren contra ellas).
   - Tarea 8: `FILE_STORAGE`, `FileStoragePort`, `PutFileInput`, `StoredObject` (`#/common/storage/index.js`), el módulo de almacenamiento global y `listKeys(prefix)` (`test/support/s3.ts`).
-  - Tarea 10: de `#/modules/outbox/index.js`, `NewOutboxMessage`, `ClaimedOutboxEvent`, `OutboxEventHandler`, `OUTBOX_WAKE_UP`, `OutboxWakeUpSignal`, `PublishOutboxEventsUseCase` y `OutboxDeadLetterError(failureCode, message)` (propiedad `failureCode`), el error que un handler lanza para que el publicador marque `DEAD_LETTER` con ese código; de `#/modules/notifications/index.js`, `EMAIL_SENDER`, `EmailSenderPort`, `OutgoingEmail` con `to: { email: string; name?: string }`; `FakeEmailSender` con `sent`, `failNext` y `reset` (`#/infrastructure/notifications/index.js`); `insertOutboxMessages(tx: Prisma.TransactionClient, messages: readonly NewOutboxMessage[], { maxAttempts }): Promise<void>` (`#/infrastructure/prisma/repositories/outbox/outbox-rows.js`); `OutboxPublisherModule.forRoot({ imports, handlers, requiredHandlers })`, registrado en `app.module.ts` con listas vacías.
+  - Tarea 10 (firmas del código confirmado en `7808690`, que cambió las del texto original de la Tarea 10):
+    - De `#/modules/outbox/index.js`: `NewOutboxMessage`, `ClaimedOutboxEvent`, `OUTBOX_WAKE_UP`, `OutboxWakeUpSignal` y `OutboxDeadLetterError(failureCode, message)` (propiedad `failureCode`), el error que un handler lanza para que el publicador marque `DEAD_LETTER` con ese código.
+    - `interface OutboxEventHandler { readonly handler: string; handle(event: ClaimedOutboxEvent, signal: AbortSignal): Promise<{ providerMessageId: string | null }> }`. `signal` es obligatoria: el publicador la aborta al vencer `OUTBOX_HANDLER_TIMEOUT_MS` (medido desde que empezó el handler) con un motivo que clasifica `HANDLER_TIMEOUT`. El handler se la pasa a `EmailSenderPort.send` y, si aborta, rechaza con `signal.reason`. El publicador no escribe el resultado ni suelta la fila hasta que `handle` termina, así un reintento nunca se superpone con un envío vivo. Si el handler ignora la señal y no termina mientras el arriendo lo cubre, se abandona y la fila se retoma recién al vencer el arriendo.
+    - `PublishOutboxEventsUseCase` con `execute({ maxBatches?: number; signal?: AbortSignal } = {}): Promise<PublishOutboxEventsResult>` (`{ published; retried; deadLettered; leaseLost }`). Esa `signal` es el apagado del scheduler, no el tope del handler. Los tests llaman `execute()`.
+    - El puerto del repositorio del outbox ya no tiene `renewLease`: `claimDue` reserva sin contar el intento, `startAttempt({ id, leaseToken, leaseSeconds }): Promise<string | null>` lo cuenta y cambia el token del reclamo por el del intento, y `releaseClaims({ claims: readonly OutboxClaim[] }): Promise<number>` devuelve lo reclamado que no empezó (`type OutboxClaim = { id: string; leaseToken: string }`, exportado en el barril). Solo lo usa el publicador; esta tarea no lo llama.
+    - De `#/modules/notifications/index.js`: `EMAIL_SENDER`, `OutgoingEmail` con `to: { email: string; name?: string }` y `interface EmailSenderPort { send(email: OutgoingEmail, signal: AbortSignal): Promise<{ providerMessageId: string | null }> }`, con `signal` obligatoria: con la señal ya abortada el adaptador no abre conexión, y si aborta durante el envío corta y rechaza con `signal.reason`.
+    - `FakeEmailSender` con `sent`, `failNext(error, times = 1)` y `reset()` (`#/infrastructure/notifications/index.js`). Su `send(email, signal)` empieza con `signal.throwIfAborted()`, como un adaptador real: llamado sin señal lanza `TypeError`, que el publicador clasifica `UNEXPECTED` y reintenta.
+    - `insertOutboxMessages(tx: OutboxWriter, messages: readonly NewOutboxMessage[], { maxAttempts }): Promise<number>` (filas nuevas; `OutboxWriter = Pick<Prisma.TransactionClient, '$executeRaw'>`, así que el `tx` de una transacción interactiva sirve) en `#/infrastructure/prisma/repositories/outbox/outbox-rows.js`.
+    - `OutboxPublisherModule.forRoot({ imports, handlers, requiredHandlers })`, registrado en `app.module.ts` con listas vacías.
   - Tarea 11, en `modules/advance-requests`: `PayerConditions`, `PayerConditionsReaderPort.findActiveBySlug(slug)` y `PAYER_CONDITIONS_READER`; `LegalDocumentReaderPort.isCurrent(type, version)` y `LEGAL_DOCUMENT_READER`; `InvoiceIntakeService({ maxXmlBytes, maxPdfBytes }).evaluate({ payer, supplierRuc, today, requestedAmount, xmlFiles, pdfFiles }): InvoiceIntakeResult`; `UploadedFile`, `IntakeInvoice`, `InvoiceIntakeResult`; `NewAdvanceRequest`, `NewInvoice`, `NewInvoiceInstallment`, `NewConsent`, `ConsentType` (`domain/types/new-advance-request.ts`); `computeRequestFingerprint(form, files: FingerprintFile[]): string`, `FingerprintFile = { field: 'xml' | 'pdf'; originalname; sha256 }`, `sha256Hex(data)`; `storageKeys.invoiceXml(payerId, requestId, invoiceId)` y `storageKeys.invoicePdf(...)`; `buildAdvanceRequestCreatedEvent(input)` y `toAdvanceRequestCreatedOutboxPayload(event)`; `ADVANCE_REQUEST_OUTBOX_HANDLERS`, `AdvanceRequestOutboxHandler`, `advanceRequestOutboxDedupeKey(handler, eventId)`; `IdempotencyKeyReusedError()`; `PrismaPayerConditionsReader(prisma)` y `PrismaLegalDocumentReader(prisma)`.
 - Produces:
   - `#/common/utils/uuid.js`: `isUuid(value: string): boolean` (RFC 9562, versión 1 a 8).
   - `#/common/captcha/index.js`: `CaptchaVerificationInput = { token: string; remoteIp: string; idempotencyKey?: string }`, `CaptchaVerifierPort { verify(input): Promise<boolean> }`, `CAPTCHA_VERIFIER`, `CaptchaGuard`.
   - `#/common/middleware/content-length-limit.middleware.js`: `ContentLengthLimitMiddleware` (411 `LENGTH_REQUIRED`, 413 `PAYLOAD_TOO_LARGE`).
   - `#/infrastructure/captcha/turnstile/index.js`: `TurnstileModule` (provee y exporta `CAPTCHA_VERIFIER`), `TurnstileCaptchaVerifier(options: TurnstileOptions, fetchImpl?: typeof fetch)`, `TurnstileOptions = { secretKey: string; expectedHostname: string | undefined }`, `TURNSTILE_SITEVERIFY_URL`.
-  - `#/modules/advance-requests/index.js` (además de lo de la Tarea 11): `ReservedFile`, `CreateAdvanceRequestResult`, `AdvanceRequestRepositoryPort`, `ADVANCE_REQUEST_REPOSITORY`, `AdvanceRequestNotificationView`, `AdvanceRequestNotificationReaderPort`, `ADVANCE_REQUEST_NOTIFICATION_READER`, `SupplierConfirmationEmailHandler(reader, sender)`, `TeamAlertEmailHandler(reader, sender, { teamNotificationEmail, adminBaseUrl })`, `TeamAlertEmailOptions`. `AdvanceRequestsModule` se importa de `#/modules/advance-requests/advance-requests.module.js` (el barril no lo exporta, para no formar un ciclo con la persistencia).
+  - `#/modules/advance-requests/index.js` (además de lo de la Tarea 11): `ReservedFile`, `CreateAdvanceRequestResult`, `AdvanceRequestRepositoryPort`, `ADVANCE_REQUEST_REPOSITORY`, `AdvanceRequestNotificationView`, `AdvanceRequestNotificationReaderPort`, `ADVANCE_REQUEST_NOTIFICATION_READER`, `SupplierConfirmationEmailHandler(reader, sender)`, `TeamAlertEmailHandler(reader, sender, { teamNotificationEmail, adminBaseUrl })` (los dos implementan `OutboxEventHandler`: `handle(event, signal)` le pasa `signal` a `sender.send(email, signal)`), `TeamAlertEmailOptions`. `AdvanceRequestsModule` se importa de `#/modules/advance-requests/advance-requests.module.js` (el barril no lo exporta, para no formar un ciclo con la persistencia).
   - `CreateAdvanceRequestUseCase(deps: CreateAdvanceRequestDependencies).execute(input: CreateAdvanceRequestInput): Promise<CreateAdvanceRequestOutput>`, `MAX_CREATE_ATTEMPTS = 3`, `IdGenerator = () => string`.
   - `PrismaAdvanceRequestRepository(prisma, { transactionTimeoutMs, transactionMaxWaitMs, outboxMaxAttempts })`, `openInvoiceKeysQuery(keys): Prisma.Sql`, `IDEMPOTENCY_KEY_INDEX`, `OPEN_INVOICE_KEY_INDEX`; `PrismaAdvanceRequestNotificationReader(prisma)`; `AdvanceRequestsPersistenceModule` (exporta los cuatro tokens del módulo).
   - Test: `FakeCaptchaVerifier` (`valid`, `unavailable`, `calls`, `lastIdempotencyKey`, `reset()`) en `test/support/fakes.ts`; `ADVANCE_REQUESTS_PATH`, `FIXTURE_LEGAL_VERSIONS`, `validForm(overrides?)`, `invoiceXml(options?)`, `pdf()`, `newIdempotencyKey()`, `SubmitOptions`, `submitAdvanceRequest(app, options?)` y `ensureLegalDocumentVersions(prisma)` en `test/support/advance-request-fixtures.ts`.
   - Comportamiento: `POST /api/v1/advance-requests` según §5.7; filas de `stored_files` `PENDING` → `ATTACHED` (guardadas) o `DELETED` con `purge_after = now()` (liberadas), que la Tarea 13 barre y purga; dos filas de outbox por solicitud, publicadas por los handlers registrados.
 
-**Verificado en laboratorio** (fuera del repo: Prisma 7.10.0 y PostgreSQL 18.6 con la migración `init` de la Tarea 6; NestJS 12.1, @nestjs/swagger 12.0.2, Vitest 5.0.1, TypeScript 6.0.3, Biome 2.5.14). El caso de uso con el repositorio real: ocho envíos simultáneos de un RUC nuevo dan ocho solicitudes, un proveedor y un representante; dos envíos simultáneos con la misma clave dan el mismo código (el perdedor recibe el P2002 de `advance_requests_idempotency_key_key`, borra sus archivos y responde como reintento); dos con la misma factura dan un 201 y un 422; `openInvoiceKeysQuery` usa `Index Only Scan using invoices_open_invoice_key_key`; `ANY(${ids}::uuid[])` con un arreglo de JS funciona con el adaptador de `pg`. Los 41 tests unitarios de esta tarea pasan, y `tsc` y Biome no reportan nada.
+**Verificado en laboratorio** (fuera del repo: Prisma 7.10.0 y PostgreSQL 18.6 con la migración `init` de la Tarea 6; NestJS 12.1, @nestjs/swagger 12.0.2, Vitest 5.0.1, TypeScript 6.0.3, Biome 2.5.14). El caso de uso con el repositorio real: ocho envíos simultáneos de un RUC nuevo dan ocho solicitudes, un proveedor y un representante; dos envíos simultáneos con la misma clave dan el mismo código (el perdedor recibe el P2002 de `advance_requests_idempotency_key_key`, borra sus archivos y responde como reintento); dos con la misma factura dan un 201 y un 422; `openInvoiceKeysQuery` usa `Index Only Scan using invoices_open_invoice_key_key`; `ANY(${ids}::uuid[])` con un arreglo de JS funciona con el adaptador de `pg`. Los 41 tests unitarios de esta tarea pasan, y `tsc` y Biome no reportan nada. Después de la corrección de la Tarea 10 (`7808690`: `handle` y `send` reciben la `AbortSignal` del publicador), los handlers y su test se ajustaron y se comprobaron contra ese commit, con `tsc` y Biome limpios. Los tests de handlers pasaron de 6 a 8: los dos nuevos y la identidad de la señal en los de envío prueban que la del publicador llega a `send`, y fallan con un handler que la ignora aunque compile. Además, los dos handlers se publicaron con el `PublishOutboxEventsUseCase` real y `FakeEmailSender` (`{ published: 2 }`). En total son 43 tests unitarios.
 
 Dos decisiones de esta tarea:
 - **`newId` entra por constructor.** `application/**` no puede importar `infrastructure/**`, y el caso de uso necesita los ids antes de insertar (rutas de los archivos y filas reservadas). El módulo le pasa `newId` de `infrastructure/prisma/id.ts` como `IdGenerator`.
@@ -23080,21 +23096,31 @@ const event = (overrides: Partial<ClaimedOutboxEvent> = {}): ClaimedOutboxEvent 
   ...overrides,
 })
 
+/** Como los adaptadores reales: con la señal ya abortada no envía y rechaza con su motivo. */
 class RecordingSender implements EmailSenderPort {
   readonly sent: OutgoingEmail[] = []
-  async send(email: OutgoingEmail): Promise<{ providerMessageId: string | null }> {
+  readonly signals: AbortSignal[] = []
+  async send(
+    email: OutgoingEmail,
+    signal: AbortSignal,
+  ): Promise<{ providerMessageId: string | null }> {
+    signal.throwIfAborted()
     this.sent.push(email)
+    this.signals.push(signal)
     return { providerMessageId: `prueba-${this.sent.length}` }
   }
 }
 
 let view: AdvanceRequestNotificationView | null
 let sender: RecordingSender
+/** El tope del publicador: la señal que recibe `handle`. */
+let timeout: AbortController
 const reader: AdvanceRequestNotificationReaderPort = { findById: async () => view }
 
 beforeEach(() => {
   view = VIEW
   sender = new RecordingSender()
+  timeout = new AbortController()
 })
 
 async function failureCode(promise: Promise<unknown>): Promise<string> {
@@ -23115,7 +23141,9 @@ describe('SupplierConfirmationEmailHandler', () => {
   })
 
   it('envía la confirmación al contacto con la clave de idempotencia = id del evento', async () => {
-    await expect(handler().handle(event())).resolves.toEqual({ providerMessageId: 'prueba-1' })
+    await expect(handler().handle(event(), timeout.signal)).resolves.toEqual({
+      providerMessageId: 'prueba-1',
+    })
     const [email] = sender.sent
     expect(email).toMatchObject({
       to: { email: 'ana@proveedor.pe', name: 'Ana Pérez' },
@@ -23123,18 +23151,27 @@ describe('SupplierConfirmationEmailHandler', () => {
       idempotencyKey: EVENT_ID,
     })
     expect(email?.text).toContain('Monto solicitado: PEN 8000.00 · 2 facturas')
+    // El envío recibe la señal del publicador, no una propia: es la que lo corta al vencer el tope.
+    expect(sender.signals[0]).toBe(timeout.signal)
+  })
+
+  it('con el tope ya vencido no envía y rechaza con el motivo de la señal', async () => {
+    const reason = new Error('tope del handler')
+    timeout.abort(reason)
+    await expect(handler().handle(event(), timeout.signal)).rejects.toBe(reason)
+    expect(sender.sent).toEqual([])
   })
 
   it('una solicitud que no existe: AGGREGATE_NOT_FOUND y nada enviado', async () => {
     view = null
-    expect(await failureCode(handler().handle(event()))).toBe('AGGREGATE_NOT_FOUND')
+    expect(await failureCode(handler().handle(event(), timeout.signal))).toBe('AGGREGATE_NOT_FOUND')
     expect(sender.sent).toEqual([])
   })
 
   it('un evento de otro tipo: PAYLOAD_INVALID', async () => {
-    expect(await failureCode(handler().handle(event({ eventType: 'otro.evento' })))).toBe(
-      'PAYLOAD_INVALID',
-    )
+    expect(
+      await failureCode(handler().handle(event({ eventType: 'otro.evento' }), timeout.signal)),
+    ).toBe('PAYLOAD_INVALID')
   })
 })
 
@@ -23147,7 +23184,7 @@ describe('TeamAlertEmailHandler', () => {
 
   it('avisa al equipo con el enlace al admin', async () => {
     expect(handler().handler).toBe('email.team-alert')
-    await handler().handle(event({ handler: 'email.team-alert' }))
+    await handler().handle(event({ handler: 'email.team-alert' }), timeout.signal)
     const [email] = sender.sent
     expect(email).toMatchObject({
       to: { email: 'equipo@anticipate.local' },
@@ -23156,11 +23193,21 @@ describe('TeamAlertEmailHandler', () => {
     })
     expect(email?.html).toContain(`https://admin.anticipate.pe/advance-requests/${REQUEST_ID}`)
     expect(email?.text).toContain('20100070970')
+    expect(sender.signals[0]).toBe(timeout.signal)
+  })
+
+  it('con el tope ya vencido no envía y rechaza con el motivo de la señal', async () => {
+    const reason = new Error('tope del handler')
+    timeout.abort(reason)
+    await expect(
+      handler().handle(event({ handler: 'email.team-alert' }), timeout.signal),
+    ).rejects.toBe(reason)
+    expect(sender.sent).toEqual([])
   })
 
   it('una solicitud que no existe: AGGREGATE_NOT_FOUND', async () => {
     view = null
-    expect(await failureCode(handler().handle(event()))).toBe('AGGREGATE_NOT_FOUND')
+    expect(await failureCode(handler().handle(event(), timeout.signal))).toBe('AGGREGATE_NOT_FOUND')
   })
 })
 ```
@@ -23797,7 +23844,15 @@ export class SupplierConfirmationEmailHandler implements OutboxEventHandler {
     private readonly sender: EmailSenderPort,
   ) {}
 
-  async handle(event: ClaimedOutboxEvent): Promise<{ providerMessageId: string | null }> {
+  /**
+   * `signal` es el tope del publicador y llega hasta el envío: al vencer, `send` corta la conexión
+   * y rechaza con su motivo. El publicador no suelta la fila hasta que esto termina, así que un
+   * reintento nunca se superpone con este envío.
+   */
+  async handle(
+    event: ClaimedOutboxEvent,
+    signal: AbortSignal,
+  ): Promise<{ providerMessageId: string | null }> {
     const view = await loadNotificationView(this.notifications, event)
     const email = await renderAdvanceRequestConfirmation({
       contactName: view.contactFullName,
@@ -23808,13 +23863,16 @@ export class SupplierConfirmationEmailHandler implements OutboxEventHandler {
       invoiceCount: view.invoiceCount,
     })
     // La clave de idempotencia es el id de la fila: un reenvío tras un arriendo perdido no duplica.
-    return this.sender.send({
-      to: { email: view.contactEmail, name: view.contactFullName },
-      subject: email.subject,
-      html: email.html,
-      text: email.text,
-      idempotencyKey: event.id,
-    })
+    return this.sender.send(
+      {
+        to: { email: view.contactEmail, name: view.contactFullName },
+        subject: email.subject,
+        html: email.html,
+        text: email.text,
+        idempotencyKey: event.id,
+      },
+      signal,
+    )
   }
 }
 ```
@@ -23845,7 +23903,11 @@ export class TeamAlertEmailHandler implements OutboxEventHandler {
     private readonly options: TeamAlertEmailOptions,
   ) {}
 
-  async handle(event: ClaimedOutboxEvent): Promise<{ providerMessageId: string | null }> {
+  /** `signal` es el tope del publicador y llega hasta el envío, como en la confirmación. */
+  async handle(
+    event: ClaimedOutboxEvent,
+    signal: AbortSignal,
+  ): Promise<{ providerMessageId: string | null }> {
     const view = await loadNotificationView(this.notifications, event)
     const email = await renderNewAdvanceRequestAlert({
       publicCode: view.publicCode,
@@ -23857,19 +23919,22 @@ export class TeamAlertEmailHandler implements OutboxEventHandler {
       invoiceCount: view.invoiceCount,
       adminUrl: `${this.options.adminBaseUrl}/advance-requests/${view.id}`,
     })
-    return this.sender.send({
-      to: { email: this.options.teamNotificationEmail },
-      subject: email.subject,
-      html: email.html,
-      text: email.text,
-      idempotencyKey: event.id,
-    })
+    return this.sender.send(
+      {
+        to: { email: this.options.teamNotificationEmail },
+        subject: email.subject,
+        html: email.html,
+        text: email.text,
+        idempotencyKey: event.id,
+      },
+      signal,
+    )
   }
 }
 ```
 
 Run: `pnpm --filter @anticipate/api exec vitest run --project api:unit src/modules/advance-requests/application/use-cases src/modules/advance-requests/application/handlers`
-Expected: PASS, 20 tests (14 del caso de uso y 6 de los handlers).
+Expected: PASS, 22 tests (14 del caso de uso y 8 de los handlers).
 
 - [ ] **Step 5: Escribir el test de la presentación, que falla**
 
