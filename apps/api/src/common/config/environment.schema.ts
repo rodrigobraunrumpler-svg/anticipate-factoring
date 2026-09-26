@@ -8,7 +8,7 @@ import { outboxShape, refineOutbox } from './schemas/outbox.schema.js'
 import { runtimeShape } from './schemas/runtime.schema.js'
 import { storageShape } from './schemas/storage.schema.js'
 import { throttleShape } from './schemas/throttle.schema.js'
-import { uploadShape } from './schemas/upload.schema.js'
+import { refineUpload, uploadShape } from './schemas/upload.schema.js'
 import { xmlParserShape } from './schemas/xml-parser.schema.js'
 
 /**
@@ -45,6 +45,7 @@ export const environmentSchema = z.object(environmentShape).superRefine((env, ct
   refineDatabase(env, ctx)
   refineMail(env, ctx)
   refineCaptcha(env, ctx)
+  refineUpload(env, ctx)
   refineOutbox(env, ctx)
 })
 

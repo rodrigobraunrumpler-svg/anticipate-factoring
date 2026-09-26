@@ -132,6 +132,7 @@ describe('parseConfig', () => {
       turnstile: { secretKey: '1x0000000000000000000000000000000AA', expectedHostname: undefined },
       upload: {
         maxBodyBytes: 95_000_000,
+        maxInflightBytes: 190_000_000,
         maxPdfBytes: 10_485_760,
         maxXmlBytes: 1_048_576,
         maxFiles: 20,
@@ -341,6 +342,25 @@ describe('parseConfig', () => {
       ])
     },
   )
+
+  it('el presupuesto de cuerpos en memoria admite al menos un envío del tamaño máximo', () => {
+    expect(
+      problemsOf({
+        ...REQUIRED_ONLY,
+        UPLOAD_MAX_BODY_BYTES: '95000000',
+        UPLOAD_MAX_INFLIGHT_BYTES: '94999999',
+      }),
+    ).toEqual([
+      'UPLOAD_MAX_INFLIGHT_BYTES: debe ser al menos UPLOAD_MAX_BODY_BYTES: si no, un envío del tamaño máximo nunca entraría',
+    ])
+    expect(
+      parseConfig({
+        ...REQUIRED_ONLY,
+        UPLOAD_MAX_BODY_BYTES: '95000000',
+        UPLOAD_MAX_INFLIGHT_BYTES: '95000000',
+      }).upload.maxInflightBytes,
+    ).toBe(95_000_000)
+  })
 
   it('las cabeceras no pueden esperar más que la petición entera', () => {
     expect(problemsOf({ ...REQUIRED_ONLY, SERVER_HEADERS_TIMEOUT_MS: '130000' })).toEqual([

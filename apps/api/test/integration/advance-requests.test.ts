@@ -16,6 +16,10 @@ import {
   CORRELATION_ID_HEADER,
   IDEMPOTENT_REPLAYED_HEADER,
 } from '#/common/constants/http-headers.constants.js'
+import {
+  INFLIGHT_BODY_BUDGET,
+  type InflightBodyBudget,
+} from '#/common/interceptors/inflight-body-budget.js'
 import type { WorkerThreadsInvoiceXmlParser } from '#/infrastructure/invoice-xml/worker-threads/index.js'
 import { FakeEmailSender } from '#/infrastructure/notifications/index.js'
 import { PrismaService } from '#/infrastructure/prisma/index.js'
@@ -801,6 +805,57 @@ describe('POST /api/v1/advance-requests · límites', () => {
     expect(status).toBe(411)
     expect(apiErrorEnvelopeSchema.parse(JSON.parse(body)).code).toBe('LENGTH_REQUIRED')
     expect(captcha.calls).toBe(0)
+  })
+
+  it('con el presupuesto de cuerpos en memoria lleno: 503 con Retry-After después del captcha, sin leer el cuerpo; al liberarse, el siguiente entra', async () => {
+    await withApp(
+      { UPLOAD_MAX_BODY_BYTES: '200000', UPLOAD_MAX_INFLIGHT_BYTES: '300000' },
+      async (small) => {
+        const budget = small.get<InflightBodyBudget>(INFLIGHT_BODY_BUDGET)
+        const server = small.getHttpServer()
+        await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+        const { port } = server.address() as AddressInfo
+        // Un envío lento: declara 200 000 bytes y manda solo el comienzo. Pasa el captcha y reserva.
+        const slow = httpRequest({
+          host: '127.0.0.1',
+          port,
+          method: 'POST',
+          path: ADVANCE_REQUESTS_PATH,
+          headers: {
+            'content-type': 'multipart/form-data; boundary=lento',
+            'content-length': '200000',
+            'x-turnstile-token': 'token-de-prueba',
+            'idempotency-key': newIdempotencyKey(),
+          },
+        })
+        slow.on('error', () => undefined)
+        slow.write('--lento\r\nContent-Disposition: form-data; name="form"\r\n\r\n{')
+        for (let n = 0; n < 400 && budget.reservedBytes === 0; n += 1) {
+          await new Promise((resolve) => setTimeout(resolve, 5))
+        }
+        expect(budget.reservedBytes).toBe(200_000)
+        expect(captcha.calls).toBe(1)
+
+        // No cabe (200 000 + ~150 000 > 300 000): 503 sin llegar a leer el cuerpo ni al caso de uso.
+        const big = await submitAdvanceRequest(small, {
+          pdf: [[Buffer.alloc(150_000, 0x20), 'F001-123.pdf']],
+        })
+        expectError(big, 503, 'SERVICE_UNAVAILABLE')
+        expect(big.headers['retry-after']).toBe('30')
+        expect(big.headers['cache-control']).toBe('no-store')
+        expect(captcha.calls).toBe(2)
+        expect(await db.prisma.advanceRequest.count()).toBe(0)
+
+        // El envío lento corta: su reserva se libera y un envío normal entra.
+        slow.destroy()
+        for (let n = 0; n < 400 && budget.reservedBytes !== 0; n += 1) {
+          await new Promise((resolve) => setTimeout(resolve, 5))
+        }
+        expect(budget.reservedBytes).toBe(0)
+        expectCreated(await submitAdvanceRequest(small))
+        expect(budget.reservedBytes).toBe(0)
+      },
+    )
   })
 
   it('más archivos que el máximo: 400 TOO_MANY_FILES', async () => {

@@ -38,8 +38,9 @@ import {
 
 /**
  * Único endpoint público de escritura. El orden lo pone Nest: `ContentLengthLimitMiddleware`
- * (módulo), `AppThrottlerGuard` (global, con `@SubmitThrottle()`), `CaptchaGuard`, multer, el pipe
- * de `form`, `@IdempotencyKey()` y el caso de uso.
+ * (módulo), `AppThrottlerGuard` (global, con `@SubmitThrottle()`), `CaptchaGuard`, la reserva del
+ * cuerpo en el presupuesto de memoria y multer (`MultipartFilesInterceptor`), el pipe de `form`,
+ * `@IdempotencyKey()` y el caso de uso.
  */
 @AdvanceRequestsApiTags()
 @Controller({ path: 'advance-requests', version: '1' })

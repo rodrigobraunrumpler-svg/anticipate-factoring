@@ -3,15 +3,21 @@ import {
   type ExecutionContext,
   Inject,
   Injectable,
+  Logger,
   mixin,
   type NestInterceptor,
   type Type,
 } from '@nestjs/common'
 import type { Request, RequestHandler, Response } from 'express'
 import multer from 'multer'
-import type { Observable } from 'rxjs'
+import { finalize, type Observable } from 'rxjs'
 import { APP_CONFIG, type AppConfig } from '#/common/config/index.js'
 import { type ApiError, apiError } from '#/common/exceptions/index.js'
+import { declaredContentLength } from '#/common/utils/content-length.js'
+import { INFLIGHT_BODY_BUDGET, type InflightBodyBudget } from './inflight-body-budget.js'
+
+/** Segundos que se piden esperar cuando el presupuesto de cuerpos en memoria está lleno. */
+export const INFLIGHT_BODY_RETRY_AFTER_SECONDS = 30
 
 /** Un campo de archivos permitido y cuántos archivos acepta. */
 export type MultipartFileField = { readonly name: string; readonly maxCount: number }
@@ -94,6 +100,12 @@ export function multipartErrorToApiError(error: unknown): ApiError {
  * Lee un `multipart/form-data` con multer en memoria (solo los campos de archivos de `fields`,
  * nombres de archivo en UTF-8) y deja los archivos en `request.files` y los campos de texto en
  * `request.body`. Una solicitud que no es multipart recibe 400 `MALFORMED_MULTIPART`.
+ *
+ * Antes de leer, reserva el `Content-Length` en el presupuesto de cuerpos en memoria del proceso
+ * (`INFLIGHT_BODY_BUDGET`, `UPLOAD_MAX_INFLIGHT_BYTES`): sin tamaño declarado, 411
+ * `LENGTH_REQUIRED`; si no cabe, 503 `SERVICE_UNAVAILABLE` con `Retry-After`, sin leer un byte. La
+ * reserva dura mientras los archivos siguen en memoria: hasta que termina el caso de uso (o antes, si
+ * la lectura falla o el cliente corta a mitad del cuerpo).
  */
 export function MultipartFilesInterceptor(
   fields: readonly MultipartFileField[],
@@ -104,8 +116,12 @@ export function MultipartFilesInterceptor(
   @Injectable()
   class MultipartFilesMixinInterceptor implements NestInterceptor {
     private readonly readMultipart: RequestHandler
+    private readonly logger = new Logger('MultipartFilesInterceptor')
 
-    constructor(@Inject(APP_CONFIG) config: AppConfig) {
+    constructor(
+      @Inject(APP_CONFIG) config: AppConfig,
+      @Inject(INFLIGHT_BODY_BUDGET) private readonly budget: InflightBodyBudget,
+    ) {
       this.readMultipart = multer({
         storage: multer.memoryStorage(),
         limits: checkedLimits(limitsFrom(config)),
@@ -120,13 +136,50 @@ export function MultipartFilesInterceptor(
       if (!request.is('multipart/form-data')) {
         throw apiError('MALFORMED_MULTIPART', 'la solicitud no es multipart/form-data')
       }
-      await new Promise<void>((resolve, reject) => {
-        this.readMultipart(request, response, (error?: unknown) => {
-          if (error === undefined || error === null) resolve()
-          else reject(multipartErrorToApiError(error))
-        })
+      const release = this.reserve(request, response)
+      let reading = true
+      // Respaldo: si la conexión se cierra durante la lectura, la reserva se libera aunque multer no
+      // avise. Después de leer, la libera el fin del caso de uso, que es cuando se sueltan los archivos.
+      response.once('close', () => {
+        if (reading) release()
       })
-      return next.handle()
+      try {
+        await new Promise<void>((resolve, reject) => {
+          this.readMultipart(request, response, (error?: unknown) => {
+            if (error === undefined || error === null) resolve()
+            else reject(multipartErrorToApiError(error))
+          })
+        })
+      } catch (error) {
+        release()
+        throw error
+      } finally {
+        reading = false
+      }
+      return next.handle().pipe(finalize(release))
+    }
+
+    /** Reserva el `Content-Length` o responde 411 (sin tamaño) o 503 (no cabe). */
+    private reserve(request: Request, response: Response): () => void {
+      const declared = declaredContentLength(request)
+      if (declared === null) {
+        throw apiError('LENGTH_REQUIRED', 'multipart sin Content-Length válido')
+      }
+      const release = this.budget.tryReserve(declared)
+      if (release !== null) return release
+      this.logger.warn(
+        {
+          declaredBytes: declared,
+          reservedBytes: this.budget.reservedBytes,
+          maxInflightBytes: this.budget.maxBytes,
+        },
+        'Presupuesto de cuerpos en memoria lleno (UPLOAD_MAX_INFLIGHT_BYTES): el envío recibe 503 sin leerse',
+      )
+      response.setHeader('Retry-After', String(INFLIGHT_BODY_RETRY_AFTER_SECONDS))
+      throw apiError(
+        'SERVICE_UNAVAILABLE',
+        'presupuesto de cuerpos en memoria lleno (UPLOAD_MAX_INFLIGHT_BYTES)',
+      )
     }
   }
 

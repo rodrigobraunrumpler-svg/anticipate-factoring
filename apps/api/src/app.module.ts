@@ -10,6 +10,7 @@ import {
   type ExceptionTranslator,
 } from '#/common/filters/index.js'
 import { AppThrottlerGuard, createThrottlerOptions } from '#/common/guards/app-throttler.guard.js'
+import { InflightBodyBudgetModule } from '#/common/interceptors/inflight-body-budget.module.js'
 import { ResponseEnvelopeInterceptor } from '#/common/interceptors/response-envelope.interceptor.js'
 import { NotificationsInfrastructureModule } from '#/infrastructure/notifications/index.js'
 import { PrismaModule, translateDatabaseException } from '#/infrastructure/prisma/index.js'
@@ -44,6 +45,7 @@ export class AppModule {
         AppConfigModule.register(config),
         LoggerModule.forRoot(createPinoHttpOptions(config)),
         ThrottlerModule.forRoot(createThrottlerOptions(config.throttle)),
+        InflightBodyBudgetModule,
         TimeModule,
         PrismaModule,
         StorageModule,
