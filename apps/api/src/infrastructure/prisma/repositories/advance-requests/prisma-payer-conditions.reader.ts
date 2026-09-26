@@ -1,8 +1,10 @@
+import { abortable } from '#/common/utils/abortable.js'
 import type { Prisma } from '#/infrastructure/prisma/generated/client.js'
 import type { PrismaService } from '#/infrastructure/prisma/prisma.service.js'
 import type {
   PayerConditions,
   PayerConditionsReaderPort,
+  RepositoryCallOptions,
 } from '#/modules/advance-requests/index.js'
 
 /** Solo las columnas que usan las reglas: nada de textos, colores ni logo de la landing. */
@@ -33,15 +35,23 @@ function toPayerConditions(row: PayerConditionsRow): PayerConditions {
   }
 }
 
-/** Condiciones del pagador activo por su slug (`payers_slug_key`). Un pagador inactivo no existe. */
+/**
+ * Condiciones del pagador activo por su slug (`payers_slug_key`). Un pagador inactivo no existe. Con
+ * `signal` cancelada rechaza en el acto (la consulta en curso termina sola y se descarta).
+ */
 export class PrismaPayerConditionsReader implements PayerConditionsReaderPort {
   constructor(private readonly prisma: PrismaService) {}
 
-  async findActiveBySlug(slug: string): Promise<PayerConditions | null> {
-    const row = await this.prisma.payer.findUnique({
-      where: { slug, active: true },
-      select: PAYER_CONDITIONS_SELECT,
+  findActiveBySlug(
+    slug: string,
+    options: RepositoryCallOptions = {},
+  ): Promise<PayerConditions | null> {
+    return abortable(options.signal, async () => {
+      const row = await this.prisma.payer.findUnique({
+        where: { slug, active: true },
+        select: PAYER_CONDITIONS_SELECT,
+      })
+      return row === null ? null : toPayerConditions(row)
     })
-    return row === null ? null : toPayerConditions(row)
   }
 }

@@ -45,7 +45,7 @@ export function CreateAdvanceRequestDocs() {
     ApiOperation({
       summary: 'Recibe una solicitud de adelanto con sus facturas',
       description:
-        'Multipart con el formulario en JSON (`form`), los XML de las facturas (`xml`) y sus PDF opcionales (`pdf`, emparejados por nombre). Un reintento con la misma `Idempotency-Key` y los mismos datos responde lo mismo, con la cabecera `Idempotent-Replayed: true`.',
+        'Multipart con el formulario en JSON (`form`), los XML de las facturas (`xml`) y sus PDF opcionales (`pdf`, emparejados por nombre). Un reintento con la misma `Idempotency-Key` y los mismos datos responde lo mismo, con la cabecera `Idempotent-Replayed: true`. Si el envío no termina dentro de su plazo (`SUBMISSION_TIMEOUT_MS`, 60 s por defecto), responde 503 `SERVICE_UNAVAILABLE` con `Retry-After`: lo subido se descarta y el reintento con la misma `Idempotency-Key` recibe la solicitud si llegó a guardarse.',
     }),
     ApiConsumes('multipart/form-data'),
     ApiHeader({

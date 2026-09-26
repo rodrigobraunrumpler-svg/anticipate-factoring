@@ -59,7 +59,7 @@ apps/api/
 | `middleware/` | `correlation-id.middleware.ts`, `client-ip-probe.middleware.ts` (log de error si `TRUST_PROXY` o `TRUST_CLOUDFLARE_HEADERS` no coinciden con lo que llega), `content-length-limit.middleware.ts`, `body-parser-error.middleware.ts` (errores de body-parser con su tipo, para `AllExceptionsFilter`), `index.ts` | Piezas de Express que corren antes de los guards |
 | `time/` | `clock.ts` | Puerto `Clock` y token `CLOCK` |
 | `types/` | `express.d.ts`, `paginated-list.ts` | `Request.correlationId` y listas paginadas |
-| `utils/` | `client-ip.ts`, `content-length.ts`, `correlation-id.ts`, `build-pagination-meta.ts`, `uuid.ts` | Utilidades genéricas que usan dos partes o más |
+| `utils/` | `abortable.ts` (esperar una promesa hasta que se cancele una señal), `client-ip.ts`, `content-length.ts`, `correlation-id.ts`, `build-pagination-meta.ts`, `uuid.ts` | Utilidades genéricas que usan dos partes o más |
 | `exceptions/` | `application-error.ts` y los errores de la aplicación, `index.ts` | Errores con código público, sin Nest |
 | `filters/` | `all-exceptions.filter.ts`, `default-http-error-code.map.ts`, `exception-translator.ts` (tipo `ExceptionTranslator` y token `EXCEPTION_TRANSLATORS`), `index.ts` | Todo error sale con el sobre de error (`APP_FILTER`) |
 | `interceptors/` | `response-envelope.interceptor.ts`, `multipart-files.interceptor.ts`, `inflight-body-budget.ts` y `inflight-body-budget.module.ts` (presupuesto de cuerpos en memoria, `INFLIGHT_BODY_BUDGET`) | Sobre de éxito (`APP_INTERCEPTOR`), multipart y el tope de lo que se lee en memoria a la vez |
@@ -96,7 +96,7 @@ Cada archivo de `src` (salvo `infrastructure/prisma/generated/` y los `*.test.ts
 | # | Capa | Puede importar |
 |---|---|---|
 | 1 | `domain` | su `domain`, `common/exceptions`, `@anticipate/shared/*`, `node:crypto` |
-| 2 | `application` | su `domain` y su `application`; otro módulo solo por `modules/<x>/index.ts`; de `common`, solo `exceptions`, `time/clock.ts`, `storage` (puerto) y `captcha/captcha-verifier.port.ts`; `@anticipate/shared/*`, `@anticipate/emails` |
+| 2 | `application` | su `domain` y su `application`; otro módulo solo por `modules/<x>/index.ts`; de `common`, solo `exceptions`, `time/clock.ts`, `storage` (puerto), `captcha/captcha-verifier.port.ts` y `utils/abortable.ts` (esperar con el plazo de un envío, D57); `@anticipate/shared/*`, `@anticipate/emails` |
 | 3 | `presentation` | sus casos de uso y tipos (no los puertos), su `domain`, `common/**`, `@nestjs/*`, `express`, `@anticipate/shared/*` |
 | 4 | `module-wiring` (`modules/*/*.module.ts`, `modules/*/index.ts`) | su módulo, el `index.ts` de otro módulo, `common/**`, `infrastructure/**` (solo para cablear), `@nestjs/*` |
 | 5 | `infrastructure` | `common/**`, `infrastructure/**`, `modules/*/index.ts`; cualquier paquete salvo la regla 6 |

@@ -20,11 +20,14 @@ import {
   INFLIGHT_BODY_BUDGET,
   type InflightBodyBudget,
 } from '#/common/interceptors/inflight-body-budget.js'
+import { FILE_STORAGE } from '#/common/storage/index.js'
 import type { WorkerThreadsInvoiceXmlParser } from '#/infrastructure/invoice-xml/worker-threads/index.js'
 import { FakeEmailSender } from '#/infrastructure/notifications/index.js'
 import { PrismaService } from '#/infrastructure/prisma/index.js'
 import { PrismaAdvanceRequestRepository } from '#/infrastructure/prisma/repositories/advance-requests/prisma-advance-request.repository.js'
 import { PrismaPayerConditionsReader } from '#/infrastructure/prisma/repositories/advance-requests/prisma-payer-conditions.reader.js'
+import { createS3Client } from '#/infrastructure/storage/s3/s3-client.factory.js'
+import { S3FileStorageAdapter } from '#/infrastructure/storage/s3/s3-file-storage.adapter.js'
 import {
   ADVANCE_REQUEST_REPOSITORY,
   INVOICE_XML_PARSER,
@@ -52,6 +55,7 @@ import { createPayer } from '../support/factories.js'
 import { FakeCaptchaVerifier } from '../support/fakes.js'
 import { hostileInvoiceXml } from '../support/hostile-xml.js'
 import { deletePrefix, listKeys } from '../support/s3.js'
+import { replyDeleted, replyStored, startS3StubServer } from '../support/s3-stub-server.js'
 
 const captcha = new FakeCaptchaVerifier()
 const mailer = new FakeEmailSender()
@@ -743,6 +747,159 @@ describe('POST /api/v1/advance-requests · facturas tomadas y fallas', () => {
       include: { consents: true },
     })
     expect(saved.consents.map((c) => c.ip)).toEqual(['0.0.0.0', '0.0.0.0'])
+  })
+})
+
+describe('POST /api/v1/advance-requests · plazo por envío (D57)', () => {
+  /** Un trigger de prueba que se borra al terminar, pase lo que pase. */
+  async function withTrigger(
+    sql: readonly string[],
+    drop: readonly string[],
+    run: () => Promise<void>,
+  ) {
+    for (const statement of sql) await db.prisma.$executeRawUnsafe(statement)
+    try {
+      await run()
+    } finally {
+      for (const statement of drop) await db.prisma.$executeRawUnsafe(statement)
+    }
+  }
+
+  it('con el almacenamiento colgado: 503 con Retry-After al vencer el plazo, sin filas PENDING ni objetos', async () => {
+    // Almacenamiento de prueba en memoria: guarda los XML y nunca responde la subida del PDF.
+    const objects = new Map<string, number>()
+    const hung: Array<{ closed: boolean }> = []
+    const stub = await startS3StubServer((req, res) => {
+      const path = decodeURIComponent(new URL(req.url ?? '/', 'http://stub').pathname)
+      const key = path.replace(/^\/[^/]+\//, '')
+      if (req.method === 'PUT') {
+        let size = 0
+        req.on('data', (chunk: Buffer) => {
+          size += chunk.length
+        })
+        req.on('end', () => {
+          if (key.endsWith('.pdf')) {
+            const request = { closed: false }
+            hung.push(request)
+            res.once('close', () => {
+              request.closed = true
+            })
+            return
+          }
+          objects.set(key, size)
+          replyStored(res)
+        })
+        return
+      }
+      if (req.method === 'DELETE') {
+        objects.delete(key)
+        replyDeleted(res)
+        return
+      }
+      res.writeHead(400)
+      res.end()
+    })
+    const client = createS3Client({ ...config.storage, endpoint: stub.url })
+    const storage = new S3FileStorageAdapter(client, { bucket: config.storage.bucket })
+    try {
+      await withApp(
+        { SUBMISSION_TIMEOUT_MS: '1500' },
+        async (other) => {
+          const startedAt = Date.now()
+          const res = await submitAdvanceRequest(other, { pdf: [[pdf(), 'F001-123.pdf']] })
+          const elapsed = Date.now() - startedAt
+          expectError(res, 503, 'SERVICE_UNAVAILABLE')
+          expect(res.headers['retry-after']).toBe('30')
+          expect(elapsed).toBeGreaterThanOrEqual(1_500)
+          expect(elapsed).toBeLessThan(1_500 + 3_000)
+        },
+        [[FILE_STORAGE, storage]],
+      )
+      expect(await db.prisma.advanceRequest.count()).toBe(0)
+      const files = await db.prisma.storedFile.findMany()
+      expect(files).toHaveLength(2)
+      expect(files.map((f) => f.status)).toEqual(['DELETED', 'DELETED'])
+      // El XML llegó a subirse y la limpieza lo borró; la subida colgada la cortó el cliente.
+      expect(stub.requests('PUT')).toBe(2)
+      expect([...objects.keys()]).toEqual([])
+      expect(hung).toEqual([{ closed: true }])
+    } finally {
+      client.destroy()
+      await stub.stop()
+    }
+  })
+
+  it('COMMIT lento: el plazo vence durante el COMMIT, 503; la solicitud queda guardada con sus archivos y el reintento con la misma clave la devuelve', async () => {
+    const idempotencyKey = newIdempotencyKey()
+    // Un trigger diferido corre dentro del COMMIT: lo alarga 4 s, más que el plazo del envío.
+    await withTrigger(
+      [
+        `CREATE OR REPLACE FUNCTION test_slow_commit() RETURNS trigger LANGUAGE plpgsql AS $$
+         BEGIN PERFORM pg_sleep(4); RETURN NULL; END $$`,
+        `CREATE CONSTRAINT TRIGGER test_slow_commit AFTER INSERT ON advance_requests
+         DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION test_slow_commit()`,
+      ],
+      [
+        'DROP TRIGGER IF EXISTS test_slow_commit ON advance_requests',
+        'DROP FUNCTION IF EXISTS test_slow_commit()',
+      ],
+      () =>
+        withApp({ SUBMISSION_TIMEOUT_MS: '2500' }, async (other) => {
+          const res = await submitAdvanceRequest(other, {
+            idempotencyKey,
+            pdf: [[pdf(), 'F001-123.pdf']],
+          })
+          expectError(res, 503, 'SERVICE_UNAVAILABLE')
+          expect(res.headers['retry-after']).toBe('30')
+        }),
+    )
+    // Confirmó después del 503: sus filas quedaron ATTACHED y la limpieza no tocó sus objetos.
+    const saved = await db.prisma.advanceRequest.findFirstOrThrow()
+    const files = await db.prisma.storedFile.findMany()
+    expect(files.map((f) => f.status)).toEqual(['ATTACHED', 'ATTACHED'])
+    expect(await listKeys(payerPrefix())).toEqual(files.map((f) => f.key).sort())
+
+    const retry = await submit({ idempotencyKey, pdf: [[pdf(), 'F001-123.pdf']] })
+    expect(expectCreated(retry).publicCode).toBe(saved.publicCode)
+    expect(retry.headers[IDEMPOTENT_REPLAYED_HEADER]).toBe('true')
+    expect(await db.prisma.advanceRequest.count()).toBe(1)
+  })
+
+  it('el plazo vence en medio de la transacción: se deshace, lo subido se libera y se borra, y el reintento guarda', async () => {
+    const idempotencyKey = newIdempotencyKey()
+    await withTrigger(
+      [
+        `CREATE OR REPLACE FUNCTION test_slow_invoice_insert() RETURNS trigger LANGUAGE plpgsql AS $$
+         BEGIN PERFORM pg_sleep(3); RETURN NEW; END $$`,
+        `CREATE TRIGGER test_slow_invoice_insert BEFORE INSERT ON invoices
+         FOR EACH ROW EXECUTE FUNCTION test_slow_invoice_insert()`,
+      ],
+      [
+        'DROP TRIGGER IF EXISTS test_slow_invoice_insert ON invoices',
+        'DROP FUNCTION IF EXISTS test_slow_invoice_insert()',
+      ],
+      () =>
+        withApp({ SUBMISSION_TIMEOUT_MS: '1500' }, async (other) => {
+          const res = await submitAdvanceRequest(other, {
+            idempotencyKey,
+            pdf: [[pdf(), 'F001-123.pdf']],
+          })
+          expectError(res, 503, 'SERVICE_UNAVAILABLE')
+          expect(res.headers['retry-after']).toBe('30')
+        }),
+    )
+    expect(await db.prisma.advanceRequest.count()).toBe(0)
+    expect(await db.prisma.invoice.count()).toBe(0)
+    const files = await db.prisma.storedFile.findMany()
+    expect(files.map((f) => f.status)).toEqual(['DELETED', 'DELETED'])
+    expect(await listKeys(payerPrefix())).toEqual([])
+
+    const retry = await submit({ idempotencyKey, pdf: [[pdf(), 'F001-123.pdf']] })
+    expectCreated(retry)
+    expect(retry.headers[IDEMPOTENT_REPLAYED_HEADER]).toBeUndefined()
+    const attached = await db.prisma.storedFile.findMany({ where: { status: 'ATTACHED' } })
+    expect(attached).toHaveLength(2)
+    expect(await listKeys(payerPrefix())).toEqual(attached.map((f) => f.key).sort())
   })
 })
 

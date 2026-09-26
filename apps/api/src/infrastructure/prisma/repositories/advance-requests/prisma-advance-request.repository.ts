@@ -1,4 +1,5 @@
 import { formatPublicCode } from '@anticipate/shared/advance-request'
+import { abortable } from '#/common/utils/abortable.js'
 import { Prisma } from '#/infrastructure/prisma/generated/client.js'
 import type { PrismaService } from '#/infrastructure/prisma/prisma.service.js'
 import { isUniqueViolation } from '#/infrastructure/prisma/prisma-errors.js'
@@ -7,6 +8,7 @@ import type {
   AdvanceRequestRepositoryPort,
   CreateAdvanceRequestResult,
   NewAdvanceRequest,
+  RepositoryCallOptions,
   ReservedFile,
 } from '#/modules/advance-requests/index.js'
 import type { NewOutboxMessage } from '#/modules/outbox/index.js'
@@ -50,6 +52,11 @@ export function openInvoiceKeysQuery(keys: readonly string[]): Prisma.Sql {
  * por `invoiceKey` (Prisma ignora el predicado del índice parcial), y proveedor y representante con
  * `createMany({ skipDuplicates })` + lectura: el `upsert` de Prisma 7.10 falla con P2002 ante envíos
  * simultáneos del mismo RUC nuevo.
+ *
+ * Cancelación (D57): Prisma no corta una consulta ya enviada, así que con `signal` cancelada cada
+ * método rechaza en el acto (`abortable`) y la consulta en curso termina sola, acotada por los tiempos
+ * de la base. La transacción de `create` además mira la señal antes de cada sentencia: cancelada antes
+ * del COMMIT, se deshace en la siguiente; nunca se corta un COMMIT ya enviado.
  */
 export class PrismaAdvanceRequestRepository implements AdvanceRequestRepositoryPort {
   constructor(
@@ -59,17 +66,27 @@ export class PrismaAdvanceRequestRepository implements AdvanceRequestRepositoryP
 
   findByIdempotencyKey(
     key: string,
+    options: RepositoryCallOptions = {},
   ): Promise<{ publicCode: string; requestFingerprint: string } | null> {
-    return this.prisma.advanceRequest.findUnique({
-      where: { idempotencyKey: key },
-      select: { publicCode: true, requestFingerprint: true },
-    })
+    return abortable(options.signal, () =>
+      this.prisma.advanceRequest.findUnique({
+        where: { idempotencyKey: key },
+        select: { publicCode: true, requestFingerprint: true },
+      }),
+    )
   }
 
-  async findInvoiceKeysInOpenRequests(keys: readonly string[]): Promise<string[]> {
-    if (keys.length === 0) return []
-    const rows = await this.prisma.$queryRaw<{ invoice_key: string }[]>(openInvoiceKeysQuery(keys))
-    return rows.map((row) => row.invoice_key)
+  findInvoiceKeysInOpenRequests(
+    keys: readonly string[],
+    options: RepositoryCallOptions = {},
+  ): Promise<string[]> {
+    return abortable(options.signal, async () => {
+      if (keys.length === 0) return []
+      const rows = await this.prisma.$queryRaw<{ invoice_key: string }[]>(
+        openInvoiceKeysQuery(keys),
+      )
+      return rows.map((row) => row.invoice_key)
+    })
   }
 
   async reserveFiles(files: readonly ReservedFile[]): Promise<void> {
@@ -78,41 +95,64 @@ export class PrismaAdvanceRequestRepository implements AdvanceRequestRepositoryP
     await this.prisma.storedFile.createMany({ data: toStoredFileRows(files) })
   }
 
-  async releaseFiles(fileIds: readonly string[]): Promise<string[]> {
-    if (fileIds.length === 0) return []
-    // Solo lo que sigue PENDING, en la misma sentencia: un archivo ATTACHED (su transacción confirmó)
-    // no cambia. `purge_after = now()`: nunca estuvieron confirmados, no hay nada que esperar. Se
-    // trunca al milisegundo, como en el barrido de huérfanos: timestamptz(3) redondea y un valor
-    // redondeado hacia arriba no vencería en la consulta siguiente de la purga.
-    const rows = await this.prisma.$queryRaw<{ id: string }[]>`
-      UPDATE stored_files
-      SET status = 'DELETED', deleted_at = now(), purge_after = date_trunc('milliseconds', now())
-      WHERE id = ANY(${[...fileIds]}::uuid[]) AND status = 'PENDING'
-      RETURNING id`
-    return rows.map((row) => row.id)
+  releaseFiles(fileIds: readonly string[], options: RepositoryCallOptions = {}): Promise<string[]> {
+    return abortable(options.signal, async () => {
+      if (fileIds.length === 0) return []
+      // Solo lo que sigue PENDING, en la misma sentencia: un archivo ATTACHED (su transacción
+      // confirmó) no cambia; si esa transacción todavía no terminó, la sentencia espera el candado de
+      // la fila y ve el resultado. `purge_after = now()`: nunca estuvieron confirmados, no hay nada
+      // que esperar. Se trunca al milisegundo, como en el barrido de huérfanos: timestamptz(3) redondea
+      // y un valor redondeado hacia arriba no vencería en la consulta siguiente de la purga.
+      const rows = await this.prisma.$queryRaw<{ id: string }[]>`
+        UPDATE stored_files
+        SET status = 'DELETED', deleted_at = now(), purge_after = date_trunc('milliseconds', now())
+        WHERE id = ANY(${[...fileIds]}::uuid[]) AND status = 'PENDING'
+        RETURNING id`
+      return rows.map((row) => row.id)
+    })
   }
 
-  async create(
+  create(
     request: NewAdvanceRequest,
     outbox: (publicCode: string) => readonly NewOutboxMessage[],
+    options: RepositoryCallOptions = {},
   ): Promise<CreateAdvanceRequestResult> {
+    return abortable(options.signal, () => this.save(request, outbox, options.signal))
+  }
+
+  private async save(
+    request: NewAdvanceRequest,
+    outbox: (publicCode: string) => readonly NewOutboxMessage[],
+    signal: AbortSignal | undefined,
+  ): Promise<CreateAdvanceRequestResult> {
+    // Antes de cada sentencia: con la señal cancelada, el callback lanza su motivo y Prisma deshace
+    // la transacción. Después de la última no hay control: el COMMIT sigue su curso.
+    const step = () => signal?.throwIfAborted()
     try {
       const publicCode = await this.prisma.$transaction(
         async (tx) => {
+          step()
           const publicCode = await nextPublicCode(tx, request)
-          const supplierId = await ensureSupplier(tx, request.supplier)
+          step()
+          const supplierId = await ensureSupplier(tx, request.supplier, step)
           const legalRepresentativeId =
             request.legalRepresentative === null
               ? null
-              : await ensureLegalRepresentative(tx, supplierId, request.legalRepresentative)
+              : await ensureLegalRepresentative(tx, supplierId, request.legalRepresentative, step)
+          step()
           await tx.advanceRequest.create({
             data: toAdvanceRequestRow(request, { publicCode, supplierId, legalRepresentativeId }),
             select: { id: true },
           })
+          step()
           await attachFiles(tx, request.fileIds)
+          step()
           await tx.invoice.createMany({ data: toInvoiceRows(request) })
+          step()
           await tx.invoiceInstallment.createMany({ data: toInstallmentRows(request) })
+          step()
           await tx.consent.createMany({ data: toConsentRows(request) })
+          step()
           await tx.statusHistory.create({
             data: {
               advanceRequestId: request.id,
@@ -123,9 +163,11 @@ export class PrismaAdvanceRequestRepository implements AdvanceRequestRepositoryP
             },
             select: { id: true },
           })
+          step()
           await insertOutboxMessages(tx, outbox(publicCode), {
             maxAttempts: this.options.outboxMaxAttempts,
           })
+          step()
           return publicCode
         },
         {
@@ -167,11 +209,13 @@ async function nextPublicCode(
 async function ensureSupplier(
   tx: Prisma.TransactionClient,
   supplier: NewAdvanceRequest['supplier'],
+  step: () => void,
 ): Promise<string> {
   await tx.supplier.createMany({
     data: [{ ruc: supplier.ruc, legalName: supplier.legalName }],
     skipDuplicates: true,
   })
+  step()
   const { id } = await tx.supplier.findUniqueOrThrow({
     where: { ruc: supplier.ruc },
     select: { id: true },
@@ -183,6 +227,7 @@ async function ensureLegalRepresentative(
   tx: Prisma.TransactionClient,
   supplierId: string,
   representative: NonNullable<NewAdvanceRequest['legalRepresentative']>,
+  step: () => void,
 ): Promise<string> {
   await tx.legalRepresentative.createMany({
     data: [
@@ -195,6 +240,7 @@ async function ensureLegalRepresentative(
     ],
     skipDuplicates: true,
   })
+  step()
   const { id } = await tx.legalRepresentative.findUniqueOrThrow({
     where: { supplierId_dni: { supplierId, dni: representative.dni } },
     select: { id: true },

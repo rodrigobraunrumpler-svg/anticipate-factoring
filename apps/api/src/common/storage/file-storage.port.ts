@@ -7,6 +7,12 @@ export type PutFileInput = { key: string; body: Buffer; contentType: string }
 /** Lo que quedó guardado: bucket, clave, tamaño en bytes y SHA-256 del contenido en hexadecimal. */
 export type StoredObject = { bucket: string; key: string; sizeBytes: number; sha256: string }
 
+/**
+ * Cancelación de quien llama (el plazo de un envío, D57). Con `signal` cancelada, la operación no
+ * manda nada más, corta lo que está en curso y termina en el acto, aunque el proveedor no responda.
+ */
+export type StorageCallOptions = { readonly signal?: AbortSignal | undefined }
+
 /** Vigencia de los enlaces de descarga firmados (STACK §10). */
 export const DOWNLOAD_URL_TTL_SECONDS = 300
 
@@ -33,16 +39,19 @@ export interface FileStoragePort {
    * orden. Antes de subir nada rechaza si una clave es inválida o se repite. Si una subida falla, no
    * empieza ninguna más, espera a que terminen o venzan las que estaban en curso, borra todas las que
    * intentó subir (también las que fallaron o vencieron: el proveedor pudo guardarlas igual) y rechaza
-   * con el error de la primera que falló: al rechazar no queda ninguna subida en curso.
+   * con el error de la primera que falló: al rechazar no queda ninguna subida en curso esperando
+   * respuesta. Si `signal` se cancela, rechaza en el acto con su motivo y no borra nada: los borrados
+   * también se cancelan, así que la limpieza queda para quien llama, con su propio plazo.
    */
-  putAll(inputs: readonly PutFileInput[]): Promise<StoredObject[]>
+  putAll(inputs: readonly PutFileInput[], options?: StorageCallOptions): Promise<StoredObject[]>
   /**
    * Borra sin lanzar nunca. Devuelve las claves que NO se pudieron borrar, sin repetir, para que
    * quien llama las deje pendientes. Una clave que no existe cuenta como borrada. Si el proveedor
    * deja de responder, no intenta las que faltan y también las devuelve. Una clave inválida nunca se
-   * manda y también se devuelve.
+   * manda y también se devuelve. Si `signal` se cancela, corta los borrados en curso, no manda los que
+   * faltan y los devuelve todos.
    */
-  deleteQuietly(keys: readonly string[]): Promise<string[]>
+  deleteQuietly(keys: readonly string[], options?: StorageCallOptions): Promise<string[]>
   /**
    * `true` si el objeto existe y `false` si no; ante una clave inválida o cualquier otro error del
    * proveedor, rechaza.

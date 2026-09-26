@@ -87,6 +87,8 @@ import { OUTBOX_WAKE_UP, type OutboxWakeUpSignal } from '#/modules/outbox/index.
           clock,
           newId,
           publicCodePrefix: config.publicCodePrefix,
+          submissionTimeoutMs: config.submission.timeoutMs,
+          cleanupTimeoutMs: config.submission.cleanupTimeoutMs,
         }),
     },
     {

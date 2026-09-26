@@ -5,7 +5,10 @@ import { buildInvoiceXml, type TestXmlOptions } from '@anticipate/shared/testing
 import { afterAll, describe, expect, it } from 'vitest'
 import { ServiceUnavailableError } from '#/common/exceptions/index.js'
 import { WorkerThreadsInvoiceXmlParser } from '#/infrastructure/invoice-xml/worker-threads/index.js'
-import type { InvoiceXmlParseOutcome } from '#/modules/advance-requests/application/ports/invoice-xml-parser.port.js'
+import type {
+  InvoiceXmlParseOutcome,
+  InvoiceXmlParserPort,
+} from '#/modules/advance-requests/application/ports/invoice-xml-parser.port.js'
 import type {
   InvoiceIntakeInput,
   UploadedFile,
@@ -746,6 +749,44 @@ describe('InvoiceIntakeService', () => {
         expect(reader.calls).toHaveLength(2)
       },
     )
+
+    it('con la señal cancelada rechaza con su motivo, pasa la señal al lector y no lee más XML', async () => {
+      const controller = new AbortController()
+      const reason = new Error('plazo del envío')
+      const signals: (AbortSignal | undefined)[] = []
+      const reader: InvoiceXmlParserPort = {
+        parse: async (_xml, options) => {
+          signals.push(options.signal)
+          if (signals.length === 1) {
+            controller.abort(reason)
+            throw reason
+          }
+          return {
+            status: 'parsed',
+            result: { ok: false, problem: { code: 'NOT_AN_INVOICE' } },
+          } as never
+        },
+      }
+      const evaluation = new InvoiceIntakeService(LIMITS, reader).evaluate(
+        input({
+          xmlFiles: [
+            xml('F001-1.xml', { seriesNumber: 'F001-1' }),
+            xml('F001-2.xml', { seriesNumber: 'F001-2' }),
+          ],
+        }),
+        { signal: controller.signal },
+      )
+      await expect(evaluation).rejects.toBe(reason)
+      expect(signals).toEqual([controller.signal])
+
+      const already = new AbortController()
+      already.abort(reason)
+      const counting = new InlineInvoiceXmlParser()
+      await expect(
+        new InvoiceIntakeService(LIMITS, counting).evaluate(input(), { signal: already.signal }),
+      ).rejects.toBe(reason)
+      expect(counting.calls).toHaveLength(0)
+    })
 
     it('un defecto del lector no se disfraza de problema del proveedor', async () => {
       const reader = new InlineInvoiceXmlParser()

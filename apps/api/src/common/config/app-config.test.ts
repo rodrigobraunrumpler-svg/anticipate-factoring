@@ -152,6 +152,7 @@ describe('parseConfig', () => {
       },
       maintenance: { enabled: true, intervalMs: 3_600_000 },
       shutdown: { timeoutMs: 25_000 },
+      submission: { timeoutMs: 60_000, cleanupTimeoutMs: 10_000 },
       xmlParser: {
         workers: defaultXmlParseWorkers(availableParallelism()),
         timeoutMs: 2_000,
@@ -381,6 +382,19 @@ describe('parseConfig', () => {
       parseConfig({ ...REQUIRED_ONLY, ...shutdown, OUTBOX_HANDLER_TIMEOUT_MS: '59999' }).outbox
         .handlerTimeoutMs,
     ).toBe(59_999)
+  })
+
+  it('el plazo de un envío y su limpieza terminan antes de que Cloudflare corte al cliente', () => {
+    expect(problemsOf({ ...REQUIRED_ONLY, SUBMISSION_TIMEOUT_MS: '80001' })).toEqual([
+      'SUBMISSION_TIMEOUT_MS: debe ser como máximo 80000: con la limpieza (hasta 10000 ms) y un margen de 10000 ms, la respuesta sale antes de los 100000 ms en que Cloudflare corta al cliente (docs/STACK.md, sección 12)',
+    ])
+    expect(parseConfig({ ...REQUIRED_ONLY, SUBMISSION_TIMEOUT_MS: '80000' }).submission).toEqual({
+      timeoutMs: 80_000,
+      cleanupTimeoutMs: 10_000,
+    })
+    expect(problemsOf({ ...REQUIRED_ONLY, SUBMISSION_TIMEOUT_MS: '999' })).toEqual([
+      'SUBMISSION_TIMEOUT_MS: debe ser al menos 1000',
+    ])
   })
 
   it('el plazo del apagado deja terminar el correo en curso y registrar su resultado', () => {

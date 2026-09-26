@@ -6,7 +6,7 @@ import {
   openInvoiceKeysQuery,
   PrismaAdvanceRequestRepository,
 } from '#/infrastructure/prisma/repositories/advance-requests/prisma-advance-request.repository.js'
-import type { ReservedFile } from '#/modules/advance-requests/index.js'
+import type { NewAdvanceRequest, ReservedFile } from '#/modules/advance-requests/index.js'
 import { testConfig } from '../support/config.js'
 import { createTestPrisma, truncateAll } from '../support/db.js'
 
@@ -90,5 +90,55 @@ describe('PrismaAdvanceRequestRepository', () => {
     const file = reserved('pruebas/a.xml')
     await expect(repository.reserveFiles([file, reserved('pruebas/a.xml')])).rejects.toThrow()
     expect(await db.prisma.storedFile.count()).toBe(0)
+  })
+})
+
+describe('PrismaAdvanceRequestRepository: cancelación (plazo del envío, D57)', () => {
+  it('con la señal ya cancelada, lecturas, liberación y transacción rechazan con su motivo sin tocar la base', async () => {
+    const [file] = [reserved('pruebas/a.xml')]
+    await repository.reserveFiles([file])
+    const controller = new AbortController()
+    const reason = new Error('plazo del envío')
+    controller.abort(reason)
+    const options = { signal: controller.signal }
+
+    await expect(repository.findByIdempotencyKey(newId(), options)).rejects.toBe(reason)
+    await expect(
+      repository.findInvoiceKeysInOpenRequests(['20100070970|F001-1'], options),
+    ).rejects.toBe(reason)
+    await expect(repository.releaseFiles([file.id], options)).rejects.toBe(reason)
+    // Rechaza antes de mirar la solicitud: ni abre la transacción.
+    await expect(repository.create({} as NewAdvanceRequest, () => [], options)).rejects.toBe(reason)
+    expect((await db.prisma.storedFile.findMany()).map((f) => f.status)).toEqual(['PENDING'])
+  })
+
+  it('una lectura que espera un candado rechaza en el acto al cancelarse', async () => {
+    let release: () => void = () => undefined
+    const released = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    let markLocked: () => void = () => undefined
+    const locked = new Promise<void>((resolve) => {
+      markLocked = resolve
+    })
+    const holding = db.prisma.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe('LOCK TABLE advance_requests IN ACCESS EXCLUSIVE MODE')
+      markLocked()
+      await released
+    })
+    await locked
+    try {
+      const controller = new AbortController()
+      const reading = repository.findByIdempotencyKey(newId(), { signal: controller.signal })
+      await new Promise((resolve) => setTimeout(resolve, 150))
+      const reason = new Error('plazo del envío')
+      const startedAt = Date.now()
+      controller.abort(reason)
+      await expect(reading).rejects.toBe(reason)
+      expect(Date.now() - startedAt).toBeLessThan(100)
+    } finally {
+      release()
+      await holding
+    }
   })
 })

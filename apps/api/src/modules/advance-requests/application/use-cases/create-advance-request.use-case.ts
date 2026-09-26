@@ -4,6 +4,7 @@ import { createProblem, type Problem } from '@anticipate/shared/errors'
 import { BusinessRulesViolatedError, ServiceUnavailableError } from '#/common/exceptions/index.js'
 import type { FileStoragePort, StoredObject } from '#/common/storage/index.js'
 import type { Clock } from '#/common/time/clock.js'
+import { abortable } from '#/common/utils/abortable.js'
 import type {
   AdvanceRequestRepositoryPort,
   CreateAdvanceRequestResult,
@@ -18,6 +19,7 @@ import type {
   IdGenerator,
 } from '#/modules/advance-requests/application/types/create-advance-request.types.js'
 import { IdempotencyKeyReusedError } from '#/modules/advance-requests/domain/exceptions/idempotency-key-reused.error.js'
+import { SubmissionDeadlineExceededError } from '#/modules/advance-requests/domain/exceptions/submission-deadline-exceeded.error.js'
 import {
   buildAdvanceRequestCreatedEvent,
   toAdvanceRequestCreatedOutboxPayload,
@@ -66,6 +68,43 @@ export type CreateAdvanceRequestDependencies = {
   newId: IdGenerator
   /** Prefijo de los códigos públicos (`PUBLIC_CODE_PREFIX`). */
   publicCodePrefix: string
+  /** `SUBMISSION_TIMEOUT_MS`: plazo del envío, desde que empieza el caso de uso (D57). */
+  submissionTimeoutMs: number
+  /**
+   * Tope de la limpieza de un intento que falló o venció (`SUBMISSION_CLEANUP_TIMEOUT_MS`): liberar sus
+   * filas y borrar sus objetos. Lo que no alcance lo terminan la purga y el barrido de huérfanos.
+   */
+  cleanupTimeoutMs: number
+}
+
+/** Etapas del envío, para el diagnóstico de un plazo vencido. */
+const STAGES = {
+  idempotency: 'la búsqueda de la clave de idempotencia',
+  conditions: 'el pagador y las versiones legales',
+  intake: 'la lectura de los XML',
+  availability: 'la búsqueda de las facturas tomadas',
+  upload: 'la reserva y la subida de los archivos',
+  save: 'la transacción (pudo confirmar: un reintento con la misma Idempotency-Key lo resuelve)',
+} as const
+
+type Stage = (typeof STAGES)[keyof typeof STAGES]
+
+/** Una señal que se cancela con `reason()` a los `timeoutMs`; `clear()` apaga el temporizador. */
+type Deadline = { readonly signal: AbortSignal; clear(): void }
+
+function startDeadline(timeoutMs: number, reason: () => Error): Deadline {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(reason()), timeoutMs)
+  return { signal: controller.signal, clear: () => clearTimeout(timer) }
+}
+
+/** La etapa en la que está el envío: el diagnóstico la nombra si vence el plazo. */
+type Progress = { stage: Stage }
+
+function assertPositiveMs(name: string, value: number): void {
+  if (!Number.isSafeInteger(value) || value < 1) {
+    throw new RangeError(`${name} debe ser un entero positivo de milisegundos: ${value}`)
+  }
 }
 
 type AcceptedIntake = Extract<InvoiceIntakeResult, { ok: true }>
@@ -91,48 +130,93 @@ type DraftContext = {
  * que se sube y no se guarda se libera y se borra (`discard`), y nunca se borra el objeto de un
  * archivo `ATTACHED`. Una lectura de la base que falla antes de subir nada no se captura aquí: el
  * traductor de errores de la base del filtro HTTP la responde como 503.
+ *
+ * Plazo (D57): todo el envío corre con `submissionTimeoutMs`. Cada dependencia recibe la señal del
+ * plazo (lecturas, lector de XML, subida y transacción) y además se la espera con `abortable`: la
+ * respuesta sale al vencer aunque una dependencia no atienda la señal. Al vencer, lo subido se libera
+ * y se borra como en cualquier otra falla, con su propio tope (`cleanupTimeoutMs`), y la respuesta es
+ * `SubmissionDeadlineExceededError` (503 con `Retry-After`). Si venció con el COMMIT en curso, la
+ * transacción pudo confirmar: sus archivos quedan `ATTACHED` (la liberación nunca los toca) y el
+ * reintento con la misma clave recibe la solicitud guardada. Así, la respuesta nunca tarda más que
+ * `submissionTimeoutMs + cleanupTimeoutMs`.
  */
 export class CreateAdvanceRequestUseCase {
-  constructor(private readonly deps: CreateAdvanceRequestDependencies) {}
+  constructor(private readonly deps: CreateAdvanceRequestDependencies) {
+    assertPositiveMs('submissionTimeoutMs', deps.submissionTimeoutMs)
+    assertPositiveMs('cleanupTimeoutMs', deps.cleanupTimeoutMs)
+  }
 
   async execute(input: CreateAdvanceRequestInput): Promise<CreateAdvanceRequestOutput> {
+    const { submissionTimeoutMs } = this.deps
+    const progress: Progress = { stage: STAGES.idempotency }
+    const deadline = startDeadline(
+      submissionTimeoutMs,
+      () => new SubmissionDeadlineExceededError(submissionTimeoutMs, progress.stage),
+    )
+    try {
+      return await this.submit(input, deadline.signal, progress)
+    } finally {
+      deadline.clear()
+    }
+  }
+
+  private async submit(
+    input: CreateAdvanceRequestInput,
+    signal: AbortSignal,
+    progress: Progress,
+  ): Promise<CreateAdvanceRequestOutput> {
     const digests = digestFiles(input)
     const fingerprint = computeRequestFingerprint(input.form, fingerprintFiles(input, digests))
 
-    const previous = await this.deps.repository.findByIdempotencyKey(input.idempotencyKey)
+    const previous = await abortable(signal, () =>
+      this.deps.repository.findByIdempotencyKey(input.idempotencyKey, { signal }),
+    )
     if (previous !== null) return replay(previous, fingerprint, input.idempotencyKey)
 
-    const payer = await this.findPayer(input.form)
-    await this.assertCurrentConsents(input.form)
+    progress.stage = STAGES.conditions
+    const payer = await this.findPayer(input.form, signal)
+    await this.assertCurrentConsents(input.form, signal)
 
+    progress.stage = STAGES.intake
     const now = this.deps.clock.now()
     const today = todayIn(LIMA_TIME_ZONE, now)
-    const intake = await this.deps.invoiceIntake.evaluate({
-      payer,
-      supplierRuc: input.form.company.ruc,
-      today,
-      requestedAmount: input.form.financing.requestedAmount,
-      xmlFiles: input.xmlFiles,
-      pdfFiles: input.pdfFiles,
-    })
+    const intake = await abortable(signal, () =>
+      this.deps.invoiceIntake.evaluate(
+        {
+          payer,
+          supplierRuc: input.form.company.ruc,
+          today,
+          requestedAmount: input.form.financing.requestedAmount,
+          xmlFiles: input.xmlFiles,
+          pdfFiles: input.pdfFiles,
+        },
+        { signal },
+      ),
+    )
     if (!intake.ok) throw new BusinessRulesViolatedError(intake.problems)
 
     const context: DraftContext = { input, fingerprint, payer, intake, now, today, digests }
     for (let attempt = 1; attempt <= MAX_CREATE_ATTEMPTS; attempt++) {
-      const replayed = await this.assertInvoicesAvailableOrReplay(context)
+      progress.stage = STAGES.availability
+      const replayed = await this.assertInvoicesAvailableOrReplay(context, signal)
       if (replayed !== null) return replayed
       // Ids y rutas nuevas en cada intento: las del intento anterior quedaron DELETED.
       const draft = this.buildDraft(context)
-      await this.upload(draft)
-      const result = await this.save(draft, payer)
+      progress.stage = STAGES.upload
+      await this.upload(draft, signal)
+      progress.stage = STAGES.save
+      const result = await this.save(draft, payer, signal)
       if (result.kind === 'created') {
         this.deps.outboxWakeUp.notify()
         return { publicCode: result.publicCode, replayed: false }
       }
       await this.discard(draft.files)
+      progress.stage = STAGES.availability
       if (result.kind === 'idempotency-conflict') {
         // Otro envío con la misma clave confirmó primero: se responde como un reintento.
-        const winner = await this.deps.repository.findByIdempotencyKey(input.idempotencyKey)
+        const winner = await abortable(signal, () =>
+          this.deps.repository.findByIdempotencyKey(input.idempotencyKey, { signal }),
+        )
         if (winner === null) {
           throw new ServiceUnavailableError('la clave chocó y la solicitud ganadora no aparece')
         }
@@ -140,15 +224,17 @@ export class CreateAdvanceRequestUseCase {
       }
       // `invoice-conflict`: el paso 6 se repite arriba y responde 422 si la factura sigue tomada.
     }
-    const replayed = await this.assertInvoicesAvailableOrReplay(context)
+    const replayed = await this.assertInvoicesAvailableOrReplay(context, signal)
     if (replayed !== null) return replayed
     throw new ServiceUnavailableError(
       `las facturas chocaron ${MAX_CREATE_ATTEMPTS} veces con otros envíos`,
     )
   }
 
-  private async findPayer(form: AdvanceRequestForm): Promise<PayerConditions> {
-    const payer = await this.deps.payerConditions.findActiveBySlug(form.payerSlug)
+  private async findPayer(form: AdvanceRequestForm, signal: AbortSignal): Promise<PayerConditions> {
+    const payer = await abortable(signal, () =>
+      this.deps.payerConditions.findActiveBySlug(form.payerSlug, { signal }),
+    )
     if (payer !== null) return payer
     throw new BusinessRulesViolatedError([
       createProblem('PAYER_NOT_AVAILABLE', {
@@ -158,11 +244,18 @@ export class CreateAdvanceRequestUseCase {
     ])
   }
 
-  private async assertCurrentConsents(form: AdvanceRequestForm): Promise<void> {
-    const [termsCurrent, privacyCurrent] = await Promise.all([
-      this.deps.legalDocuments.isCurrent('TERMS', form.consents.termsVersion),
-      this.deps.legalDocuments.isCurrent('PERSONAL_DATA', form.consents.privacyVersion),
-    ])
+  private async assertCurrentConsents(
+    form: AdvanceRequestForm,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const [termsCurrent, privacyCurrent] = await abortable(signal, () =>
+      Promise.all([
+        this.deps.legalDocuments.isCurrent('TERMS', form.consents.termsVersion, { signal }),
+        this.deps.legalDocuments.isCurrent('PERSONAL_DATA', form.consents.privacyVersion, {
+          signal,
+        }),
+      ]),
+    )
     const problems: Problem[] = []
     if (!termsCurrent) {
       problems.push(createProblem('CONSENT_VERSION_OUTDATED', { field: 'consents.termsVersion' }))
@@ -181,16 +274,22 @@ export class CreateAdvanceRequestUseCase {
    * un falso `INVOICE_ALREADY_IN_OPEN_REQUEST` (D45). Si la clave no aparece, 422 con un problema por
    * cada factura tomada.
    */
-  private async assertInvoicesAvailableOrReplay({
-    input,
-    fingerprint,
-    intake: { invoices },
-  }: DraftContext): Promise<CreateAdvanceRequestOutput | null> {
+  private async assertInvoicesAvailableOrReplay(
+    { input, fingerprint, intake: { invoices } }: DraftContext,
+    signal: AbortSignal,
+  ): Promise<CreateAdvanceRequestOutput | null> {
     const taken = new Set(
-      await this.deps.repository.findInvoiceKeysInOpenRequests(invoices.map(({ key }) => key)),
+      await abortable(signal, () =>
+        this.deps.repository.findInvoiceKeysInOpenRequests(
+          invoices.map(({ key }) => key),
+          { signal },
+        ),
+      ),
     )
     if (taken.size === 0) return null
-    const previous = await this.deps.repository.findByIdempotencyKey(input.idempotencyKey)
+    const previous = await abortable(signal, () =>
+      this.deps.repository.findByIdempotencyKey(input.idempotencyKey, { signal }),
+    )
     if (previous !== null) return replay(previous, fingerprint, input.idempotencyKey)
     throw new BusinessRulesViolatedError(
       invoices
@@ -205,50 +304,85 @@ export class CreateAdvanceRequestUseCase {
     )
   }
 
-  /** Reserva las filas (`PENDING`) y sube los objetos, todo o nada. */
-  private async upload(draft: Draft): Promise<void> {
+  /**
+   * Reserva las filas (`PENDING`) y sube los objetos, todo o nada. La reserva no se corta con el plazo
+   * (un INSERT acotado por los tiempos de la base): si el plazo venció mientras tanto, se libera lo
+   * reservado antes de subir nada.
+   */
+  private async upload(draft: Draft, signal: AbortSignal): Promise<void> {
+    signal.throwIfAborted()
     try {
       await this.deps.repository.reserveFiles(draft.files.map(toReservedFile))
     } catch (error) {
       throw new ServiceUnavailableError('no se pudieron reservar los archivos', { cause: error })
     }
+    if (signal.aborted) {
+      await this.discard(draft.files)
+      throw signal.reason
+    }
     try {
-      const stored = await this.deps.storage.putAll(
-        draft.files.map(({ key, body, contentType }) => ({ key, body, contentType })),
-      )
+      const inputs = draft.files.map(({ key, body, contentType }) => ({ key, body, contentType }))
+      const stored = await abortable(signal, () => this.deps.storage.putAll(inputs, { signal }))
       assertStoredAsReserved(draft.files, stored)
     } catch (error) {
       await this.discard(draft.files)
-      throw new ServiceUnavailableError('no se pudieron subir los archivos', { cause: error })
+      throw signal.aborted
+        ? signal.reason
+        : new ServiceUnavailableError('no se pudieron subir los archivos', { cause: error })
     }
   }
 
-  private async save(draft: Draft, payer: PayerConditions): Promise<CreateAdvanceRequestResult> {
+  private async save(
+    draft: Draft,
+    payer: PayerConditions,
+    signal: AbortSignal,
+  ): Promise<CreateAdvanceRequestResult> {
     try {
-      return await this.deps.repository.create(draft.request, (publicCode) =>
-        this.outboxMessages(draft.request, payer, publicCode),
+      return await abortable(signal, () =>
+        this.deps.repository.create(
+          draft.request,
+          (publicCode) => this.outboxMessages(draft.request, payer, publicCode),
+          { signal },
+        ),
       )
     } catch (error) {
       await this.discard(draft.files)
-      throw new ServiceUnavailableError('no se pudo guardar la solicitud', { cause: error })
+      throw signal.aborted
+        ? signal.reason
+        : new ServiceUnavailableError('no se pudo guardar la solicitud', { cause: error })
     }
   }
 
   /**
    * Libera las filas que siguen `PENDING` y recién después borra sus objetos. Primero la base: si la
-   * transacción llegó a confirmar aunque `create` lanzó (se cortó la conexión después del COMMIT),
-   * sus filas están `ATTACHED`, no se liberan y sus objetos no se tocan; el reintento del proveedor
-   * recibe la solicitud guardada. Nunca lanza: si la base no responde, no se borra nada y las filas
-   * quedan `PENDING` para el barrido de huérfanos; un objeto que no se pudo borrar tiene su fila
-   * `DELETED`, y lo borra la purga (Tarea 13).
+   * transacción llegó a confirmar aunque `create` lanzó (se cortó la conexión después del COMMIT, o
+   * venció el plazo con el COMMIT en curso), sus filas están `ATTACHED`, no se liberan y sus objetos
+   * no se tocan; el reintento del proveedor recibe la solicitud guardada. Con el COMMIT todavía en
+   * curso, la liberación espera el candado de esas filas y ve el resultado. Nunca lanza y tarda como
+   * mucho `cleanupTimeoutMs` (una señal propia: la del envío puede estar ya cancelada). Si la base no
+   * responde, no se borra nada y las filas quedan `PENDING` para el barrido de huérfanos; un objeto que
+   * no se pudo borrar tiene su fila `DELETED`, y lo borra la purga (Tarea 13).
    */
   private async discard(files: readonly DraftFile[]): Promise<void> {
+    const { cleanupTimeoutMs } = this.deps
+    const cleanup = startDeadline(
+      cleanupTimeoutMs,
+      () => new ServiceUnavailableError(`la limpieza no terminó en ${cleanupTimeoutMs} ms`),
+    )
+    const { signal } = cleanup
     try {
-      const released = new Set(await this.deps.repository.releaseFiles(files.map(({ id }) => id)))
+      const ids = files.map(({ id }) => id)
+      const released = new Set(
+        await abortable(signal, () => this.deps.repository.releaseFiles(ids, { signal })),
+      )
       const keys = files.filter(({ id }) => released.has(id)).map(({ key }) => key)
-      if (keys.length > 0) await this.deps.storage.deleteQuietly(keys)
+      if (keys.length > 0) {
+        await abortable(signal, () => this.deps.storage.deleteQuietly(keys, { signal }))
+      }
     } catch {
       // El barrido de huérfanos y la purga (Tarea 13) terminan el trabajo.
+    } finally {
+      cleanup.clear()
     }
   }
 

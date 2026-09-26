@@ -191,3 +191,15 @@ describe('PrismaLegalDocumentReader', () => {
     await expect(legalDocuments.isCurrent('TERMS', 'v'.repeat(5000))).resolves.toBe(false)
   })
 })
+
+describe('lectores con la señal del envío cancelada (D57)', () => {
+  it('rechazan con su motivo sin consultar la base', async () => {
+    await createPayer(db.prisma)
+    const controller = new AbortController()
+    const reason = new Error('plazo del envío')
+    controller.abort(reason)
+    const options = { signal: controller.signal }
+    await expect(payers.findActiveBySlug(SEA.slug, options)).rejects.toBe(reason)
+    await expect(legalDocuments.isCurrent('TERMS', '2026-09', options)).rejects.toBe(reason)
+  })
+})

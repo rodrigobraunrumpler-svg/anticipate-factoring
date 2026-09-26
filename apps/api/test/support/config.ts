@@ -81,6 +81,7 @@ export const TEST_ENV_DEFAULTS = {
   OUTBOX_HANDLER_TIMEOUT_MS: '20000',
   MAINTENANCE_ENABLED: 'false',
   MAINTENANCE_INTERVAL_MS: '3600000',
+  SUBMISSION_TIMEOUT_MS: '60000',
   SHUTDOWN_TIMEOUT_MS: '25000',
 } as const satisfies Record<EnvironmentKey, string>
 

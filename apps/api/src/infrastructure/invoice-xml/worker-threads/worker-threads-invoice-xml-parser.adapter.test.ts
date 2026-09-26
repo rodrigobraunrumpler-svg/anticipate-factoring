@@ -168,6 +168,29 @@ describe('WorkerThreadsInvoiceXmlParser', () => {
     await expect(running).resolves.toEqual(expect.objectContaining({ status: 'parsed' }))
   })
 
+  it('con la señal cancelada rechaza con su motivo: en la cola, sale de la cola', async () => {
+    const parser = createParser({ workers: 1 })
+    await parser.start()
+    const hostile = parser.parse(hostileInvoiceXml(MB), { maxLength: MB })
+    const controller = new AbortController()
+    const waiting = parser.parse(utf8(buildInvoiceXml()), {
+      maxLength: MB,
+      signal: controller.signal,
+    })
+    expect(parser.stats.queued).toBe(1)
+    const reason = new Error('plazo del envío')
+    controller.abort(reason)
+    await expect(waiting).rejects.toBe(reason)
+    expect(parser.stats.queued).toBe(0)
+    await hostile
+
+    const already = new AbortController()
+    already.abort(reason)
+    await expect(
+      parser.parse(utf8(buildInvoiceXml()), { maxLength: MB, signal: already.signal }),
+    ).rejects.toBe(reason)
+  })
+
   it('arranca un hilo con onModuleInit y los termina todos con onApplicationShutdown', async () => {
     const parser = createParser()
     await parser.onModuleInit()

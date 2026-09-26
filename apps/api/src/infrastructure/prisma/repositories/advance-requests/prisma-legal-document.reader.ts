@@ -1,7 +1,12 @@
 import { isXmlText } from '@anticipate/shared/text'
 import { Logger } from '@nestjs/common'
+import { abortable } from '#/common/utils/abortable.js'
 import type { PrismaService } from '#/infrastructure/prisma/prisma.service.js'
-import type { ConsentType, LegalDocumentReaderPort } from '#/modules/advance-requests/index.js'
+import type {
+  ConsentType,
+  LegalDocumentReaderPort,
+  RepositoryCallOptions,
+} from '#/modules/advance-requests/index.js'
 
 /** Largo máximo de la versión que se registra (el formulario ya la limita a 20). */
 const LOGGED_VERSION_LENGTH = 20
@@ -15,14 +20,22 @@ const LOGGED_VERSION_LENGTH = 20
  *
  * Cada versión que no está vigente queda en un log de error con su motivo (`retired` o `unknown`):
  * una o dos son formularios viejos; muchas seguidas son la landing y la base desacopladas, y ningún
- * envío entra hasta que se corrija.
+ * envío entra hasta que se corrija. Con `signal` cancelada rechaza en el acto, sin registrar nada.
  */
 export class PrismaLegalDocumentReader implements LegalDocumentReaderPort {
   private readonly logger = new Logger(PrismaLegalDocumentReader.name)
 
   constructor(private readonly prisma: PrismaService) {}
 
-  async isCurrent(type: ConsentType, version: string): Promise<boolean> {
+  isCurrent(
+    type: ConsentType,
+    version: string,
+    options: RepositoryCallOptions = {},
+  ): Promise<boolean> {
+    return abortable(options.signal, () => this.check(type, version))
+  }
+
+  private async check(type: ConsentType, version: string): Promise<boolean> {
     // La versión llega del formulario. Un texto que la columna no puede guardar no está en ella, y
     // consultarlo no sirve: con U+0000 PostgreSQL rechaza el parámetro (22021, que Prisma lanza como
     // P2039: un 500 en vez de CONSENT_VERSION_OUTDATED) y un sustituto suelto viaja cambiado por

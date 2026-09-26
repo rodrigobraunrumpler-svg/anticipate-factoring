@@ -15,6 +15,7 @@ export {
   ADVANCE_REQUEST_REPOSITORY,
   type AdvanceRequestRepositoryPort,
   type CreateAdvanceRequestResult,
+  type RepositoryCallOptions,
   type ReservedFile,
 } from './application/ports/advance-request-repository.port.js'
 export {

@@ -93,7 +93,8 @@ const POLICIES: Record<Layer, { internal: readonly string[]; packages: readonly 
     packages: ['@anticipate/shared/*', 'node:crypto'],
   },
   // 2. application → su domain y su application; otros módulos solo por su index.ts; de common solo
-  // los archivos de error y de puerto de exceptions, storage, time y captcha; shared y emails.
+  // los archivos de error y de puerto de exceptions, storage, time y captcha, y `abortable` (esperar
+  // con el plazo de un envío, D57); shared y emails.
   application: {
     internal: [
       'modules/{module}/domain/**',
@@ -104,6 +105,7 @@ const POLICIES: Record<Layer, { internal: readonly string[]; packages: readonly 
       'common/storage/index.ts',
       'common/time/clock.ts',
       'common/captcha/captcha-verifier.port.ts',
+      'common/utils/abortable.ts',
     ],
     packages: ['@anticipate/shared/*', '@anticipate/emails'],
   },

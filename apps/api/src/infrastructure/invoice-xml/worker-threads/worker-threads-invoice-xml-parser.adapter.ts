@@ -106,9 +106,12 @@ export class WorkerThreadsInvoiceXmlParser
 
   async parse(
     xml: Uint8Array,
-    { maxLength }: { readonly maxLength: number },
+    {
+      maxLength,
+      signal,
+    }: { readonly maxLength: number; readonly signal?: AbortSignal | undefined },
   ): Promise<InvoiceXmlParseOutcome> {
-    const outcome = await this.pool.run({ xml: bytesForWorker(xml), maxLength })
+    const outcome = await this.pool.run({ xml: bytesForWorker(xml), maxLength }, { signal })
     switch (outcome.status) {
       case 'completed':
         return { status: 'parsed', result: outcome.value }
@@ -123,6 +126,8 @@ export class WorkerThreadsInvoiceXmlParser
         )
         return { status: 'too-expensive', reason: 'memory' }
       case 'rejected':
+        // Quien pidió la lectura la canceló: rechaza con su motivo, como cualquier espera cancelada.
+        if (outcome.reason === 'aborted') throw signal?.reason
         return this.unavailable(outcome.reason)
     }
   }

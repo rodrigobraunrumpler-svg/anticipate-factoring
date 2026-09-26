@@ -75,6 +75,55 @@ afterEach(async () => {
   await Promise.all(pools.splice(0).map((pool) => pool.close()))
 })
 
+describe('WorkerPool: cancelación (plazo del envío)', () => {
+  const aborted = { status: 'rejected', reason: 'aborted' } as const
+
+  it('una tarea en la cola sale de la cola al cancelarse y la siguiente conserva su turno', async () => {
+    const pool = createPool({ maxWorkers: 1 })
+    await pool.start()
+    const busy = pool.run({ op: 'spin', ms: 200 })
+    const controller = new AbortController()
+    const queued = pool.run({ op: 'echo', value: 'no' }, { signal: controller.signal })
+    const next = pool.run({ op: 'echo', value: 'sí' })
+    expect(pool.stats.queued).toBe(2)
+
+    controller.abort(new Error('plazo del envío'))
+    await expect(queued).resolves.toEqual(aborted)
+    expect(pool.stats.queued).toBe(1)
+    await expect(busy).resolves.toEqual(completed('spun'))
+    await expect(next).resolves.toEqual(completed('sí'))
+  })
+
+  it('una tarea en curso responde aborted en el acto; su hilo la termina sin reemplazarse y sigue atendiendo', async () => {
+    const pool = createPool({ maxWorkers: 1 })
+    await pool.start()
+    const thread = await completedValue(pool.run({ op: 'thread' }))
+    const controller = new AbortController()
+    const running = pool.run({ op: 'spin', ms: 300 }, { signal: controller.signal })
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(pool.stats.busy).toBe(1)
+
+    const startedAt = Date.now()
+    controller.abort(new Error('plazo del envío'))
+    await expect(running).resolves.toEqual(aborted)
+    expect(Date.now() - startedAt).toBeLessThan(100)
+    // El hilo sigue ocupado con la lectura (acotada por su plazo) y después atiende la siguiente.
+    expect(pool.stats.busy).toBe(1)
+    await expect(pool.run({ op: 'thread' })).resolves.toEqual(completed(thread))
+  })
+
+  it('con la señal ya cancelada no toma lugar en la cola ni en un hilo', async () => {
+    const pool = createPool({ maxWorkers: 1 })
+    await pool.start()
+    const controller = new AbortController()
+    controller.abort(new Error('ya vencido'))
+    await expect(
+      pool.run({ op: 'echo', value: 1 }, { signal: controller.signal }),
+    ).resolves.toEqual(aborted)
+    expect(pool.stats).toMatchObject({ busy: 0, queued: 0 })
+  })
+})
+
 describe('WorkerPool', () => {
   it('corre cada tarea en un hilo aparte y devuelve su resultado', async () => {
     const pool = createPool()

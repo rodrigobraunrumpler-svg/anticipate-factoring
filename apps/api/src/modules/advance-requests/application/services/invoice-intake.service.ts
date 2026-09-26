@@ -54,13 +54,21 @@ export class InvoiceIntakeService {
     }
   }
 
-  async evaluate(input: InvoiceIntakeInput): Promise<InvoiceIntakeResult> {
+  /**
+   * Con `signal` cancelada (el plazo del envío, D57) rechaza con su motivo antes del próximo XML, y el
+   * lector recibe la misma señal para soltar el que está leyendo.
+   */
+  async evaluate(
+    input: InvoiceIntakeInput,
+    options: { readonly signal?: AbortSignal | undefined } = {},
+  ): Promise<InvoiceIntakeResult> {
+    options.signal?.throwIfAborted()
     // Primero el contexto: un pagador mal configurado es un error de la plataforma y corta aquí.
     const context = buildValidationContext(input.payer, input.supplierRuc, input.today)
     // Un archivo cuyo nombre no se puede repetir se rechaza en la puerta: no se lee ni se empareja.
     const xmlNames = screenFileNames(input.xmlFiles)
     const pdfNames = screenFileNames(input.pdfFiles)
-    const reading = await this.readAll(xmlNames.accepted)
+    const reading = await this.readAll(xmlNames.accepted, options.signal)
     const pairing = pairPdfs(xmlNames.accepted, pdfNames.accepted, this.limits.maxPdfBytes)
 
     // El máximo de facturas del pagador cuenta los XML recibidos, legibles o no, también los de
@@ -127,6 +135,7 @@ export class InvoiceIntakeService {
    */
   private async readAll(
     files: readonly UploadedFile[],
+    signal: AbortSignal | undefined,
   ): Promise<{ read: ReadInvoice<UploadedFile>[]; problems: Problem[] }> {
     const { maxXmlBytes } = this.limits
     const read: ReadInvoice<UploadedFile>[] = []
@@ -137,7 +146,8 @@ export class InvoiceIntakeService {
         problems.push(oversized)
         continue
       }
-      const outcome = await this.xmlParser.parse(file.buffer, { maxLength: maxXmlBytes })
+      signal?.throwIfAborted()
+      const outcome = await this.xmlParser.parse(file.buffer, { maxLength: maxXmlBytes, signal })
       if (outcome.status === 'unavailable') {
         throw new ServiceUnavailableError(`el lector de XML no está disponible (${outcome.reason})`)
       }

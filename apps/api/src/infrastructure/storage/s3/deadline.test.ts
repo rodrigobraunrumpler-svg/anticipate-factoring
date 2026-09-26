@@ -1,8 +1,58 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { withDeadline } from './deadline.js'
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 const timeoutError = () => Object.assign(new Error('venció el plazo'), { name: 'TimeoutError' })
+
+describe('withDeadline con la señal de quien llama', () => {
+  it('ya cancelada: rechaza con su motivo sin empezar la operación', async () => {
+    const controller = new AbortController()
+    const reason = new Error('plazo del envío')
+    controller.abort(reason)
+    let started = false
+    await expect(
+      withDeadline(
+        1_000,
+        async () => {
+          started = true
+        },
+        timeoutError,
+        controller.signal,
+      ),
+    ).rejects.toBe(reason)
+    expect(started).toBe(false)
+  })
+
+  it('cancelada en curso: rechaza en el acto con su motivo y cancela la señal de la operación', async () => {
+    const controller = new AbortController()
+    let received: AbortSignal | undefined
+    const running = withDeadline(
+      10_000,
+      (signal) => {
+        received = signal
+        return new Promise(() => undefined)
+      },
+      timeoutError,
+      controller.signal,
+    )
+    await sleep(10)
+    const reason = new Error('plazo del envío')
+    const startedAt = Date.now()
+    controller.abort(reason)
+    await expect(running).rejects.toBe(reason)
+    expect(Date.now() - startedAt).toBeLessThan(50)
+    expect(received?.aborted).toBe(true)
+  })
+
+  it('terminada a tiempo: suelta el oyente de la señal de quien llama', async () => {
+    const controller = new AbortController()
+    const removed = vi.spyOn(controller.signal, 'removeEventListener')
+    await expect(
+      withDeadline(1_000, async () => 'listo', timeoutError, controller.signal),
+    ).resolves.toBe('listo')
+    expect(removed).toHaveBeenCalledWith('abort', expect.any(Function))
+  })
+})
 
 describe('withDeadline', () => {
   it('resuelve con lo que devuelve la operación y no cancela la señal al terminar a tiempo', async () => {

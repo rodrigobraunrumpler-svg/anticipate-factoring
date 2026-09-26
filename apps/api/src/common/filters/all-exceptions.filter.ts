@@ -22,6 +22,7 @@ import {
   BusinessRulesViolatedError,
   isApplicationError,
   normalizeViolations,
+  ServiceUnavailableError,
 } from '#/common/exceptions/index.js'
 import { resolveCorrelationId } from '#/common/utils/correlation-id.js'
 import { defaultHttpErrorCode } from './default-http-error-code.map.js'
@@ -125,7 +126,8 @@ function codeOf(exception: unknown): ApiErrorCode {
  * en español: el de la `ApplicationError` o el de `API_ERROR_MESSAGES_ES`. Nunca reenvía el mensaje
  * de una `HttpException` ni de una librería (Nest, body-parser, multer, throttler). La única excepción
  * al sobre es un chequeo de salud fallido, que responde 503 con el cuerpo de Terminus. Toda respuesta
- * de error sale con `Cache-Control: no-store`.
+ * de error sale con `Cache-Control: no-store`; un `ServiceUnavailableError` con `retryAfterSeconds`,
+ * también con `Retry-After`.
  *
  * Un error de una librería de infraestructura pasa antes por los `EXCEPTION_TRANSLATORS`: así la base
  * caída es 503 `SERVICE_UNAVAILABLE` en cualquier ruta, sin que cada caso de uso la envuelva. El log
@@ -166,8 +168,15 @@ export class AllExceptionsFilter implements ExceptionFilter {
       return
     }
 
-    const error = publicErrorOf(this.translate(exception))
+    const translated = this.translate(exception)
+    const error = publicErrorOf(translated)
     const statusCode = API_ERROR_HTTP_STATUS[error.code]
+    if (
+      translated instanceof ServiceUnavailableError &&
+      translated.retryAfterSeconds !== undefined
+    ) {
+      response.setHeader('Retry-After', String(translated.retryAfterSeconds))
+    }
     if (statusCode >= 500) {
       this.logger.error(
         {

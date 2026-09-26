@@ -63,8 +63,12 @@ export class InlineInvoiceXmlParser implements InvoiceXmlParserPort {
 
   async parse(
     xml: Uint8Array,
-    { maxLength }: { readonly maxLength: number },
+    {
+      maxLength,
+      signal,
+    }: { readonly maxLength: number; readonly signal?: AbortSignal | undefined },
   ): Promise<InvoiceXmlParseOutcome> {
+    signal?.throwIfAborted()
     const index = this.calls.push({ xml, maxLength }) - 1
     this.active += 1
     this.maxConcurrent = Math.max(this.maxConcurrent, this.active)

@@ -20,10 +20,15 @@ export type InvoiceXmlParseOutcome =
 /**
  * Lector de los XML de facturas, fuera del hilo que atiende las peticiones: leer un XML hostil de
  * 1 MiB lleva medio segundo o más de CPU y en el hilo principal frenaría a toda la API. Nunca modifica
- * ni se queda con `xml`. Rechaza solo por un defecto (el lector falló de una forma que no debería).
+ * ni se queda con `xml`. Rechaza por un defecto (el lector falló de una forma que no debería) o, si
+ * `signal` se cancela (el plazo del envío, D57), en el acto y con su motivo: un XML que esperaba un
+ * hilo sale de la cola; uno que ya se leía termina en su hilo, acotado por su plazo, y se descarta.
  */
 export interface InvoiceXmlParserPort {
-  parse(xml: Uint8Array, options: { readonly maxLength: number }): Promise<InvoiceXmlParseOutcome>
+  parse(
+    xml: Uint8Array,
+    options: { readonly maxLength: number; readonly signal?: AbortSignal | undefined },
+  ): Promise<InvoiceXmlParseOutcome>
 }
 
 export const INVOICE_XML_PARSER = Symbol('INVOICE_XML_PARSER')

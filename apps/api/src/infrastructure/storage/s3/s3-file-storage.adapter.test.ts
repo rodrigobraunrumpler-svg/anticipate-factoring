@@ -556,6 +556,95 @@ describe('S3FileStorageAdapter: plazo por operación', () => {
   })
 })
 
+describe('S3FileStorageAdapter: cancelación de quien llama (plazo del envío)', () => {
+  const planned = () => new Error('plazo del envío')
+
+  it('putAll rechaza en el acto con el motivo, corta la subida en curso, no empieza más y no borra', async () => {
+    const fake = new FakeS3Client().onAny('PutObjectCommand', hangUntilAborted)
+    const controller = new AbortController()
+    const putting = adapterWith(fake, { maxConcurrentRequestsPerCall: 1 }).putAll(files('k/', 3), {
+      signal: controller.signal,
+    })
+    await sleep(20)
+    const reason = planned()
+    const startedAt = Date.now()
+    controller.abort(reason)
+    await expect(putting).rejects.toBe(reason)
+    expect(Date.now() - startedAt).toBeLessThan(100)
+    // La señal también cancela los borrados: los hace quien llama, con su propio plazo de limpieza.
+    expect(fake.names()).toEqual(['PutObjectCommand:k/0.xml'])
+  })
+
+  it('putAll rechaza en el acto aunque el proveedor no atienda la cancelación', async () => {
+    const fake = new FakeS3Client().onAny('PutObjectCommand', ignoresAbort)
+    const controller = new AbortController()
+    const putting = adapterWith(fake).putAll([xml, pdf], { signal: controller.signal })
+    await sleep(20)
+    const reason = planned()
+    const startedAt = Date.now()
+    controller.abort(reason)
+    await expect(putting).rejects.toBe(reason)
+    expect(Date.now() - startedAt).toBeLessThan(100)
+  })
+
+  it('putAll con la señal ya cancelada no manda nada', async () => {
+    const fake = new FakeS3Client()
+    const controller = new AbortController()
+    const reason = planned()
+    controller.abort(reason)
+    await expect(adapterWith(fake).putAll([xml, pdf], { signal: controller.signal })).rejects.toBe(
+      reason,
+    )
+    expect(fake.sent).toEqual([])
+  })
+
+  it('una subida que espera un cupo global sale de la espera al cancelarse', async () => {
+    const other = deferred()
+    const fake = new FakeS3Client()
+      .on('PutObjectCommand', 'otro/a.xml', () => other.promise)
+      .on('PutObjectCommand', 'k/a.xml', () => Promise.resolve({}))
+    const adapter = adapterWith(fake, { maxConcurrentRequests: 1 })
+    const busy = adapter.putAll([{ ...xml, key: 'otro/a.xml' }])
+    await sleep(10)
+    const controller = new AbortController()
+    const waiting = adapter.putAll([xml], { signal: controller.signal })
+    await sleep(10)
+    const reason = planned()
+    controller.abort(reason)
+    await expect(waiting).rejects.toBe(reason)
+    other.resolve({})
+    await busy
+    expect(fake.names()).toEqual(['PutObjectCommand:otro/a.xml'])
+  })
+
+  it('deleteQuietly con la señal ya cancelada no manda nada y devuelve todas las claves', async () => {
+    const fake = new FakeS3Client()
+    const controller = new AbortController()
+    controller.abort(planned())
+    await expect(
+      adapterWith(fake).deleteQuietly(['k/a.xml', 'k/b.xml'], { signal: controller.signal }),
+    ).resolves.toEqual(['k/a.xml', 'k/b.xml'])
+    expect(fake.sent).toEqual([])
+  })
+
+  it('deleteQuietly corta el borrado en curso al cancelarse, no manda más y los devuelve pendientes', async () => {
+    const fake = new FakeS3Client()
+      .on('DeleteObjectCommand', 'k/a.xml', () => Promise.resolve({}))
+      .on('DeleteObjectCommand', 'k/b.xml', hangUntilAborted)
+    const controller = new AbortController()
+    const deleting = adapterWith(fake, { maxConcurrentRequestsPerCall: 1 }).deleteQuietly(
+      ['k/a.xml', 'k/b.xml', 'k/c.xml'],
+      { signal: controller.signal },
+    )
+    await sleep(20)
+    const startedAt = Date.now()
+    controller.abort(planned())
+    await expect(deleting).resolves.toEqual(['k/b.xml', 'k/c.xml'])
+    expect(Date.now() - startedAt).toBeLessThan(100)
+    expect(fake.names()).toEqual(['DeleteObjectCommand:k/a.xml', 'DeleteObjectCommand:k/b.xml'])
+  })
+})
+
 describe('S3FileStorageAdapter.downloadUrl', () => {
   /** Firma con un cliente real: firmar no contacta al proveedor, el endpoint puede no existir. */
   async function signedUrl(key: string, downloadName: string): Promise<URL> {

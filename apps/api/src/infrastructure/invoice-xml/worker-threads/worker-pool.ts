@@ -25,8 +25,19 @@ export type WorkerPoolOptions = {
   readonly onStartFailure?: (error: Error) => void
 }
 
-/** Por qué una tarea no llegó a un hilo. */
-export type WorkerPoolRejection = 'queue-full' | 'queue-timeout' | 'start-failed' | 'closed'
+/**
+ * Por qué una tarea no llegó a un hilo, o por qué el pool dejó de esperarla (`aborted`: quien la pidió
+ * canceló su señal).
+ */
+export type WorkerPoolRejection =
+  | 'queue-full'
+  | 'queue-timeout'
+  | 'start-failed'
+  | 'closed'
+  | 'aborted'
+
+/** Cancelación de quien pide la tarea. */
+export type WorkerRunOptions = { readonly signal?: AbortSignal | undefined }
 
 /**
  * Cómo terminó una tarea. `timed-out` y `out-of-memory` hablan de la tarea (su hilo se terminó y el
@@ -70,6 +81,8 @@ type Task<TInput, TOutput> = {
   readonly reject: (error: Error) => void
   queueTimer: NodeJS.Timeout | undefined
   settled: boolean
+  /** Quita el oyente de la señal de quien pidió la tarea. */
+  detach: (() => void) | undefined
 }
 
 type SlotState = 'starting' | 'idle' | 'busy' | 'stopping'
@@ -105,6 +118,8 @@ function settle<TOutput>(
   task.settled = true
   clearTimeout(task.queueTimer)
   task.queueTimer = undefined
+  task.detach?.()
+  task.detach = undefined
   if (outcome instanceof Error) task.reject(outcome)
   else task.resolve(outcome)
 }
@@ -123,6 +138,9 @@ const isOutOfMemory = (error: Error | undefined): boolean =>
  *   cualquiera de los dos, el hilo se termina (`terminate` corta aun un bucle sin fin) y se reemplaza.
  * - Cada tarea se resuelve o rechaza exactamente una vez, también si el plazo y la respuesta llegan
  *   juntos o si el pool se cierra con la tarea en curso.
+ * - Una tarea cuya señal se cancela responde `aborted` en el acto: si esperaba, sale de la cola; si ya
+ *   corría, su hilo la termina (acotada por `taskTimeoutMs`), el resultado se descarta y el hilo sigue
+ *   atendiendo: cancelar no cuesta un hilo nuevo.
  * - Los hilos arrancan a demanda, más uno que `start` deja listo (y el pool repone). Un hilo ocioso
  *   no mantiene vivo el proceso (`unref`); uno que arranca o está ocupado sí, hasta estar listo o
  *   terminar su tarea.
@@ -186,9 +204,14 @@ export class WorkerPool<TInput, TOutput> {
     return ready
   }
 
-  /** Corre una tarea en un hilo libre o la deja en la cola. Nunca rechaza por la tarea: ver `WorkerTaskOutcome`. */
-  run(input: TInput): Promise<WorkerTaskOutcome<TOutput>> {
+  /**
+   * Corre una tarea en un hilo libre o la deja en la cola. Nunca rechaza por la tarea: ver
+   * `WorkerTaskOutcome`. Con `signal` cancelada responde `aborted` en el acto.
+   */
+  run(input: TInput, options: WorkerRunOptions = {}): Promise<WorkerTaskOutcome<TOutput>> {
+    const { signal } = options
     if (this.closed) return Promise.resolve(rejected('closed'))
+    if (signal?.aborted) return Promise.resolve(rejected('aborted'))
     return new Promise((resolve, reject) => {
       const task: Task<TInput, TOutput> = {
         input,
@@ -196,6 +219,12 @@ export class WorkerPool<TInput, TOutput> {
         reject,
         queueTimer: undefined,
         settled: false,
+        detach: undefined,
+      }
+      if (signal !== undefined) {
+        const onAbort = () => this.abort(task)
+        signal.addEventListener('abort', onAbort, { once: true })
+        task.detach = () => signal.removeEventListener('abort', onAbort)
       }
       // Un hilo libre solo existe con la cola vacía (`fill` la vacía en cuanto uno se libera): el
       // orden de llegada se respeta.
@@ -384,6 +413,13 @@ export class WorkerPool<TInput, TOutput> {
     const error = new WorkerStartError(`El worker ${this.options.name} no arrancó`, { cause })
     for (const waiter of this.readyWaiters.splice(0)) waiter.reject(error)
     for (const task of this.queue.splice(0)) settle(task, rejected('start-failed'))
+  }
+
+  /** Quien pidió la tarea ya no la espera: sale de la cola o, si corre, su resultado se descarta. */
+  private abort(task: Task<TInput, TOutput>): void {
+    const index = this.queue.indexOf(task)
+    if (index !== -1) this.queue.splice(index, 1)
+    settle(task, rejected('aborted'))
   }
 
   private expire(task: Task<TInput, TOutput>): void {

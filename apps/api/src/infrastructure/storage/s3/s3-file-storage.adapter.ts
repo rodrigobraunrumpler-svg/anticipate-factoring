@@ -12,6 +12,7 @@ import {
   DOWNLOAD_URL_TTL_SECONDS,
   type FileStoragePort,
   type PutFileInput,
+  type StorageCallOptions,
   type StoredObject,
 } from '#/common/storage/index.js'
 import { ConcurrencyLimiter, forEachConcurrently } from './concurrency.js'
@@ -141,6 +142,11 @@ type RequestControl = {
   readonly wanted?: () => boolean
   /** Recibe el error final, ya con el corte por plazo traducido, antes de liberar el cupo. */
   readonly onFailure?: (error: unknown) => void
+  /**
+   * Cancelación de quien llama: saca a la petición de la espera de cupo y corta la que está en curso,
+   * que rechaza en el acto con el motivo de la señal.
+   */
+  readonly signal?: AbortSignal | undefined
 }
 
 /** `FileStoragePort` sobre la API de S3 (R2 en staging y producción, S3Mock en local). */
@@ -160,9 +166,14 @@ export class S3FileStorageAdapter implements FileStoragePort {
     this.requests = new ConcurrencyLimiter(this.limits.maxConcurrentRequests)
   }
 
-  async putAll(inputs: readonly PutFileInput[]): Promise<StoredObject[]> {
+  async putAll(
+    inputs: readonly PutFileInput[],
+    options: StorageCallOptions = {},
+  ): Promise<StoredObject[]> {
+    const { signal } = options
     // Antes de subir nada: una entrada inválida rechaza sin que llegue ninguna al proveedor.
     assertUploadKeys(inputs)
+    signal?.throwIfAborted()
     const stored: Array<StoredObject | undefined> = inputs.map(() => undefined)
     // Las claves que se mandaron, hayan terminado bien o no: una subida que venció o se cortó pudo
     // quedar guardada igual. Las claves son nuevas, así que borrarlas nunca pisa otro archivo.
@@ -183,11 +194,12 @@ export class S3FileStorageAdapter implements FileStoragePort {
               return this.put(input, abortSignal)
             },
             {
-              wanted: () => firstFailure === undefined,
+              wanted: () => firstFailure === undefined && signal?.aborted !== true,
               // Antes de liberar el cupo: la subida que lo recibe ya no se manda.
               onFailure: (error) => {
                 firstFailure ??= { error }
               },
+              signal,
             },
           )
           if (result !== SKIPPED) stored[index] = result
@@ -198,23 +210,33 @@ export class S3FileStorageAdapter implements FileStoragePort {
       },
     )
     const uploaded = stored.filter((object): object is StoredObject => object !== undefined)
-    if (firstFailure === undefined) return uploaded
+    if (firstFailure === undefined && signal?.aborted !== true) return uploaded
 
-    const notDeleted = await this.deleteQuietly(attempted)
+    // Con la señal cancelada no se manda ningún borrado: quien llama libera y borra con su propio
+    // plazo de limpieza (las claves son las que reservó).
+    const notDeleted = await this.deleteQuietly(attempted, { signal })
+    const cancelled = signal?.aborted === true
     this.logger.warn(
       {
         failed,
         uploaded: uploaded.length,
         notStarted: inputs.length - attempted.length,
         notDeleted: notDeleted.length,
-        error: describeError(firstFailure.error),
+        cancelled,
+        ...(firstFailure === undefined ? {} : { error: describeError(firstFailure.error) }),
       },
-      'Falló una subida; se intentó borrar todas las que se mandaron.',
+      cancelled
+        ? 'Subida cancelada por quien llamó: las que se mandaron quedan para su limpieza.'
+        : 'Falló una subida; se intentó borrar todas las que se mandaron.',
     )
-    throw firstFailure.error
+    throw cancelled ? signal?.reason : firstFailure?.error
   }
 
-  async deleteQuietly(keys: readonly string[]): Promise<string[]> {
+  async deleteQuietly(
+    keys: readonly string[],
+    options: StorageCallOptions = {},
+  ): Promise<string[]> {
+    const { signal } = options
     const unique = [...new Set(keys)]
     const notDeleted = new Set<string>()
     const valid: string[] = []
@@ -246,10 +268,11 @@ export class S3FileStorageAdapter implements FileStoragePort {
               abortSignal,
             }),
           {
-            wanted: () => !unresponsive,
+            wanted: () => !unresponsive && signal?.aborted !== true,
             onFailure: (error) => {
               if (isTimeout(error)) unresponsive = true
             },
+            signal,
           },
         )
         if (result === SKIPPED) {
@@ -258,6 +281,10 @@ export class S3FileStorageAdapter implements FileStoragePort {
         }
       } catch (error) {
         notDeleted.add(key)
+        if (signal?.aborted === true && error === signal.reason) {
+          skipped += 1
+          return
+        }
         this.logger.warn(
           { key, error: describeError(error) },
           'No se pudo borrar un archivo del almacenamiento; queda pendiente.',
@@ -267,7 +294,9 @@ export class S3FileStorageAdapter implements FileStoragePort {
     if (skipped > 0) {
       this.logger.warn(
         { skipped },
-        'El almacenamiento dejó de responder; los borrados que faltaban quedan pendientes.',
+        signal?.aborted === true
+          ? 'Borrados cancelados por quien llamó; los que faltaban quedan pendientes.'
+          : 'El almacenamiento dejó de responder; los borrados que faltaban quedan pendientes.',
       )
     }
     return unique.filter((key) => notDeleted.has(key))
@@ -328,12 +357,13 @@ export class S3FileStorageAdapter implements FileStoragePort {
           operationTimeoutMs,
           send,
           () => new StorageOperationTimeoutError(operation, operationTimeoutMs),
+          control.signal,
         )
       } catch (error) {
         control.onFailure?.(error)
         throw error
       }
-    })
+    }, control.signal)
   }
 
   private async put(input: PutFileInput, abortSignal: AbortSignal): Promise<StoredObject> {

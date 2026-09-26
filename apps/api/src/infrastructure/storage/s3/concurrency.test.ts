@@ -13,6 +13,61 @@ function deferred<T = void>() {
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0))
 
+describe('ConcurrencyLimiter: cancelación', () => {
+  it('una tarea que espera cupo sale de la espera al cancelarse su señal, sin correr', async () => {
+    const limiter = new ConcurrencyLimiter(1)
+    const gate = deferred()
+    const first = limiter.run(() => gate.promise)
+    const controller = new AbortController()
+    let ran = false
+    const waiting = limiter.run(async () => {
+      ran = true
+    }, controller.signal)
+    await tick()
+    expect(limiter.pending).toBe(1)
+
+    const reason = new Error('plazo del envío')
+    controller.abort(reason)
+    await expect(waiting).rejects.toBe(reason)
+    expect(limiter.pending).toBe(0)
+    gate.resolve()
+    await first
+    await tick()
+    expect(ran).toBe(false)
+    expect(limiter.running).toBe(0)
+  })
+
+  it('con la señal ya cancelada rechaza sin tomar cupo', async () => {
+    const limiter = new ConcurrencyLimiter(1)
+    const controller = new AbortController()
+    const reason = new Error('ya vencido')
+    controller.abort(reason)
+    let ran = false
+    await expect(
+      limiter.run(async () => {
+        ran = true
+      }, controller.signal),
+    ).rejects.toBe(reason)
+    expect(ran).toBe(false)
+    expect(limiter.running).toBe(0)
+  })
+
+  it('una tarea que ya tiene cupo no se corta por la señal: termina y libera su cupo', async () => {
+    const limiter = new ConcurrencyLimiter(1)
+    const controller = new AbortController()
+    const gate = deferred()
+    const running = limiter.run(async () => {
+      await gate.promise
+      return 'terminó'
+    }, controller.signal)
+    await tick()
+    controller.abort(new Error('plazo'))
+    gate.resolve()
+    await expect(running).resolves.toBe('terminó')
+    expect(limiter.running).toBe(0)
+  })
+})
+
 describe('ConcurrencyLimiter', () => {
   it('nunca corre más tareas que el tope y atiende la espera en orden de llegada', async () => {
     const limiter = new ConcurrencyLimiter(2)

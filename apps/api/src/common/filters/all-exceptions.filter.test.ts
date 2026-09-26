@@ -160,6 +160,19 @@ describe('AllExceptionsFilter: errores de la aplicación', () => {
     expect(loggedErrors).toHaveBeenCalledTimes(1)
   })
 
+  it('ServiceUnavailableError con retryAfterSeconds sale con Retry-After; sin él, no', () => {
+    const later = run(new ServiceUnavailableError('plazo del envío', { retryAfterSeconds: 30 }))
+    expectEnvelope(later, 'SERVICE_UNAVAILABLE')
+    expect(later.headers['retry-after']).toBe('30')
+    expect(run(new ServiceUnavailableError('sin espera')).headers['retry-after']).toBeUndefined()
+  })
+
+  it('ServiceUnavailableError rechaza una espera que no es un entero positivo de segundos', () => {
+    for (const retryAfterSeconds of [0, -1, 1.5, Number.NaN]) {
+      expect(() => new ServiceUnavailableError('x', { retryAfterSeconds })).toThrow(RangeError)
+    }
+  })
+
   it('otra clase con VALIDATION_ERROR recibe la observación genérica, nunca un 500', () => {
     class OtherValidationError extends ApplicationError<'VALIDATION_ERROR'> {
       constructor() {

@@ -1,6 +1,8 @@
 /**
  * Semáforo FIFO: como mucho `limit` tareas a la vez; las demás esperan en orden de llegada. Un
  * cupo se libera cuando la tarea termina, resuelva o rechace, y pasa directo a la siguiente en espera.
+ * Una tarea que espera cupo con una `signal` que se cancela sale de la espera y rechaza con su motivo,
+ * sin correr; una que ya tiene cupo no se corta: la señal es asunto de la tarea.
  */
 export class ConcurrencyLimiter {
   private active = 0
@@ -22,8 +24,8 @@ export class ConcurrencyLimiter {
     return this.waiting.length
   }
 
-  async run<T>(task: () => Promise<T>): Promise<T> {
-    await this.acquire()
+  async run<T>(task: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+    await this.acquire(signal)
     try {
       return await task()
     } finally {
@@ -31,12 +33,25 @@ export class ConcurrencyLimiter {
     }
   }
 
-  private acquire(): Promise<void> {
+  private acquire(signal: AbortSignal | undefined): Promise<void> {
+    if (signal?.aborted) return Promise.reject(signal.reason)
     if (this.active < this.limit) {
       this.active += 1
       return Promise.resolve()
     }
-    return new Promise((resolve) => this.waiting.push(resolve))
+    return new Promise((resolve, reject) => {
+      const granted = () => {
+        signal?.removeEventListener('abort', onAbort)
+        resolve()
+      }
+      const onAbort = () => {
+        const index = this.waiting.indexOf(granted)
+        if (index !== -1) this.waiting.splice(index, 1)
+        reject(signal?.reason)
+      }
+      signal?.addEventListener('abort', onAbort, { once: true })
+      this.waiting.push(granted)
+    })
   }
 
   private release(): void {
