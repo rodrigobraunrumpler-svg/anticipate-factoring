@@ -1,12 +1,20 @@
 import type { NestExpressApplication } from '@nestjs/platform-express'
 import request from 'supertest'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeAll, describe, expect, it } from 'vitest'
 import { createTestApp } from '../support/app.js'
+import { createTestPrisma, truncateAll } from '../support/db.js'
 
 /** Puerto donde nada escucha: la conexión se rechaza al instante. */
 const UNREACHABLE_DATABASE_URL = 'postgresql://anticipate:anticipate@127.0.0.1:1/anticipate_test'
 
 let app: NestExpressApplication | undefined
+
+// La readiness incluye el backlog del outbox: el `ok` no debe depender de lo que dejó otro archivo.
+beforeAll(async () => {
+  const db = createTestPrisma()
+  await truncateAll(db.prisma)
+  await db.close()
+})
 
 afterEach(async () => {
   await app?.close()

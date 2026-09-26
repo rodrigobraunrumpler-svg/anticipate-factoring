@@ -49,6 +49,8 @@ beforeEach(async () => {
 
 afterAll(async () => {
   await storage.deleteQuietly(uploadedKeys)
+  // El último test deja un evento DEAD_LETTER: sin esto, la readiness de otros archivos sale `degraded`.
+  await truncateAll(prisma)
   await app.close()
   await db.close()
 })
