@@ -114,7 +114,7 @@ describe('PrismaLegalDocumentReader', () => {
   })
 
   it('mientras la landing cambia de versión, la nueva y la anterior están vigentes a la vez', async () => {
-    // El orden de STACK §14 (Legal): se carga la nueva, se publica la landing con ella y recién
+    // El orden de STACK §11: se carga la nueva, se publica la landing con ella y recién
     // después se retira la anterior. Mientras tanto la landing vieja y la nueva envían versiones
     // distintas y las dos valen.
     await db.prisma.legalDocumentVersion.createMany({
