@@ -22,14 +22,14 @@ apps/api/
 │   ├── common/           transversal sin dueño: config, constants, decorators, guards, middleware,
 │   │                     time, types, utils, exceptions, filters, interceptors, swagger,
 │   │                     validation, storage y captcha
-│   ├── infrastructure/   adaptadores: time, prisma (y sus repositories/), storage/s3, notifications
-│   │                     y captcha/turnstile
+│   ├── infrastructure/   adaptadores: time, prisma (y sus repositories/), storage/s3, notifications,
+│   │                     captcha/turnstile e invoice-xml/worker-threads (el lector de XML en hilos)
 │   ├── modules/          health-checks, payers, notifications, outbox, advance-requests y maintenance
 │   └── workers/          raíces de composición en segundo plano: outbox-publisher y maintenance
 └── test/
     ├── integration/      global-setup.ts y los *.test.ts contra los contenedores reales
-    └── support/          config.ts, app.ts, fakes.ts, db.ts, factories.ts, s3.ts, mailpit.ts y
-                          advance-request-fixtures.ts
+    └── support/          config.ts, app.ts, fakes.ts, db.ts, factories.ts, s3.ts, mailpit.ts,
+                          advance-request-fixtures.ts y hostile-xml.ts
 ```
 
 ## Qué va en cada lugar
@@ -39,7 +39,7 @@ apps/api/
 | `src/` (raíz) | `main.ts` (lee `.env` fuera de producción, valida la configuración, crea la app y abre el puerto), `app.module.ts` (`AppModule.register(config, extraModules)`, la raíz de composición) y `app.setup.ts` (`NEST_APP_OPTIONS` y `setupApp`, compartidos por producción y tests) | Lógica de negocio |
 | `bootstrap/` | Una pieza por archivo: `constants.ts` (`API_PREFIX`, `API_DEFAULT_VERSION`, `SWAGGER_PATH`, `HEALTH_PATHS`), `body-parser.options.ts`, `cors.options.ts`, `helmet.options.ts`, `server-timeouts.ts`, `pino-http.options.ts`, `swagger.setup.ts` y `startup-banner.ts` (las líneas de arranque: URL completas fuera de producción) | Nada de `modules/` |
 | `common/` | Lo transversal: configuración validada, cabeceras del contrato, decoradores, guards, middleware, puertos comunes (`Clock`, almacenamiento, captcha), excepciones, filtro, interceptores y validación | Nada de `modules/`, `infrastructure/` ni `workers/` |
-| `infrastructure/` | Adaptadores de los puertos: Prisma y sus repositorios (`prisma/repositories/<módulo>/`, con su módulo de persistencia y sus `mappers/`), S3, correo, Turnstile y reloj | Casos de uso, controladores, workers |
+| `infrastructure/` | Adaptadores de los puertos: Prisma y sus repositorios (`prisma/repositories/<módulo>/`, con su módulo de persistencia y sus `mappers/`), S3, correo, Turnstile, reloj y el lector de XML (`invoice-xml/worker-threads/`: el pool de `worker_threads`, el script del worker y su adaptador, D53) | Casos de uso, controladores, workers |
 | `modules/<m>/domain/` | TypeScript puro: tipos, servicios de dominio y errores del módulo | Nest, Prisma, Express, adaptadores |
 | `modules/<m>/application/` | Puertos (`ports/*.port.ts`, con su token `Symbol`), casos de uso, servicios de aplicación, handlers y tipos. Clases con dependencias por constructor | Nest, Prisma, Express, multer, AWS SDK, nodemailer, `infrastructure/` |
 | `modules/<m>/presentation/http/` | Controladores, pipes, decoradores, DTO de multipart, mappers de respuesta, Swagger y `constants/` del módulo (por ejemplo, `payers/presentation/http/constants/public-payers.constants.ts`: `PUBLIC_PAYERS_CACHE_CONTROL`, caché pública de `GET /api/v1/payers`) | Repositorios o adaptadores |
@@ -100,7 +100,7 @@ Cada archivo de `src` (salvo `infrastructure/prisma/generated/` y los `*.test.ts
 | 3 | `presentation` | sus casos de uso y tipos (no los puertos), su `domain`, `common/**`, `@nestjs/*`, `express`, `@anticipate/shared/*` |
 | 4 | `module-wiring` (`modules/*/*.module.ts`, `modules/*/index.ts`) | su módulo, el `index.ts` de otro módulo, `common/**`, `infrastructure/**` (solo para cablear), `@nestjs/*` |
 | 5 | `infrastructure` | `common/**`, `infrastructure/**`, `modules/*/index.ts`; cualquier paquete salvo la regla 6 |
-| 6 | Dependencias técnicas | `@prisma/*` y `infrastructure/prisma/generated/**` solo desde `infrastructure/prisma/**`; `@aws-sdk/*` solo desde `infrastructure/storage/**`; `nodemailer` solo desde `infrastructure/notifications/**`; `uuid` solo desde `infrastructure/prisma/id.ts` |
+| 6 | Dependencias técnicas | `@prisma/*` y `infrastructure/prisma/generated/**` solo desde `infrastructure/prisma/**`; `@aws-sdk/*` solo desde `infrastructure/storage/**`; `nodemailer` solo desde `infrastructure/notifications/**`; `uuid` solo desde `infrastructure/prisma/id.ts`; `node:worker_threads` solo desde `infrastructure/invoice-xml/worker-threads/**` |
 | 7 | `workers` | su carpeta, `modules/*/index.ts`, `infrastructure/**/*.module.ts`, `infrastructure/*/index.ts`, `common/**`, `@nestjs/*` |
 | 8 | `common` | `common/**`, `@nestjs/*`, `express`, `multer`, `@anticipate/shared/*`, `rxjs`, `node:*`, `helmet`, `zod` |
 | 9 | `bootstrap` | `bootstrap/**`, `common/**`, `@nestjs/*` y los paquetes de arranque (`helmet`, `nestjs-pino`, `pino`, `pino-http`, `express`, `node:*`) |
@@ -152,3 +152,4 @@ violación en el mismo archivo.
 | Puertos y repositorios | Puertos en `application/ports/` con token `Symbol`; repositorios en `infrastructure/prisma/repositories/<módulo>/`; cableado con `useFactory` | `application/` queda libre de Nest y de Prisma |
 | Ids | UUIDv7 con `newId()` (`infrastructure/prisma/id.ts`); Biome prohíbe `randomUUID` fuera del id de correlación | El orden por `id` es el orden de creación |
 | Errores de infraestructura | Cada adaptador publica un `ExceptionTranslator` (`translateDatabaseException` en `infrastructure/prisma`) y `app.module.ts` los entrega a `AllExceptionsFilter` con `EXCEPTION_TRANSLATORS` | La base caída es 503 en toda ruta sin que cada caso de uso la envuelva, y `common` no conoce Prisma |
+| CPU pesada | Fuera del hilo principal, en `worker_threads` detrás de un puerto (hoy, solo la lectura de XML: `InvoiceXmlParserPort`, D53). El script del worker (`*.worker.ts`) lo carga Node sin Vite, desde `src` en los tests (quitando los tipos) y desde `dist` en la imagen: en ejecución solo importa paquetes y `node:`; lo propio, con `import type` | Un XML hostil no frena las demás peticiones ni la sonda de vida |
