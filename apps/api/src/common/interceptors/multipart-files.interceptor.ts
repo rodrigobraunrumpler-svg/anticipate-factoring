@@ -1,3 +1,4 @@
+import { tooManyFilesMessage } from '@anticipate/shared/api'
 import {
   type CallHandler,
   type ExecutionContext,
@@ -71,20 +72,25 @@ function checkedLimits(limits: MultipartLimits): MultipartLimits {
 
 /**
  * Traduce un error de multer o de busboy a un error público por `MulterError.code`, nunca por su
- * mensaje en inglés: `LIMIT_FILE_COUNT` y `LIMIT_PART_COUNT` → `TOO_MANY_FILES`,
- * `LIMIT_UNEXPECTED_FILE` → `UNEXPECTED_FILE_FIELD`, `LIMIT_FILE_SIZE` → `PAYLOAD_TOO_LARGE` y
- * cualquier otro (límites de campos, nombres inválidos, cuerpo cortado o mal armado) →
- * `MALFORMED_MULTIPART`. Nunca produce un 500. El diagnóstico lleva solo el código: nunca nombres de
- * campos ni de archivos, que manda el cliente.
+ * mensaje en inglés: `LIMIT_FILE_COUNT` y `LIMIT_PART_COUNT` → `TOO_MANY_FILES`, con el tope de
+ * archivos en el mensaje (`tooManyFilesMessage`), `LIMIT_UNEXPECTED_FILE` → `UNEXPECTED_FILE_FIELD`,
+ * `LIMIT_FILE_SIZE` → `PAYLOAD_TOO_LARGE` y cualquier otro (límites de campos, nombres inválidos,
+ * cuerpo cortado o mal armado) → `MALFORMED_MULTIPART`. Nunca produce un 500. El diagnóstico lleva
+ * solo el código: nunca nombres de campos ni de archivos, que manda el cliente.
  */
-export function multipartErrorToApiError(error: unknown): ApiError {
+export function multipartErrorToApiError(
+  error: unknown,
+  limits: Pick<MultipartLimits, 'files'>,
+): ApiError {
   if (error instanceof multer.MulterError) {
     const code: string = error.code
     const diagnostic = `multer: ${code}`
     switch (code) {
       case 'LIMIT_FILE_COUNT':
       case 'LIMIT_PART_COUNT':
-        return apiError('TOO_MANY_FILES', diagnostic)
+        return apiError('TOO_MANY_FILES', diagnostic, {
+          publicMessage: tooManyFilesMessage(limits.files),
+        })
       case 'LIMIT_UNEXPECTED_FILE':
         return apiError('UNEXPECTED_FILE_FIELD', diagnostic)
       case 'LIMIT_FILE_SIZE':
@@ -116,15 +122,17 @@ export function MultipartFilesInterceptor(
   @Injectable()
   class MultipartFilesMixinInterceptor implements NestInterceptor {
     private readonly readMultipart: RequestHandler
+    private readonly limits: MultipartLimits
     private readonly logger = new Logger('MultipartFilesInterceptor')
 
     constructor(
       @Inject(APP_CONFIG) config: AppConfig,
       @Inject(INFLIGHT_BODY_BUDGET) private readonly budget: InflightBodyBudget,
     ) {
+      this.limits = checkedLimits(limitsFrom(config))
       this.readMultipart = multer({
         storage: multer.memoryStorage(),
-        limits: checkedLimits(limitsFrom(config)),
+        limits: this.limits,
         defParamCharset: 'utf8',
       }).fields(multerFields)
     }
@@ -157,7 +165,7 @@ export function MultipartFilesInterceptor(
         await new Promise<void>((resolve, reject) => {
           this.readMultipart(request, response, (error?: unknown) => {
             if (error === undefined || error === null) resolve()
-            else reject(multipartErrorToApiError(error))
+            else reject(multipartErrorToApiError(error, this.limits))
           })
         })
       } catch (error) {

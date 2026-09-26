@@ -1,3 +1,4 @@
+import { MAX_FORM_FIELD_BYTES } from '@anticipate/shared/api'
 import type { AppConfig } from '#/common/config/index.js'
 import type {
   MultipartFileField,
@@ -17,9 +18,6 @@ export const ADVANCE_REQUEST_FILE_FIELD = { xml: 'xml', pdf: 'pdf' } as const
  * respondería `UNEXPECTED_FILE_FIELD`, que confundiría al proveedor.
  */
 export const MAX_FILES_PER_FIELD = 200
-
-/** Bytes del campo `form`: el formulario más largo posible, con escapes, ocupa menos de 32 KiB. */
-export const MAX_FORM_FIELD_BYTES = 64 * 1024
 
 export const ADVANCE_REQUEST_FILE_FIELDS: readonly MultipartFileField[] = [
   { name: ADVANCE_REQUEST_FILE_FIELD.xml, maxCount: MAX_FILES_PER_FIELD },

@@ -6,6 +6,7 @@ import {
   apiSuccessEnvelopeSchema,
   DEFAULT_SUCCESS_MESSAGE,
   SUCCESS_MESSAGES_ES,
+  tooManyFilesMessage,
 } from '@anticipate/shared/api'
 import { createProblem } from '@anticipate/shared/errors'
 import {
@@ -142,10 +143,14 @@ const ENGLISH =
 
 type HttpResponse = { status: number; body: unknown; headers: Record<string, string>; text: string }
 
-function expectErrorEnvelope(response: HttpResponse, code: ApiErrorCode) {
+function expectErrorEnvelope(
+  response: HttpResponse,
+  code: ApiErrorCode,
+  message: string = API_ERROR_MESSAGES_ES[code],
+) {
   expect(apiErrorEnvelopeSchema.safeParse(response.body).error?.issues ?? []).toEqual([])
   expect(response.status).toBe(API_ERROR_HTTP_STATUS[code])
-  expect(response.body).toMatchObject({ code, message: API_ERROR_MESSAGES_ES[code] })
+  expect(response.body).toMatchObject({ code, message })
   expect(response.headers['x-correlation-id']).toBe(
     (response.body as { correlationId: string }).correlationId,
   )
@@ -302,7 +307,9 @@ describe('contrato HTTP: sobres, errores y correlation id', () => {
         (req: request.Test) => req.send({ xml: 'no' }),
       ],
     ] as const)('upload con %s → %s', async (_label, code, build) => {
-      expectErrorEnvelope(await build(http().post('/api/v1/probe/upload')), code)
+      // TOO_MANY_FILES dice el tope de archivos del endpoint (2 en la sonda).
+      const message = code === 'TOO_MANY_FILES' ? tooManyFilesMessage(2) : undefined
+      expectErrorEnvelope(await build(http().post('/api/v1/probe/upload')), code, message)
     })
   })
 })

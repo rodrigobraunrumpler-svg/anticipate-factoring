@@ -6,6 +6,7 @@ import {
   type ApiErrorEnvelope,
   apiErrorEnvelopeSchema,
   apiSuccessEnvelopeSchema,
+  tooManyFilesMessage,
 } from '@anticipate/shared/api'
 import type { Problem } from '@anticipate/shared/errors'
 import type { NestExpressApplication } from '@nestjs/platform-express'
@@ -1015,14 +1016,14 @@ describe('POST /api/v1/advance-requests · límites', () => {
     )
   })
 
-  it('más archivos que el máximo: 400 TOO_MANY_FILES', async () => {
+  it('más archivos que el máximo: 400 TOO_MANY_FILES, con el máximo en el mensaje', async () => {
     await withApp({ UPLOAD_MAX_FILES: '2' }, async (small) => {
       const res = await submitAdvanceRequest(small, {
         xml: [1, 2, 3].map(
           (n) => [invoiceXml({ seriesNumber: `F001-${n}` }), `F001-${n}.xml`] as const,
         ),
       })
-      expectError(res, 400, 'TOO_MANY_FILES')
+      expect(expectError(res, 400, 'TOO_MANY_FILES').message).toBe(tooManyFilesMessage(2))
     })
   })
 

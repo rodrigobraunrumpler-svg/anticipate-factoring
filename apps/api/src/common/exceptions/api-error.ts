@@ -12,9 +12,16 @@ const DETAILED_API_ERROR_CODES: ReadonlySet<string> = new Set<DetailedApiErrorCo
   'BUSINESS_RULES_VIOLATED',
 ])
 
-export type ApiErrorOptions = { readonly cause?: unknown }
+export type ApiErrorOptions = {
+  readonly cause?: unknown
+  /**
+   * Mensaje público en lugar del de `API_ERROR_MESSAGES_ES`: solo un texto de `shared` armado con el
+   * dato que lo hace accionable (por ejemplo `tooManyFilesMessage(max)`), nunca un texto de afuera.
+   */
+  readonly publicMessage?: string
+}
 
-/** Error público sin detalle: el código decide el estado HTTP y el mensaje en español. */
+/** Error público sin detalle: el código decide el estado HTTP y, salvo que se indique otro, el mensaje. */
 export class ApiError<
   TCode extends PlainApiErrorCode = PlainApiErrorCode,
 > extends ApplicationError<TCode> {
@@ -24,7 +31,7 @@ export class ApiError<
         `${code} lleva detalle: usa ApiValidationError o BusinessRulesViolatedError`,
       )
     }
-    super(code, { diagnostic, cause: options.cause })
+    super(code, { diagnostic, cause: options.cause, publicMessage: options.publicMessage })
   }
 }
 

@@ -5,6 +5,7 @@ import {
   API_ERROR_MESSAGES_ES,
   type ApiErrorCode,
   apiErrorEnvelopeSchema,
+  tooManyFilesMessage,
 } from '@anticipate/shared/api'
 import {
   Body,
@@ -51,10 +52,15 @@ describe('multipartErrorToApiError', () => {
   ] as const)('MulterError %s → %s', (multerCode, apiCode) => {
     const error = multipartErrorToApiError(
       new multer.MulterError(multerCode as multer.ErrorCode, 'campo-del-cliente'),
+      { files: 7 },
     )
     expect(error.publicCode).toBe(apiCode)
     expect(error.message).toBe(`multer: ${multerCode}`)
     expect(error.message).not.toContain('campo-del-cliente')
+    // Solo TOO_MANY_FILES dice su tope: con él, el proveedor sabe cuántos archivos quitar.
+    expect(error.publicMessage).toBe(
+      apiCode === 'TOO_MANY_FILES' ? tooManyFilesMessage(7) : API_ERROR_MESSAGES_ES[apiCode],
+    )
   })
 
   it.each([
@@ -62,7 +68,7 @@ describe('multipartErrorToApiError', () => {
     ['un corte del cliente', new Error('Request aborted')],
     ['algo que no es Error', 'texto'],
   ])('%s → MALFORMED_MULTIPART', (_label, error) => {
-    expect(multipartErrorToApiError(error).publicCode).toBe('MALFORMED_MULTIPART')
+    expect(multipartErrorToApiError(error, { files: 7 }).publicCode).toBe('MALFORMED_MULTIPART')
   })
 })
 
@@ -177,10 +183,14 @@ describe('MultipartFilesInterceptor con multer real', () => {
 
   const upload = () => request(app.getHttpServer()).post('/upload')
 
-  function expectError(response: { status: number; body: unknown }, code: ApiErrorCode) {
+  function expectError(
+    response: { status: number; body: unknown },
+    code: ApiErrorCode,
+    message: string = API_ERROR_MESSAGES_ES[code],
+  ) {
     expect(apiErrorEnvelopeSchema.safeParse(response.body).error?.issues ?? []).toEqual([])
     expect(response.status).toBe(API_ERROR_HTTP_STATUS[code])
-    expect(response.body).toMatchObject({ code, message: API_ERROR_MESSAGES_ES[code] })
+    expect(response.body).toMatchObject({ code, message })
   }
 
   it('lee los archivos y el campo de texto, con nombres en UTF-8', async () => {
@@ -198,20 +208,20 @@ describe('MultipartFilesInterceptor con multer real', () => {
     })
   })
 
-  it('más archivos que el tope: 400 TOO_MANY_FILES', async () => {
+  it('más archivos que el tope: 400 TOO_MANY_FILES con el tope en el mensaje', async () => {
     let req = upload()
     for (let n = 0; n < 4; n += 1) req = req.attach('xml', Buffer.from('<a/>'), `f${n}.xml`)
-    expectError(await req, 'TOO_MANY_FILES')
+    expectError(await req, 'TOO_MANY_FILES', tooManyFilesMessage(LIMITS.files))
   })
 
-  it('más partes que el tope: 400 TOO_MANY_FILES', async () => {
+  it('más partes que el tope: 400 TOO_MANY_FILES con el tope de archivos en el mensaje', async () => {
     const response = await upload()
       .field('form', '{}')
       .field('otro', 'x')
       .attach('xml', Buffer.from('<a/>'), 'a.xml')
       .attach('xml', Buffer.from('<a/>'), 'b.xml')
       .attach('pdf', Buffer.from('%PDF'), 'a.pdf')
-    expectError(response, 'TOO_MANY_FILES')
+    expectError(response, 'TOO_MANY_FILES', tooManyFilesMessage(LIMITS.files))
   })
 
   it('un campo de archivos no permitido: 400 UNEXPECTED_FILE_FIELD', async () => {

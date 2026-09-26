@@ -32,19 +32,21 @@ import {
 import { InvoiceIntakeService } from '#/modules/advance-requests/application/services/invoice-intake.service.js'
 import { CreateAdvanceRequestUseCase } from '#/modules/advance-requests/application/use-cases/create-advance-request.use-case.js'
 import { AdvanceRequestsController } from '#/modules/advance-requests/presentation/http/controllers/advance-requests.controller.js'
+import { IntakeLimitsController } from '#/modules/advance-requests/presentation/http/controllers/intake-limits.controller.js'
 import { EMAIL_SENDER, type EmailSenderPort } from '#/modules/notifications/index.js'
 import { OUTBOX_WAKE_UP, type OutboxWakeUpSignal } from '#/modules/outbox/index.js'
 
 /**
- * Solicitudes de adelanto: `POST /api/v1/advance-requests` y los dos handlers de correo del
- * outbox, que exporta para que `OutboxPublisherModule` los registre. Los casos de uso y handlers son
+ * Solicitudes de adelanto: `POST /api/v1/advance-requests`, `GET /api/v1/intake-limits` (los topes
+ * de subida para la landing) y los dos handlers de correo del outbox, que exporta para que
+ * `OutboxPublisherModule` los registre. Los casos de uso y handlers son
  * clases sin Nest: se cablean aquí con `useFactory`. `FILE_STORAGE`, `OUTBOX_WAKE_UP`,
  * `EMAIL_SENDER`, `CLOCK` y `APP_CONFIG` llegan de módulos globales; el lector de XML
  * (`INVOICE_XML_PARSER`), de `InvoiceXmlParserModule`.
  */
 @Module({
   imports: [AdvanceRequestsPersistenceModule, TurnstileModule, InvoiceXmlParserModule],
-  controllers: [AdvanceRequestsController],
+  controllers: [AdvanceRequestsController, IntakeLimitsController],
   providers: [
     {
       provide: InvoiceIntakeService,
@@ -116,6 +118,7 @@ import { OUTBOX_WAKE_UP, type OutboxWakeUpSignal } from '#/modules/outbox/index.
 export class AdvanceRequestsModule implements NestModule {
   configure(consumer: MiddlewareConsumer): void {
     // Con la clase y no con el path: con prefijo y versión, el texto dejaría de coincidir sin avisar.
+    // Solo el envío: `GET /api/v1/intake-limits` no tiene cuerpo.
     consumer.apply(ContentLengthLimitMiddleware).forRoutes(AdvanceRequestsController)
   }
 }

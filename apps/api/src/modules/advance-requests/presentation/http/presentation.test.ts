@@ -1,4 +1,5 @@
 import { FORM_MESSAGES } from '@anticipate/shared/advance-request'
+import { MAX_FORM_FIELD_BYTES } from '@anticipate/shared/api'
 import { Controller, Post } from '@nestjs/common'
 import type { NestExpressApplication } from '@nestjs/platform-express'
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger'
@@ -10,7 +11,6 @@ import { testConfig } from '../../../../../test/support/config.js'
 import {
   advanceRequestMultipartLimits,
   MAX_FILES_PER_FIELD,
-  MAX_FORM_FIELD_BYTES,
 } from './constants/multipart.constants.js'
 import { readIdempotencyKey } from './decorators/idempotency-key.decorator.js'
 import { AdvanceRequestFormPipe } from './pipes/advance-request-form.pipe.js'

@@ -5,9 +5,11 @@ import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger'
 import { Test } from '@nestjs/testing'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { API_DEFAULT_VERSION, API_PREFIX } from '#/bootstrap/constants.js'
+import { AppConfigModule } from '#/common/config/index.js'
 import { CORRELATION_ID_HEADER } from '#/common/constants/http-headers.constants.js'
 import { PAYER_REPOSITORY, type PayerRepositoryPort } from '#/modules/payers/index.js'
 import { PayersModule } from '#/modules/payers/payers.module.js'
+import { testConfig } from '../../../../../../test/support/config.js'
 import { PUBLIC_PAYERS_CACHE_CONTROL } from '../constants/public-payers.constants.js'
 
 type SchemaNode = { properties?: Record<string, SchemaNode>; items?: SchemaNode }
@@ -24,7 +26,9 @@ describe('documentación de GET /api/v1/payers', () => {
 
   beforeAll(async () => {
     const repository: PayerRepositoryPort = { listActive: async () => [] }
-    const moduleRef = await Test.createTestingModule({ imports: [PayersModule] })
+    const moduleRef = await Test.createTestingModule({
+      imports: [AppConfigModule.register(testConfig()), PayersModule],
+    })
       .overrideProvider(PAYER_REPOSITORY)
       .useValue(repository)
       .compile()

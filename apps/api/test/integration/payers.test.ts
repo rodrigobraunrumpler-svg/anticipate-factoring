@@ -247,6 +247,80 @@ describe('GET /api/v1/payers con el repositorio reemplazado', () => {
   })
 })
 
+describe('topes de subida contra el máximo de facturas de cada pagador activo', () => {
+  const db = createTestPrisma()
+
+  beforeEach(async () => {
+    await truncateAll(db.prisma)
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  afterAll(async () => {
+    await db.close()
+  })
+
+  /** Contextos de los logs de error de los topes (los que nombran una variable de subida). */
+  const capacityErrors = (spy: { mock: { calls: unknown[][] } }) =>
+    spy.mock.calls
+      .map(([context]) => context)
+      .filter(
+        (context): context is Record<string, unknown> =>
+          typeof context === 'object' && context !== null && 'variable' in context,
+      )
+
+  it('al arrancar, un pagador con más facturas de las que admite UPLOAD_MAX_FILES deja un error con la variable a subir', async () => {
+    const payer = await createPayer(db.prisma, { maxInvoices: 15 })
+    await createPayer(db.prisma, { ...AGRO_ANDINA, allowedCurrencies: ['PEN'] })
+    const error = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined)
+
+    const app = await createTestApp({ env: { UPLOAD_MAX_FILES: '20' } })
+    // La revisión del arranque no frena el arranque; el cierre la espera.
+    await app.close()
+
+    expect(capacityErrors(error)).toEqual([
+      {
+        payerId: payer.id,
+        slug: SEA.slug,
+        maxInvoices: 15,
+        variable: 'UPLOAD_MAX_FILES',
+        current: 20,
+        required: 30,
+      },
+    ])
+  })
+
+  it('al servir los pagadores, un máximo cambiado en la base sin desplegar deja el error una sola vez y la lista sale igual', async () => {
+    const payer = await createPayer(db.prisma)
+    const app = await createTestApp({ env: { UPLOAD_MAX_FILES: '20' } })
+    try {
+      const error = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined)
+      await request(app.getHttpServer()).get(PAYERS_PATH).expect(200)
+      expect(capacityErrors(error)).toEqual([])
+
+      await db.prisma.payer.update({ where: { id: payer.id }, data: { maxInvoices: 12 } })
+      for (let n = 0; n < 2; n += 1) {
+        const res = await request(app.getHttpServer()).get(PAYERS_PATH).expect(200)
+        expect(res.body.data.map((p: { maxInvoices: number }) => p.maxInvoices)).toEqual([12])
+      }
+      expect(capacityErrors(error)).toEqual([
+        {
+          payerId: payer.id,
+          slug: SEA.slug,
+          maxInvoices: 12,
+          variable: 'UPLOAD_MAX_FILES',
+          current: 20,
+          required: 24,
+        },
+      ])
+    } finally {
+      await app.close()
+    }
+  })
+})
+
 describe('GET /api/v1/payers con la base caída', () => {
   const UNREACHABLE_DATABASE_URL = 'postgresql://anticipate:anticipate@127.0.0.1:1/anticipate_test'
   let app: NestExpressApplication

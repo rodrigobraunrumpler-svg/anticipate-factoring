@@ -28,6 +28,16 @@ describe('apiError', () => {
     expect(error).not.toHaveProperty('publicDetails')
   })
 
+  it('acepta un mensaje público propio, como el de un tope con su valor', () => {
+    const error = apiError('TOO_MANY_FILES', 'multer: LIMIT_FILE_COUNT', {
+      publicMessage: 'Puedes enviar hasta 20 archivos.',
+    })
+    expect(error.publicCode).toBe('TOO_MANY_FILES')
+    expect(error.publicMessage).toBe('Puedes enviar hasta 20 archivos.')
+    expect(error.message).toBe('multer: LIMIT_FILE_COUNT')
+    expect(() => apiError('TOO_MANY_FILES', undefined, { publicMessage: '  ' })).toThrow(TypeError)
+  })
+
   it('no acepta los códigos que llevan detalle', () => {
     // @ts-expect-error VALIDATION_ERROR se lanza con ApiValidationError
     expect(() => apiError('VALIDATION_ERROR')).toThrow(TypeError)

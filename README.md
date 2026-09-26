@@ -62,7 +62,7 @@ pnpm infra:up
 
 ## API
 
-`apps/api` es la API: NestJS 12 en ESM y Prisma 7.10 sobre PostgreSQL 18, con módulos por capas y todas las respuestas en el sobre de `@anticipate/shared/api`. Su estructura y sus reglas de dependencia están en [`apps/api/PROJECT_STRUCTURE.md`](apps/api/PROJECT_STRUCTURE.md), y las decisiones, en `docs/STACK.md` (D37 a D57).
+`apps/api` es la API: NestJS 12 en ESM y Prisma 7.10 sobre PostgreSQL 18, con módulos por capas y todas las respuestas en el sobre de `@anticipate/shared/api`. Su estructura y sus reglas de dependencia están en [`apps/api/PROJECT_STRUCTURE.md`](apps/api/PROJECT_STRUCTURE.md), y las decisiones, en `docs/STACK.md` (D37 a D59).
 
 Para correrla en local, con la infraestructura levantada (`pnpm infra:up`):
 
@@ -87,6 +87,7 @@ Los defectos de las plantillas (5432 y 4000) son los de CI.
 | Método y ruta | Qué hace |
 |---|---|
 | `GET /api/v1/payers` | Pagadores activos, con sus campos públicos, para la landing |
+| `GET /api/v1/intake-limits` | Topes de un envío (archivos por solicitud, bytes de cada XML y de cada PDF, bytes del cuerpo), para que la landing avise antes de enviar (`docs/STACK.md`, D58) |
 | `POST /api/v1/advance-requests` | Recibe una solicitud en multipart: campo `form` con el JSON del formulario, archivos `xml` y `pdf`, y las cabeceras `x-turnstile-token` e `Idempotency-Key`. Si no termina en `SUBMISSION_TIMEOUT_MS` (60 s) responde 503 con `Retry-After` y descarta lo subido (D57). Contrato completo en `docs/STACK.md` (sección 8, D38, D45 y D57) |
 | `GET /health` | Liveness: el proceso responde |
 | `GET /health/readiness` | Readiness: base, almacenamiento y backlog del outbox. 503 si la base o el almacenamiento no responden; con correos en `DEAD_LETTER` o atrasados responde 200 con `"status": "degraded"`, así que el monitoreo alerta por el cuerpo y no solo por el código (`docs/STACK.md`, sección 12) |
