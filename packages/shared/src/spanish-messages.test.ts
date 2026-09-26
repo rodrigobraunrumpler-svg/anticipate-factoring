@@ -192,7 +192,8 @@ describe.each(CASES)('$name solo devuelve mensajes en español', ({ schema, samp
  * Los textos que la API y la landing muestran tal cual (problemas de negocio y respuestas de la API)
  * son frases completas en español: empiezan con mayúscula, terminan en punto, sin espacios de más, y
  * sus marcadores `{nombre}` están bien cerrados. Los de la API no llevan marcadores: nadie los
- * completa antes de enviarlos.
+ * completa antes de enviarlos. Las plantillas de los topes (`API_MESSAGES_ES.limits`) sí: las completa
+ * su función de `@anticipate/shared/api` (`tooManyFilesMessage`).
  */
 describe('textos de los problemas y de las respuestas de la API', () => {
   const problemTexts = Object.entries(MESSAGES_ES)
@@ -201,9 +202,10 @@ describe('textos de los problemas y de las respuestas de la API', () => {
     ['DEFAULT_SUCCESS_MESSAGE', DEFAULT_SUCCESS_MESSAGE],
     ...Object.entries(SUCCESS_MESSAGES_ES),
   ]
+  const apiTemplates: [string, string][] = Object.entries(API_MESSAGES_ES.limits)
 
   it('son frases completas', () => {
-    for (const [key, text] of [...problemTexts, ...apiTexts]) {
+    for (const [key, text] of [...problemTexts, ...apiTexts, ...apiTemplates]) {
       expect(text, key).toBe(text.trim())
       expect(text, key).toMatch(/^\p{Lu}/u)
       expect(text.endsWith('.'), key).toBe(true)
@@ -211,14 +213,17 @@ describe('textos de los problemas y de las respuestas de la API', () => {
     }
   })
 
-  it('los marcadores de los problemas están bien cerrados', () => {
-    for (const [key, text] of problemTexts) {
+  it('los marcadores de los problemas y de las plantillas de la API están bien cerrados', () => {
+    for (const [key, text] of [...problemTexts, ...apiTemplates]) {
       expect(text.replace(/\{\w+\}/g, ''), key).not.toMatch(/[{}]/)
     }
+    for (const [key, text] of apiTemplates) expect(text, key).toMatch(/\{\w+\}/)
   })
 
-  it('los de la API no llevan marcadores y son exactamente los de errors', () => {
+  it('los de la API no llevan marcadores y, con las plantillas, son exactamente los de errors', () => {
     for (const [key, text] of apiTexts) expect(text, key).not.toMatch(/[{}]/)
-    expect(collectTexts(API_MESSAGES_ES).sort()).toEqual(apiTexts.map(([, text]) => text).sort())
+    expect(collectTexts(API_MESSAGES_ES).sort()).toEqual(
+      [...apiTexts, ...apiTemplates].map(([, text]) => text).sort(),
+    )
   })
 })

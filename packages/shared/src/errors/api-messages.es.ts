@@ -2,8 +2,10 @@
  * Textos para personas de las respuestas de la API: el mensaje de cada código de error del sobre y
  * los mensajes de éxito. Viven aquí con el resto del texto en español; `@anticipate/shared/api` los
  * publica tipados por código (`API_ERROR_MESSAGES_ES`, `DEFAULT_SUCCESS_MESSAGE` y
- * `SUCCESS_MESSAGES_ES`), igual que `FORM_MESSAGES` publica los del formulario. Son textos finales,
- * sin marcadores: la API los envía tal cual.
+ * `SUCCESS_MESSAGES_ES`), igual que `FORM_MESSAGES` publica los del formulario. `errors` y `success`
+ * son textos finales, sin marcadores: la API los envía tal cual. `limits` son las plantillas de los
+ * errores que dicen cuál es el tope; la API las arma con sus funciones de `@anticipate/shared/api`
+ * (`tooManyFilesMessage`).
  */
 export const API_MESSAGES_ES = {
   errors: {
@@ -37,5 +39,10 @@ export const API_MESSAGES_ES = {
   /** Mensajes de éxito propios de un endpoint (`@ResponseMessage()` en la API). */
   success: {
     advanceRequestCreated: 'Solicitud recibida.',
+  },
+  /** Plantillas con el tope que se pasó (`{max}`), para el `message` del error con ese código. */
+  limits: {
+    TOO_MANY_FILES:
+      'Adjuntaste más archivos de los permitidos: puedes enviar hasta {max} archivos por solicitud, entre XML y PDF. Quita los que sobran o envía las demás facturas en otra solicitud.',
   },
 } as const

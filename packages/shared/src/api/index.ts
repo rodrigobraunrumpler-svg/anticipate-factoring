@@ -20,4 +20,14 @@ export {
   type ApiErrorHttpStatus,
   isApiErrorCode,
 } from './error-codes.js'
+export {
+  type IntakeCapacityShortfall,
+  type IntakeLimits,
+  intakeCapacityShortfalls,
+  intakeLimitsSchema,
+  MAX_FORM_FIELD_BYTES,
+  MULTIPART_PART_OVERHEAD_BYTES,
+  submissionBodyBytesUpperBound,
+  tooManyFilesMessage,
+} from './intake-limits.js'
 export { DEFAULT_SUCCESS_MESSAGE, SUCCESS_MESSAGES_ES } from './success-messages.js'
