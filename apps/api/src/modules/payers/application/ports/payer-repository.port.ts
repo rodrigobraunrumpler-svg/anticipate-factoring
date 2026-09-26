@@ -3,7 +3,9 @@ import type { Payer } from '#/modules/payers/domain/types/payer.js'
 export interface PayerRepositoryPort {
   /**
    * Pagadores activos ordenados por nombre corto (y por id si empatan). Una fila que no se puede leer
-   * como `Payer` se omite y se registra con nivel error: nunca tumba la lista de los demás.
+   * como `Payer` se omite y se registra con nivel error: nunca tumba la lista de los demás. Si hay
+   * pagadores activos y ninguna fila se puede leer, lanza: la lista vacía queda solo para "no hay
+   * pagadores activos".
    */
   listActive(): Promise<Payer[]>
 }

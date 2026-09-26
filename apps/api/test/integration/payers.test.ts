@@ -136,6 +136,7 @@ describe('GET /api/v1/payers contra la base', () => {
 
     expect(payersEnvelopeSchema.safeParse(res.body).success).toBe(true)
     expect(res.body.data).toEqual([])
+    expect(res.headers['cache-control']).toBe(PUBLIC_PAYERS_CACHE_CONTROL)
     expect(res.headers[CORRELATION_ID_HEADER]).toBe(res.body.correlationId)
   })
 
@@ -208,8 +209,41 @@ describe('GET /api/v1/payers con el repositorio reemplazado', () => {
     expect(apiErrorEnvelopeSchema.safeParse(res.body).success).toBe(true)
     expect(res.body.code).toBe('INTERNAL_ERROR')
     expect(JSON.stringify(res.body)).not.toContain('defecto del repositorio')
-    expect(res.headers['cache-control']).not.toBe(PUBLIC_PAYERS_CACHE_CONTROL)
+    expect(res.headers['cache-control']).toBe('no-store')
     expect(res.headers[CORRELATION_ID_HEADER]).toBe(res.body.correlationId)
+  })
+
+  it('si hay activos y ninguno cumple publicPayerSchema, responde 500 INTERNAL_ERROR sin caché (nunca una lista vacía cacheable)', async () => {
+    const error = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined)
+    const broken: Payer = { ...sea, advancePercent: 0.5 }
+    const alsoBroken: Payer = {
+      ...sea,
+      id: '01890a5d-ac96-774b-bcce-b302099a8058',
+      slug: 'rota',
+      accentColor: 'rojo',
+    }
+    listActive.mockResolvedValueOnce([broken, alsoBroken])
+
+    const res = await request(app.getHttpServer()).get(PAYERS_PATH).expect(500)
+
+    expect(apiErrorEnvelopeSchema.safeParse(res.body).success).toBe(true)
+    expect(res.body.code).toBe('INTERNAL_ERROR')
+    expect(res.headers['cache-control']).toBe('no-store')
+    expect(error).toHaveBeenCalledWith(
+      expect.objectContaining({ payerId: alsoBroken.id, slug: 'rota' }),
+      'Pagador omitido de la lista pública: no cumple publicPayerSchema',
+    )
+    expect(error).toHaveBeenCalledWith(
+      expect.objectContaining({ code: 'INTERNAL_ERROR', statusCode: 500 }),
+      'Respuesta 500 INTERNAL_ERROR',
+    )
+  })
+
+  it('sin activos (el repositorio no devuelve ninguno) sigue siendo 200 con la lista vacía y caché pública', async () => {
+    listActive.mockResolvedValueOnce([])
+    const res = await request(app.getHttpServer()).get(PAYERS_PATH).expect(200)
+    expect(res.body.data).toEqual([])
+    expect(res.headers['cache-control']).toBe(PUBLIC_PAYERS_CACHE_CONTROL)
   })
 })
 
@@ -241,7 +275,7 @@ describe('GET /api/v1/payers con la base caída', () => {
     expect(apiErrorEnvelopeSchema.safeParse(res.body).success).toBe(true)
     expect(res.body.code).toBe('SERVICE_UNAVAILABLE')
     expect(JSON.stringify(res.body)).not.toMatch(/127\.0\.0\.1|P1001|reach|database server/i)
-    expect(res.headers['cache-control']).not.toBe(PUBLIC_PAYERS_CACHE_CONTROL)
+    expect(res.headers['cache-control']).toBe('no-store')
     expect(res.headers[CORRELATION_ID_HEADER]).toBe(res.body.correlationId)
   })
 })

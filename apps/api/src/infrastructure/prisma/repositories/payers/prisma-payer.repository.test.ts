@@ -61,4 +61,22 @@ describe('PrismaPayerRepository.listActive', () => {
       'Pagador activo omitido: su fila no se puede leer',
     )
   })
+
+  it('si hay activos y ninguna fila se puede leer, lanza: una lista vacía diría que no hay pagadores', async () => {
+    const error = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined)
+    const { repository } = repositoryWith([
+      row({ texts: 'hola' }),
+      row({ id: '01890a5d-ac96-774b-bcce-b302099a8058', slug: 'rota', texts: [1] }),
+    ])
+
+    await expect(repository.listActive()).rejects.toThrow(
+      'Hay 2 pagadores activos y ninguna de sus filas se puede leer',
+    )
+    expect(error).toHaveBeenCalledTimes(2)
+  })
+
+  it('sin pagadores activos devuelve la lista vacía', async () => {
+    const { repository } = repositoryWith([])
+    await expect(repository.listActive()).resolves.toEqual([])
+  })
 })

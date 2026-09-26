@@ -36,6 +36,19 @@ export function resolveLogRoute(req: IncomingMessage): string | undefined {
   return `${typeof routed.baseUrl === 'string' ? routed.baseUrl : ''}${path}`
 }
 
+/**
+ * El objeto de la línea de cierre de la petición con la ruta que la atendió. Va aquí y no en
+ * `customProps`: pino-http vuelve a evaluar `customProps` al cerrar y, si el resultado cambió (la ruta
+ * se conoce recién después de enrutar), agrega otro hijo con todas sus claves y el `correlationId`
+ * salía dos veces en la misma línea.
+ */
+export function withLogRoute(
+  req: IncomingMessage,
+  value: Record<string, unknown>,
+): Record<string, unknown> {
+  return { ...value, route: resolveLogRoute(req) }
+}
+
 /** Del request solo el método: ni URL, ni cabeceras, ni IP, ni user agent (datos personales). */
 export function serializeSafeRequest(value: unknown): { method: string } {
   const method = isRecord(value) && typeof value.method === 'string' ? value.method : 'UNKNOWN'
@@ -69,7 +82,9 @@ export function isHealthRequest(req: IncomingMessage): boolean {
 
 /**
  * Logger HTTP (nestjs-pino). El id de cada petición es su id de correlación (`resolveCorrelationId`),
- * el mismo de la cabecera `x-correlation-id`. En desarrollo, salida legible con pino-pretty.
+ * el mismo de la cabecera `x-correlation-id`, y va una sola vez en cada línea: `customProps` devuelve
+ * solo ese valor, que no cambia durante la petición. La ruta va en la línea de cierre
+ * (`withLogRoute`). En desarrollo, salida legible con pino-pretty.
  */
 export function createPinoHttpOptions(config: Pick<AppConfig, 'logLevel' | 'nodeEnv'>): Params {
   return {
@@ -77,10 +92,10 @@ export function createPinoHttpOptions(config: Pick<AppConfig, 'logLevel' | 'node
       level: config.logLevel,
       genReqId: (req) => resolveCorrelationId(req),
       customLogLevel: resolveHttpLogLevel,
-      customProps: (req) => ({
-        correlationId: resolveCorrelationId(req),
-        route: resolveLogRoute(req),
-      }),
+      customProps: (req) => ({ correlationId: resolveCorrelationId(req) }),
+      customSuccessObject: (req, _res, value: Record<string, unknown>) => withLogRoute(req, value),
+      customErrorObject: (req, _res, _error, value: Record<string, unknown>) =>
+        withLogRoute(req, value),
       serializers: {
         req: serializeSafeRequest,
         res: serializeSafeResponse,

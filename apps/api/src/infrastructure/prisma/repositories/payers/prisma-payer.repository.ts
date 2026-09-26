@@ -29,6 +29,13 @@ export class PrismaPayerRepository implements PayerRepositoryPort {
         )
       }
     }
+    if (rows.length > 0 && payers.length === 0) {
+      // Una lista vacía diría que no hay pagadores, y la landing construida con ella (con caché)
+      // no mostraría ninguno. Es un defecto de los datos: 500 y log, nunca 200 [].
+      throw new Error(
+        `Hay ${rows.length} pagadores activos y ninguna de sus filas se puede leer como Payer`,
+      )
+    }
     return payers
   }
 }

@@ -36,6 +36,21 @@ type PublicError = {
   readonly details?: NonNullable<ApiErrorEnvelope['details']>
 }
 
+/**
+ * Ningún error se guarda en una caché: ni en la CDN ni en el navegador. Pisa la cabecera que la ruta
+ * haya puesto antes de fallar (`GET /api/v1/payers` pone la suya pública).
+ */
+const ERROR_CACHE_CONTROL = 'no-store'
+
+/**
+ * El logger de la petición que deja pino-http en `req.log` ya lleva el `correlationId` en cada
+ * línea: repetirlo en el objeto duplicaría la clave. Un error anterior a ese middleware (los parsers
+ * del cuerpo corren antes) no lo tiene, y ahí el filtro lo agrega para no perder la correlación.
+ */
+function correlationForLog(request: Request, correlationId: string): { correlationId?: string } {
+  return (request as { log?: unknown }).log === undefined ? { correlationId } : {}
+}
+
 /** Forma de los errores de `http-errors` que lanza body-parser: no son `HttpException` de Nest. */
 type HttpErrorLike = { readonly status: number; readonly type: string | undefined }
 
@@ -109,7 +124,8 @@ function codeOf(exception: unknown): ApiErrorCode {
  * `@anticipate/shared/api`, un código de `API_ERROR_CODES`, el estado HTTP de ese código y un mensaje
  * en español: el de la `ApplicationError` o el de `API_ERROR_MESSAGES_ES`. Nunca reenvía el mensaje
  * de una `HttpException` ni de una librería (Nest, body-parser, multer, throttler). La única excepción
- * al sobre es un chequeo de salud fallido, que responde 503 con el cuerpo de Terminus.
+ * al sobre es un chequeo de salud fallido, que responde 503 con el cuerpo de Terminus. Toda respuesta
+ * de error sale con `Cache-Control: no-store`.
  *
  * Un error de una librería de infraestructura pasa antes por los `EXCEPTION_TRANSLATORS`: así la base
  * caída es 503 `SERVICE_UNAVAILABLE` en cualquier ruta, sin que cada caso de uso la envuelva. El log
@@ -135,13 +151,14 @@ export class AllExceptionsFilter implements ExceptionFilter {
       // La respuesta ya empezó: no se puede cambiar el estado. Se corta la conexión para que el
       // cliente no tome como completa una respuesta truncada.
       this.logger.error(
-        { err: exception, correlationId },
+        { err: exception, ...correlationForLog(request, correlationId) },
         'Error después de empezar a enviar la respuesta; se cierra la conexión',
       )
       response.destroy()
       return
     }
     response.setHeader(CORRELATION_ID_HEADER, correlationId)
+    response.setHeader('Cache-Control', ERROR_CACHE_CONTROL)
 
     const health = terminusBody(exception, request)
     if (health !== undefined) {
@@ -153,7 +170,12 @@ export class AllExceptionsFilter implements ExceptionFilter {
     const statusCode = API_ERROR_HTTP_STATUS[error.code]
     if (statusCode >= 500) {
       this.logger.error(
-        { err: exception, code: error.code, statusCode, correlationId },
+        {
+          err: exception,
+          code: error.code,
+          statusCode,
+          ...correlationForLog(request, correlationId),
+        },
         `Respuesta ${statusCode} ${error.code}`,
       )
     }

@@ -74,8 +74,9 @@ function run(
   request: Request = fakeRequest({ correlationId: 'corr-1' }),
   headersSent = false,
   filter: AllExceptionsFilter = new AllExceptionsFilter(),
+  presetHeaders: Record<string, string> = {},
 ): Sent {
-  const sent: Sent = { headers: {}, destroyed: false }
+  const sent: Sent = { headers: { ...presetHeaders }, destroyed: false }
   const response = {
     headersSent,
     setHeader(name: string, value: string) {
@@ -395,5 +396,72 @@ describe('defaultHttpErrorCode', () => {
     [302, 'INTERNAL_ERROR'],
   ] as const)('%i → %s', (status, code) => {
     expect(defaultHttpErrorCode(status)).toBe(code)
+  })
+})
+
+describe('AllExceptionsFilter: caché', () => {
+  const failedHealth = {
+    status: 'error',
+    info: {},
+    error: { database: { status: 'down' } },
+    details: { database: { status: 'down' } },
+  }
+
+  it.each([
+    ['400', new BadRequestException()],
+    ['403', apiError('CAPTCHA_FAILED')],
+    ['404', new NotFoundException()],
+    ['422', new BusinessRulesViolatedError([createProblem('NO_INVOICES')])],
+    ['429', new ThrottlerException()],
+    ['500', new Error('defecto')],
+    ['503', new ServiceUnavailableError('base caída')],
+  ])(
+    'un error %s sale con Cache-Control: no-store y pisa la caché que la ruta ya había puesto',
+    (_status, exception) => {
+      const sent = run(
+        exception,
+        fakeRequest({ correlationId: 'c' }),
+        false,
+        new AllExceptionsFilter(),
+        {
+          'cache-control': 'public, max-age=300',
+        },
+      )
+      expect(sent.headers['cache-control']).toBe('no-store')
+    },
+  )
+
+  it('también la sonda de salud que falla', () => {
+    const sent = run(
+      new ServiceUnavailableException(failedHealth),
+      fakeRequest({ path: '/health/readiness', correlationId: 'c' }),
+    )
+    expect(sent.status).toBe(503)
+    expect(sent.headers['cache-control']).toBe('no-store')
+  })
+})
+
+describe('AllExceptionsFilter: correlationId en el log', () => {
+  it('dentro de una petición con logger de pino-http no lo repite: ese logger ya lo lleva', () => {
+    const request = Object.assign(fakeRequest({ correlationId: 'corr-1' }), { log: {} })
+    run(new Error('defecto'), request)
+    expect(loggedErrors).toHaveBeenCalledTimes(1)
+    expect(loggedErrors.mock.calls[0]?.[0]).not.toHaveProperty('correlationId')
+  })
+
+  it('antes de pino-http (un error del parser) lo agrega, para no perder la correlación', () => {
+    run(new Error('defecto'), fakeRequest({ correlationId: 'corr-1' }))
+    expect(loggedErrors).toHaveBeenCalledWith(
+      expect.objectContaining({ correlationId: 'corr-1' }),
+      'Respuesta 500 INTERNAL_ERROR',
+    )
+  })
+
+  it('lo mismo con una respuesta ya empezada', () => {
+    const request = Object.assign(fakeRequest({ correlationId: 'corr-1' }), { log: {} })
+    run(new Error('a mitad'), request, true)
+    expect(loggedErrors.mock.calls[0]?.[0]).not.toHaveProperty('correlationId')
+    run(new Error('a mitad'), fakeRequest({ correlationId: 'corr-2' }), true)
+    expect(loggedErrors.mock.calls[1]?.[0]).toMatchObject({ correlationId: 'corr-2' })
   })
 })

@@ -1,4 +1,5 @@
-import type { IncomingMessage, ServerResponse } from 'node:http'
+import { IncomingMessage, ServerResponse } from 'node:http'
+import { Socket } from 'node:net'
 import { type Options, pinoHttp } from 'pino-http'
 import { describe, expect, it } from 'vitest'
 import {
@@ -93,5 +94,40 @@ describe('logger HTTP', () => {
       level: 'debug',
       transport: { target: 'pino-pretty' },
     })
+  })
+
+  it('cada línea lleva el correlationId una sola vez, y la de cierre también la ruta', () => {
+    // pino-http vuelve a llamar a customProps al cerrar la respuesta: si lo que devuelve cambió
+    // (la ruta se conoce recién después de enrutar), agrega un hijo con todo y el correlationId
+    // salía dos veces en la misma línea.
+    const lines: string[] = []
+    const { pinoHttp: options } = createPinoHttpOptions({ logLevel: 'info', nodeEnv: 'test' })
+    const middleware = pinoHttp(options as Options, {
+      write: (line: string) => {
+        lines.push(line)
+      },
+    })
+    for (const status of [200, 422, 500]) {
+      const req = new IncomingMessage(new Socket())
+      req.method = 'GET'
+      req.url = '/api/v1/payers'
+      req.headers = { 'x-correlation-id': `pedido-${status}` }
+      const res = new ServerResponse(req)
+      middleware(req, res, () => undefined)
+      req.log.info({ paso: 'handler' }, 'dentro de la petición')
+      Object.assign(req, { baseUrl: '', route: { path: '/api/v1/payers' } })
+      res.statusCode = status
+      res.emit('finish')
+    }
+    expect(lines).toHaveLength(6)
+    for (const line of lines) {
+      expect(line.match(/"correlationId"/g), line).toHaveLength(1)
+    }
+    const closing = lines.filter((_line, index) => index % 2 === 1).map((line) => JSON.parse(line))
+    expect(closing.map((entry) => [entry.correlationId, entry.route])).toEqual([
+      ['pedido-200', '/api/v1/payers'],
+      ['pedido-422', '/api/v1/payers'],
+      ['pedido-500', '/api/v1/payers'],
+    ])
   })
 })

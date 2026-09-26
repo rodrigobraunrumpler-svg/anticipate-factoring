@@ -21,7 +21,8 @@ export function ApiListPublicPayersDocs() {
       description:
         'Lo que la landing necesita para construir la página de cada pagador, solo con campos ' +
         'públicos. Un pagador cuya fila no cumple el contrato se omite y se registra, sin afectar a ' +
-        'los demás.',
+        'los demás; si hay activos y ninguno lo cumple, responde 500 (nunca una lista vacía). ' +
+        'Los errores salen con `Cache-Control: no-store`.',
     }),
     ApiOkResponse({
       description: `Pagadores activos ordenados por nombre corto. Mensaje: «${DEFAULT_SUCCESS_MESSAGE}».`,
