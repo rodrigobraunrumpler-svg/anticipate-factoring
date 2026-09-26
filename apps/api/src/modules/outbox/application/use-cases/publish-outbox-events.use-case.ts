@@ -124,9 +124,10 @@ export class PublishOutboxEventsUseCase {
     const exhausted = await this.repository.deadLetterExhausted()
     if (exhausted > 0) {
       result.deadLettered += exhausted
-      this.logger.warn(
+      // Error y no aviso: es una señal de alerta propia, además del `degraded` de la readiness.
+      this.logger.error(
         { count: exhausted },
-        'eventos del outbox sin intentos restantes pasaron a DEAD_LETTER',
+        'eventos del outbox sin intentos restantes pasaron a DEAD_LETTER: sus correos no salen hasta que alguien los reenvíe',
       )
     }
     return result
@@ -369,14 +370,17 @@ export class PublishOutboxEventsUseCase {
       return
     }
     result.deadLettered++
-    this.logger.warn(
+    // Error y no aviso: un correo en DEAD_LETTER (el aviso al equipo de una solicitud nueva, por
+    // ejemplo) no sale nunca sin intervención. La readiness lo muestra como `degraded` con 200; este
+    // log es la señal para las alertas por nivel.
+    this.logger.error(
       {
         eventId: event.id,
         handler: event.handler,
         failureCode,
         correlationId: event.correlationId,
       },
-      'evento del outbox en DEAD_LETTER',
+      'evento del outbox en DEAD_LETTER: su correo no sale hasta que alguien lo reenvíe',
     )
   }
 

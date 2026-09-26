@@ -437,6 +437,36 @@ describe('PublishOutboxEventsUseCase', () => {
     )
   })
 
+  it('un evento que pasa a DEAD_LETTER se registra como error: su correo no sale sin intervención', async () => {
+    const { repository } = fakeRepository([[claimed()]])
+    await useCase(repository, [
+      handlerThat(async () =>
+        Promise.reject(new PermanentEmailError('Brevo 400 invalid_parameter')),
+      ),
+    ]).execute()
+    expect(logger.error).toHaveBeenCalledWith(
+      {
+        eventId: ID_1,
+        handler: HANDLER,
+        failureCode: 'EMAIL_PERMANENT',
+        correlationId: 'corr-1',
+      },
+      'evento del outbox en DEAD_LETTER: su correo no sale hasta que alguien lo reenvíe',
+    )
+  })
+
+  it('los eventos sin intentos restantes que pasan a DEAD_LETTER se registran como error', async () => {
+    const { repository } = fakeRepository([])
+    repository.deadLetterExhausted.mockResolvedValueOnce(3)
+    const result = await useCase(repository, [handlerThat(sent)]).execute()
+    expect(result.deadLettered).toBe(3)
+    expect(logger.error).toHaveBeenCalledWith(
+      { count: 3 },
+      'eventos del outbox sin intentos restantes pasaron a DEAD_LETTER: sus correos no salen hasta que alguien los reenvíe',
+    )
+    expect(logger.warn).not.toHaveBeenCalled()
+  })
+
   it('en el último intento un fallo reintentable pasa a DEAD_LETTER', async () => {
     const { repository } = fakeRepository([[claimed({ attempts: 8, maxAttempts: 8 })]])
     await useCase(repository, [
