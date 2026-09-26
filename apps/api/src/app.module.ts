@@ -24,6 +24,7 @@ import {
 import { HealthChecksModule } from '#/modules/health-checks/index.js'
 import { OutboxModule } from '#/modules/outbox/index.js'
 import { PayersModule } from '#/modules/payers/payers.module.js'
+import { MaintenanceWorkerModule } from '#/workers/maintenance/maintenance-worker.module.js'
 import { OutboxPublisherModule } from '#/workers/outbox-publisher/outbox-publisher.module.js'
 
 /** Módulos que un test agrega a la app (controladores de prueba, raíces de composición). */
@@ -56,6 +57,7 @@ export class AppModule {
           handlers: [SupplierConfirmationEmailHandler, TeamAlertEmailHandler],
           requiredHandlers: Object.values(ADVANCE_REQUEST_OUTBOX_HANDLERS),
         }),
+        MaintenanceWorkerModule,
         ...extraModules,
       ],
       providers: [

@@ -4,6 +4,7 @@ import { SkipThrottle } from '@nestjs/throttler'
 import { HEALTH_PATHS } from '#/bootstrap/constants.js'
 import { SkipResponseEnvelope } from '#/common/decorators/skip-response-envelope.decorator.js'
 import { PrismaReadinessIndicator } from '#/infrastructure/prisma/index.js'
+import { OutboxBacklogReadinessIndicator } from '#/infrastructure/prisma/repositories/maintenance/outbox-backlog-readiness.indicator.js'
 import { S3ReadinessIndicator } from '#/infrastructure/storage/s3/index.js'
 
 /**
@@ -19,6 +20,8 @@ export class HealthController {
     private readonly health: HealthCheckService,
     private readonly database: PrismaReadinessIndicator,
     @Inject(S3ReadinessIndicator) private readonly storageReadiness: S3ReadinessIndicator,
+    @Inject(OutboxBacklogReadinessIndicator)
+    private readonly outboxBacklog: OutboxBacklogReadinessIndicator,
   ) {}
 
   /**
@@ -32,9 +35,9 @@ export class HealthController {
   }
 
   /**
-   * Readiness: la API puede atender. 200 si cada dependencia responde; si no, 503 con el cuerpo de
-   * Terminus y el orquestador deja de mandarle tráfico sin reiniciarla. El backlog del outbox se
-   * agrega en su tarea.
+   * Readiness: la base, el almacenamiento y el backlog del outbox. Un backlog con eventos fallidos o
+   * atrasados sale `degraded` con 200 (ver `OutboxBacklogReadinessIndicator`); la base o el
+   * almacenamiento caídos, o el outbox sin responder, salen 503.
    */
   @Get(HEALTH_PATHS.readiness)
   @HealthCheck()
@@ -42,6 +45,7 @@ export class HealthController {
     return this.health.check([
       () => this.database.isHealthy(),
       () => this.storageReadiness.check('storage'),
+      () => this.outboxBacklog.check('outbox'),
     ])
   }
 }
