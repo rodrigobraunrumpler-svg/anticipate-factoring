@@ -52,7 +52,8 @@ export const TEST_ENV_DEFAULTS = {
   MAIL_FROM_EMAIL: 'solicitudes@anticipate.local',
   MAIL_FROM_NAME: 'Anticipate',
   TEAM_NOTIFICATION_EMAIL: 'equipo@anticipate.local',
-  ADMIN_BASE_URL: 'http://localhost:3000',
+  // Sin admin, como hoy en todos los entornos: el aviso al equipo no lleva enlace.
+  ADMIN_BASE_URL: '',
   TURNSTILE_SECRET_KEY: '1x0000000000000000000000000000000AA',
   TURNSTILE_EXPECTED_HOSTNAME: '',
   UPLOAD_MAX_BODY_BYTES: '95000000',

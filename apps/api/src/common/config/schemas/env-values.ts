@@ -1,3 +1,4 @@
+import { isIP } from 'node:net'
 import { z } from 'zod'
 
 /**
@@ -45,6 +46,24 @@ function hasProtocol(value: string, protocols: readonly string[]): boolean {
 export const httpUrl = requiredText.refine((value) => hasProtocol(value, ['http:', 'https:']), {
   error: 'debe ser una URL que empiece con http:// o https://',
 })
+
+/** `localhost`, un subdominio de `.localhost`, una IP de loopback (`127.0.0.0/8`, `::1`) o la IP sin especificar. */
+export function isLocalHostname(hostname: string): boolean {
+  const host = hostname.replace(/^\[(.*)\]$/, '$1').toLowerCase()
+  if (host === 'localhost' || host.endsWith('.localhost')) return true
+  if (host === '::1' || host === '::' || host === '0.0.0.0') return true
+  return isIP(host) === 4 && host.startsWith('127.')
+}
+
+/** Una URL que un navegador de afuera puede abrir: https y con un host que no es local. */
+export function isPublishedHttpsUrl(value: string): boolean {
+  try {
+    const url = new URL(value)
+    return url.protocol === 'https:' && !isLocalHostname(url.hostname)
+  } catch {
+    return false
+  }
+}
 
 /** Host, puerto y base de una URL de PostgreSQL, o `null` si no es una URL `postgresql://` completa. */
 export function postgresTarget(

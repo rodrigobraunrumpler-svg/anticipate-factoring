@@ -4,15 +4,21 @@ import { ADVANCE_REQUEST_OUTBOX_HANDLERS } from '#/modules/advance-requests/doma
 import type { EmailSenderPort } from '#/modules/notifications/index.js'
 import type { ClaimedOutboxEvent, OutboxEventHandler } from '#/modules/outbox/index.js'
 import { loadNotificationView } from './load-notification-view.js'
+import { toTeamAlertEmailData } from './team-alert-email-data.js'
 
 export type TeamAlertEmailOptions = {
   /** `TEAM_NOTIFICATION_EMAIL`. */
   teamNotificationEmail: string
-  /** `ADMIN_BASE_URL`, sin barra final. */
-  adminBaseUrl: string
+  /** `ADMIN_BASE_URL`, sin barra final, o `null` si no está configurada: el correo no lleva enlace. */
+  adminBaseUrl: string | null
 }
 
-/** `email.team-alert`: avisa al equipo de una solicitud nueva, con el enlace al admin. */
+/**
+ * `email.team-alert`: avisa al equipo de una solicitud nueva con lo necesario para contactar al
+ * proveedor desde el correo (contacto, empresa, monto y facturas), y con el enlace al admin solo si
+ * existe. Los datos se leen al enviar: el payload del outbox no lleva datos personales, y este
+ * handler no los escribe en ningún log.
+ */
 export class TeamAlertEmailHandler implements OutboxEventHandler {
   readonly handler = ADVANCE_REQUEST_OUTBOX_HANDLERS.teamAlert
 
@@ -27,17 +33,10 @@ export class TeamAlertEmailHandler implements OutboxEventHandler {
     event: ClaimedOutboxEvent,
     signal: AbortSignal,
   ): Promise<{ providerMessageId: string | null }> {
-    const view = await loadNotificationView(this.notifications, event)
-    const email = await renderNewAdvanceRequestAlert({
-      publicCode: view.publicCode,
-      payerName: view.payerShortName,
-      supplierName: view.supplierLegalName,
-      supplierRuc: view.supplierRuc,
-      requestedAmount: view.requestedAmount,
-      currency: view.currency,
-      invoiceCount: view.invoiceCount,
-      adminUrl: `${this.options.adminBaseUrl}/advance-requests/${view.id}`,
-    })
+    const view = await loadNotificationView(event, (id) => this.notifications.findTeamAlertById(id))
+    const email = await renderNewAdvanceRequestAlert(
+      toTeamAlertEmailData(view, { adminBaseUrl: this.options.adminBaseUrl }),
+    )
     return this.sender.send(
       {
         to: { email: this.options.teamNotificationEmail },

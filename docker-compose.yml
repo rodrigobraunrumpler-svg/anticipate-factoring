@@ -99,7 +99,6 @@ services:
       SMTP_PORT: "1025"
       MAIL_FROM_EMAIL: solicitudes@anticipate.local
       TEAM_NOTIFICATION_EMAIL: equipo@anticipate.local
-      ADMIN_BASE_URL: http://localhost:3000
       # No es una clave de Cloudflare: en producción la configuración rechaza las tres claves secretas
       # de prueba de Turnstile. La prueba de humo de la imagen no envía solicitudes; un envío real a
       # esta imagen recibe 403 CAPTCHA_FAILED.

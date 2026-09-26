@@ -23,7 +23,7 @@ export class SupplierConfirmationEmailHandler implements OutboxEventHandler {
     event: ClaimedOutboxEvent,
     signal: AbortSignal,
   ): Promise<{ providerMessageId: string | null }> {
-    const view = await loadNotificationView(this.notifications, event)
+    const view = await loadNotificationView(event, (id) => this.notifications.findById(id))
     const email = await renderAdvanceRequestConfirmation({
       contactName: view.contactFullName,
       publicCode: view.publicCode,

@@ -57,7 +57,7 @@ pnpm infra:up
 - **Puertos ocupados.** Si otro proyecto usa un puerto (por ejemplo, un PostgreSQL propio en el 5432 o una API en el 4000), se cambia en `.env` (`POSTGRES_PORT=5433`, `API_PORT=4001`) y se usa el mismo en `apps/api/.env` y `apps/api/.env.test` (`PORT=4001` y las URLs de la base con `127.0.0.1:5433`). Los `.env` no se versionan; los defectos de `.env.example` son los de CI.
 - **Bases.** `docker/postgres/init/01-create-databases.sh` crea `anticipate_test` y `anticipate_shadow` solo cuando el volumen de datos está vacío. Si faltan, o para empezar de cero: `pnpm infra:reset && pnpm infra:up`. Nunca `prisma migrate reset` ni `prisma db push`.
 - **Locale.** El cluster se crea con el proveedor builtin de PostgreSQL y `C.UTF-8`, el mismo locale que Neon: el orden de los textos y las mayúsculas y minúsculas no dependen de la libc de la imagen.
-- **Correos.** Ningún test envía correo real: los de integración usan el transporte en memoria, salvo el test dedicado a Mailpit.
+- **Correos.** Ningún test envía correo real: los de integración usan el transporte en memoria, salvo los que prueban Mailpit (el adaptador SMTP y el aviso al equipo de punta a punta). Esos nunca vacían el buzón, que es compartido: cada test envía a direcciones propias y busca solo las suyas.
 - **Tests de integración.** `pnpm test:integration` corre con Turborepo en modo estricto de variables: los tests toman su configuración solo de `apps/api/.env.test` y nunca de las variables del shell, así un `DATABASE_URL` exportado no puede apuntarlos a la base de desarrollo.
 
 ## API

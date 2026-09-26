@@ -1,6 +1,6 @@
 import { isIP } from 'node:net'
 import { z } from 'zod'
-import { integer } from './env-values.js'
+import { integer, isPublishedHttpsUrl } from './env-values.js'
 import type { RuntimeEnvironment } from './runtime.schema.js'
 
 const NAMED_PROXY_SUBNETS = new Set(['loopback', 'linklocal', 'uniquelocal'])
@@ -54,20 +54,6 @@ function parseTrustProxy(raw: string): false | number | string | null {
   if (/^\d+$/.test(value)) return Number(value)
   const entries = value.split(',').map((entry) => entry.trim())
   return entries.every(isTrustedProxyEntry) ? entries.join(',') : null
-}
-
-/** `localhost`, un subdominio de `.localhost`, una IP de loopback (`127.0.0.0/8`, `::1`) o la IP sin especificar. */
-function isLocalHostname(hostname: string): boolean {
-  const host = hostname.replace(/^\[(.*)\]$/, '$1').toLowerCase()
-  if (host === 'localhost' || host.endsWith('.localhost')) return true
-  if (host === '::1' || host === '::' || host === '0.0.0.0') return true
-  return isIP(host) === 4 && host.startsWith('127.')
-}
-
-/** Un origen que un navegador de la landing o del admin publicados puede enviar: https y no local. */
-function isPublishedOrigin(origin: string): boolean {
-  const url = new URL(origin)
-  return url.protocol === 'https:' && !isLocalHostname(url.hostname)
 }
 
 /**
@@ -147,7 +133,8 @@ export function refineHttp(
       ctx.addIssue({ code: 'custom', path: [key], message: PRODUCTION_REQUIRED_MESSAGES[key] })
     }
   }
-  if (env.CORS_ORIGINS !== undefined && !env.CORS_ORIGINS.every(isPublishedOrigin)) {
+  // Un origen que un navegador de la landing o del admin publicados puede enviar: https y no local.
+  if (env.CORS_ORIGINS !== undefined && !env.CORS_ORIGINS.every(isPublishedHttpsUrl)) {
     ctx.addIssue({
       code: 'custom',
       path: ['CORS_ORIGINS'],

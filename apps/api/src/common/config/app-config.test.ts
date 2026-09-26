@@ -14,7 +14,6 @@ const REQUIRED_ONLY = {
   MAIL_TRANSPORT: 'fake',
   MAIL_FROM_EMAIL: 'solicitudes@anticipate.local',
   TEAM_NOTIFICATION_EMAIL: 'equipo@anticipate.local',
-  ADMIN_BASE_URL: 'http://localhost:3000/',
   TURNSTILE_SECRET_KEY: '1x0000000000000000000000000000000AA',
 }
 
@@ -36,12 +35,22 @@ const PRODUCTION = {
 const PRODUCTION_ORIGIN_MESSAGE =
   'en producción cada origen debe ser https y no puede ser localhost ni una IP de loopback: son los de la landing y el admin publicados (https://anticipate.pe)'
 
+const PRODUCTION_ADMIN_URL_MESSAGE =
+  'en producción debe ser https y no puede ser localhost ni una IP de loopback: el enlace llega al correo del equipo (https://admin.anticipate.pe)'
+
 const TURNSTILE_TEST_KEY_MESSAGE =
   'es una clave de prueba de Cloudflare: en producción usa la clave secreta del panel de Turnstile'
 
 /** Cada guarda de producción: variable, valor que la dispara y mensaje. */
 const PRODUCTION_GUARDS: ReadonlyArray<readonly [key: string, value: string, message: string]> = [
   ['MAIL_TRANSPORT', 'fake', 'no puede ser fake en producción: los correos se perderían sin aviso'],
+  // Un enlace del correo del equipo que nadie puede abrir o que viaja sin cifrar.
+  ...[
+    'http://admin.anticipate.pe',
+    'https://localhost:3000',
+    'https://127.0.0.1',
+    'https://[::1]',
+  ].map((url) => ['ADMIN_BASE_URL', url, PRODUCTION_ADMIN_URL_MESSAGE] as const),
   ...TURNSTILE_TEST_SECRET_KEYS.map(
     (key) => ['TURNSTILE_SECRET_KEY', key, TURNSTILE_TEST_KEY_MESSAGE] as const,
   ),
@@ -128,7 +137,7 @@ describe('parseConfig', () => {
         fromName: 'Anticipate',
       },
       teamNotificationEmail: 'equipo@anticipate.local',
-      adminBaseUrl: 'http://localhost:3000',
+      adminBaseUrl: null,
       turnstile: { secretKey: '1x0000000000000000000000000000000AA', expectedHostname: undefined },
       upload: {
         maxBodyBytes: 95_000_000,
@@ -414,6 +423,35 @@ describe('parseConfig', () => {
     expect(problemsOf({ ...REQUIRED_ONLY, SHUTDOWN_TIMEOUT_MS: '600001' })).toEqual([
       'SHUTDOWN_TIMEOUT_MS: debe ser como máximo 600000',
     ])
+  })
+
+  it('ADMIN_BASE_URL es opcional en todo entorno: sin ella el aviso al equipo no enlaza al admin', () => {
+    for (const env of [REQUIRED_ONLY, PRODUCTION]) {
+      expect(parseConfig({ ...env, ADMIN_BASE_URL: undefined }).adminBaseUrl).toBeNull()
+      expect(parseConfig({ ...env, ADMIN_BASE_URL: '  ' }).adminBaseUrl).toBeNull()
+    }
+    expect(
+      parseConfig({ ...REQUIRED_ONLY, ADMIN_BASE_URL: 'http://localhost:3000/' }).adminBaseUrl,
+    ).toBe('http://localhost:3000')
+    expect(parseConfig(PRODUCTION).adminBaseUrl).toBe('https://admin.anticipate.pe')
+  })
+
+  it('ADMIN_BASE_URL es la URL base del admin: http o https, sin parámetros ni fragmento', () => {
+    expect(problemsOf({ ...REQUIRED_ONLY, ADMIN_BASE_URL: 'ftp://admin.anticipate.pe' })).toEqual([
+      'ADMIN_BASE_URL: debe ser una URL que empiece con http:// o https://',
+    ])
+    for (const url of [
+      'https://admin.anticipate.pe/?origen=correo',
+      'https://admin.anticipate.pe/#x',
+    ]) {
+      expect(problemsOf({ ...REQUIRED_ONLY, ADMIN_BASE_URL: url })).toEqual([
+        'ADMIN_BASE_URL: debe ser la URL base del admin, sin parámetros ni fragmento: el correo le agrega /advance-requests/{id}',
+      ])
+    }
+    expect(
+      parseConfig({ ...REQUIRED_ONLY, ADMIN_BASE_URL: 'https://anticipate.pe/admin/' })
+        .adminBaseUrl,
+    ).toBe('https://anticipate.pe/admin')
   })
 
   it('una configuración de producción completa pasa las guardas', () => {

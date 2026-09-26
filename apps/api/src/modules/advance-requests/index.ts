@@ -10,6 +10,8 @@ export {
   ADVANCE_REQUEST_NOTIFICATION_READER,
   type AdvanceRequestNotificationReaderPort,
   type AdvanceRequestNotificationView,
+  type TeamAlertInvoice,
+  type TeamAlertNotificationView,
 } from './application/ports/advance-request-notification-reader.port.js'
 export {
   ADVANCE_REQUEST_REPOSITORY,
