@@ -9,9 +9,13 @@ export const DATABASE_APPLICATION_NAME = 'anticipate-api'
 
 /**
  * Columnas que ninguna consulta devuelve salvo que las pida con `omit: { campo: false }`. El hash de
- * la contraseña solo lo necesita el login (paso 4).
+ * la contraseña solo lo necesita el login (paso 4). `invoices.creating_xact_start` es de la base
+ * (D49): el cliente lo truncaría a milisegundos y escribirlo de vuelta lo rechaza `invoices_guard`.
  */
-export const PRISMA_CLIENT_OMIT = { user: { passwordHash: true } } as const
+export const PRISMA_CLIENT_OMIT = {
+  user: { passwordHash: true },
+  invoice: { creatingXactStart: true },
+} as const
 
 /**
  * Cliente que recibe el callback de un `$transaction` interactivo: lo usan los repositorios que

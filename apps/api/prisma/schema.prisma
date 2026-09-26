@@ -16,7 +16,11 @@ datasource db {
 // - Ids UUIDv7: la base los genera con uuidv7() (PostgreSQL 18) y la API los asigna con newId()
 //   cuando necesita el id antes de insertar. Por eso el orden de `id` es el orden de creación.
 // - Tiempos en timestamptz(3). `updated_at` tiene DEFAULT y además lo mantiene el trigger
-//   set_updated_at de la migración integrity, para que el SQL crudo también lo actualice.
+//   set_updated_at de la migración integrity, para que el SQL crudo también lo actualice. La única
+//   excepción es invoices.creating_xact_start, timestamptz(6): lo escribe y lo lee solo la base (un
+//   Date de JS lo truncaría a milisegundos), y el cliente lo omite (PRISMA_CLIENT_OMIT).
+// - Nunca findUnique, upsert, update, delete ni connect por el campo de un @@unique parcial: Prisma
+//   ignora el predicado (D40). Lo comprueba la regla 11 de src/architecture.test.ts.
 // - Toda relación declara onDelete: Restrict. Todo índice declara su nombre con map.
 // - Toda FK tiene un índice no parcial cuya primera columna es la primera de la FK (o un unique o
 //   una PK que la cubre). Excepciones, sin borrado del padre ni consulta inversa:
@@ -361,7 +365,8 @@ model Invoice {
   /// lógica (pg_dump o replicación lógica) lo lleva tal cual a un clúster cuyo contador de xid va por
   /// detrás, donde una transacción cualquiera podría recibirlo. El instante en que empezó la
   /// transacción que creó la factura es anterior a toda copia, así que ninguna transacción posterior
-  /// empieza en él. Solo lo usa la base: la app nunca lo escribe ni decide nada con él.
+  /// empieza en él. Solo lo usa la base: la app nunca lo escribe ni decide nada con él, y el cliente
+  /// lo omite en toda consulta (PRISMA_CLIENT_OMIT en prisma.service.ts).
   creatingXactStart DateTime             @default(dbgenerated("transaction_timestamp()")) @map("creating_xact_start") @db.Timestamptz(6)
   createdAt         DateTime             @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt         DateTime             @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(3)
@@ -491,8 +496,10 @@ model StatusHistory {
   transition        AdvanceRequestTransition? @relation(fields: [fromStatus, toStatus], references: [fromStatus, toStatus], onDelete: Restrict, onUpdate: Restrict, map: "status_history_transition_fkey")
   closeRule         CloseReasonRule?          @relation(fields: [toStatus, closeReason], references: [status, reason], onDelete: Restrict, onUpdate: Restrict, map: "status_history_close_rule_fkey")
 
+  /// Con status_history_initial_check ((from_status IS NULL) = (version = 1)) garantiza una sola
+  /// fila inicial por solicitud: la inicial es siempre la versión 1. Por eso no hay un unique parcial
+  /// sobre advance_request_id (Prisma lo expondría en findUnique ignorando el predicado).
   @@unique([advanceRequestId, version], map: "status_history_advance_request_id_version_key")
-  @@unique([advanceRequestId], where: raw("from_status IS NULL"), map: "status_history_one_initial_key")
   @@index([userId], map: "status_history_user_id_idx")
   /// Cubren las FK a los catálogos de transiciones y de motivos de cierre.
   @@index([fromStatus, toStatus], map: "status_history_transition_idx")

@@ -1,9 +1,11 @@
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { join, posix, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import ts from 'typescript'
 import { describe, expect, it } from 'vitest'
 
 const SRC = fileURLToPath(new URL('.', import.meta.url))
+const PRISMA_DIR = fileURLToPath(new URL('../prisma/', import.meta.url))
 
 /** Cliente generado por Prisma: no se clasifica, pero importarlo fuera de su lugar sí es violación. */
 const GENERATED_DIR = 'infrastructure/prisma/generated/'
@@ -20,7 +22,13 @@ type Layer =
   | 'presentation'
   | 'health-checks'
 
-type RuleId = Layer | 'unclassified' | 'restricted-dependency' | 'relative-escape' | 'own-barrel'
+type RuleId =
+  | Layer
+  | 'unclassified'
+  | 'restricted-dependency'
+  | 'relative-escape'
+  | 'own-barrel'
+  | 'partial-unique'
 
 type SourceFile = { path: string; source: string }
 type Violation = { rule: RuleId; file: string; specifier: string }
@@ -267,6 +275,156 @@ function readSourceFiles(): SourceFile[] {
     .map((path) => ({ path, source: readFileSync(join(SRC, path), 'utf8') }))
 }
 
+/**
+ * 11. Ninguna operación única de Prisma por el campo de un índice único parcial. Prisma lo expone en
+ * el `WhereUniqueInput` del modelo, pero ignora su predicado: `findUnique` devuelve una fila
+ * cualquiera y `update`, `delete`, `upsert` o un `connect` tocan otra (D40). Los índices parciales
+ * salen de `schema.prisma`; lo que se busca en el código son esas operaciones sobre el delegado del
+ * modelo (`prisma.invoice.findUnique(...)`) y las escrituras anidadas sobre sus relaciones
+ * (`invoices: { connect: ... }`), con el campo como clave de primer nivel del filtro único.
+ */
+type PartialUnique = { model: string; key: string }
+
+/** Operaciones del delegado que reciben un `WhereUniqueInput` en `where`. */
+const UNIQUE_DELEGATE_METHODS = new Set([
+  'findUnique',
+  'findUniqueOrThrow',
+  'update',
+  'delete',
+  'upsert',
+])
+/** Escrituras anidadas cuyo valor es un `WhereUniqueInput` (o un arreglo de ellos). */
+const NESTED_UNIQUE_VALUE_OPS = new Set(['connect', 'set', 'disconnect', 'delete'])
+/** Escrituras anidadas que llevan el `WhereUniqueInput` en su `where`. */
+const NESTED_UNIQUE_WHERE_OPS = new Set(['connectOrCreate', 'update', 'upsert'])
+
+/** Cuerpo de cada `model` de `schema.prisma`. */
+function prismaModels(schema: string): Map<string, string> {
+  return new Map(
+    [...schema.matchAll(/^model\s+(\w+)\s*\{([\s\S]*?)^\}/gm)].map((m) => [m[1] ?? '', m[2] ?? '']),
+  )
+}
+
+/** Cada `@@unique([...], where: ...)` como la clave con que Prisma lo expone en `WhereUniqueInput`. */
+function partialUniques(schema: string): PartialUnique[] {
+  const found: PartialUnique[] = []
+  for (const [model, body] of prismaModels(schema)) {
+    if (/^\s*\w+\s+\S+.*@unique\([^)]*\bwhere\s*:/m.test(body)) {
+      throw new Error(`${model}: un @unique parcial de campo no está previsto en esta regla`)
+    }
+    for (const match of body.matchAll(/^\s*@@unique\(\[([^\]]+)\](.*)\)\s*$/gm)) {
+      if (!/\bwhere\s*:/.test(match[2] ?? '')) continue
+      const fields = (match[1] ?? '').split(',').map((field) => field.trim().replace(/\(.*$/, ''))
+      const name = /\bname\s*:\s*"(\w+)"/.exec(match[2] ?? '')?.[1]
+      found.push({ model, key: name ?? fields.join('_') })
+    }
+  }
+  return found
+}
+
+/** Campos de relación (de cualquier modelo) cuyo tipo es `model`. */
+function relationFieldsTo(schema: string, model: string): Set<string> {
+  const fields = new Set<string>()
+  for (const body of prismaModels(schema).values()) {
+    for (const match of body.matchAll(/^\s*(\w+)\s+(\w+)(\[\])?\??(\s|$)/gm)) {
+      if (match[2] === model) fields.add(match[1] ?? '')
+    }
+  }
+  return fields
+}
+
+const lowerFirst = (text: string) => `${text.charAt(0).toLowerCase()}${text.slice(1)}`
+
+function propertyName(property: ts.ObjectLiteralElementLike): string | undefined {
+  if (!ts.isPropertyAssignment(property) && !ts.isShorthandPropertyAssignment(property)) {
+    return undefined
+  }
+  const { name } = property
+  return ts.isIdentifier(name) || ts.isStringLiteral(name) ? name.text : undefined
+}
+
+function propertyValue(object: ts.ObjectLiteralExpression, key: string): ts.Expression | undefined {
+  for (const property of object.properties) {
+    if (ts.isPropertyAssignment(property) && propertyName(property) === key) {
+      return property.initializer
+    }
+  }
+  return undefined
+}
+
+/** Los objetos literales de `value`: él mismo o los elementos de un arreglo literal. */
+function objectLiterals(value: ts.Expression | undefined): ts.ObjectLiteralExpression[] {
+  if (value === undefined) return []
+  if (ts.isObjectLiteralExpression(value)) return [value]
+  if (ts.isArrayLiteralExpression(value)) return value.elements.filter(ts.isObjectLiteralExpression)
+  return []
+}
+
+const topLevelKeys = (object: ts.ObjectLiteralExpression): string[] =>
+  object.properties.map(propertyName).filter((key) => key !== undefined)
+
+function checkPartialUniques(files: readonly SourceFile[], schema: string): Violation[] {
+  const violations: Violation[] = []
+  const rules = partialUniques(schema).map((rule) => ({
+    ...rule,
+    delegate: lowerFirst(rule.model),
+    relations: relationFieldsTo(schema, rule.model),
+  }))
+  if (rules.length === 0) return violations
+  for (const file of files) {
+    const tree = ts.createSourceFile(file.path, file.source, ts.ScriptTarget.Latest, true)
+    const report = (key: string, where: string) =>
+      violations.push({ rule: 'partial-unique', file: file.path, specifier: `${where} por ${key}` })
+    const visit = (node: ts.Node): void => {
+      if (
+        ts.isCallExpression(node) &&
+        ts.isPropertyAccessExpression(node.expression) &&
+        UNIQUE_DELEGATE_METHODS.has(node.expression.name.text)
+      ) {
+        const target = node.expression.expression
+        const delegate = ts.isPropertyAccessExpression(target)
+          ? target.name.text
+          : ts.isIdentifier(target)
+            ? target.text
+            : undefined
+        const [argument] = node.arguments
+        for (const rule of rules.filter((r) => r.delegate === delegate)) {
+          if (argument === undefined || !ts.isObjectLiteralExpression(argument)) continue
+          for (const where of objectLiterals(propertyValue(argument, 'where'))) {
+            if (topLevelKeys(where).includes(rule.key)) {
+              report(rule.key, `${rule.delegate}.${node.expression.name.text}`)
+            }
+          }
+        }
+      }
+      if (ts.isPropertyAssignment(node) && ts.isObjectLiteralExpression(node.initializer)) {
+        const relation = propertyName(node)
+        for (const rule of rules.filter(
+          (r) => relation !== undefined && r.relations.has(relation),
+        )) {
+          for (const operation of node.initializer.properties) {
+            const op = propertyName(operation)
+            if (op === undefined || !ts.isPropertyAssignment(operation)) continue
+            const uniques = NESTED_UNIQUE_VALUE_OPS.has(op)
+              ? objectLiterals(operation.initializer)
+              : NESTED_UNIQUE_WHERE_OPS.has(op)
+                ? objectLiterals(operation.initializer).flatMap((item) =>
+                    objectLiterals(propertyValue(item, 'where')),
+                  )
+                : []
+            for (const unique of uniques) {
+              if (topLevelKeys(unique).includes(rule.key)) report(rule.key, `${relation}.${op}`)
+            }
+          }
+        }
+      }
+      ts.forEachChild(node, visit)
+    }
+    visit(tree)
+  }
+  return violations
+}
+
 describe('arquitectura de apps/api', () => {
   const files = readSourceFiles()
 
@@ -291,6 +449,84 @@ describe('arquitectura de apps/api', () => {
 
   it('no existe common/index.ts: cada carpeta de common es su propia frontera', () => {
     expect(existsSync(join(SRC, 'common', 'index.ts'))).toBe(false)
+  })
+
+  it('11. ninguna operación única de Prisma usa el campo de un índice único parcial (src y seed)', () => {
+    const schema = readFileSync(join(PRISMA_DIR, 'schema.prisma'), 'utf8')
+    // Si cambia la lista, revisar que el campo nuevo tampoco se use en una operación única.
+    expect(partialUniques(schema)).toEqual([{ model: 'Invoice', key: 'invoiceKey' }])
+    const seed = {
+      path: 'prisma/seed.ts',
+      source: readFileSync(join(PRISMA_DIR, 'seed.ts'), 'utf8'),
+    }
+    const violations = checkPartialUniques([...files, seed], schema)
+    expect(violations, JSON.stringify(violations, null, 2)).toEqual([])
+  })
+})
+
+describe('11. checkPartialUniques detecta cada operación única por un índice parcial', () => {
+  const schema = [
+    'model AdvanceRequest {',
+    '  id       String          @id',
+    '  invoices Invoice[]',
+    '  history  StatusHistory[]',
+    '}',
+    'model Invoice {',
+    '  id         String @id',
+    '  invoiceKey String',
+    '  xmlFileId  String',
+    '  @@unique([xmlFileId], map: "invoices_xml_file_key")',
+    '  @@unique([invoiceKey], where: raw("request_status <> \'REJECTED\'"), map: "invoices_open_invoice_key_key")',
+    '}',
+    'model StatusHistory {',
+    '  id               String @id',
+    '  advanceRequestId String',
+    '  version          Int',
+    '  @@unique([advanceRequestId, version], map: "status_history_advance_request_id_version_key")',
+    '  @@unique([advanceRequestId], where: raw("from_status IS NULL"), map: "status_history_one_initial_key")',
+    '}',
+  ].join('\n')
+  const path = 'infrastructure/prisma/repositories/x.repository.ts'
+  const violationsIn = (source: string) => checkPartialUniques([{ path, source }], schema)
+
+  it('lee los índices únicos parciales del esquema, no los completos', () => {
+    expect(partialUniques(schema)).toEqual([
+      { model: 'Invoice', key: 'invoiceKey' },
+      { model: 'StatusHistory', key: 'advanceRequestId' },
+    ])
+  })
+
+  it.each([
+    'await prisma.invoice.findUnique({ where: { invoiceKey } })',
+    'await tx.invoice.findUniqueOrThrow({ where: { invoiceKey: key } })',
+    'await this.prisma.invoice.upsert({ where: { invoiceKey }, create: data, update: {} })',
+    "await prisma.invoice.update({ where: { 'invoiceKey': key }, data: {} })",
+    'await prisma.invoice.delete({ where: { invoiceKey: key } })',
+    'await prisma.statusHistory.findUnique({ where: { advanceRequestId } })',
+    'await prisma.statusHistory.upsert({ where: { advanceRequestId: id }, create: row, update: {} })',
+    'await prisma.advanceRequest.update({ where: { id }, data: { invoices: { connect: { invoiceKey: key } } } })',
+    'await prisma.advanceRequest.update({ where: { id }, data: { invoices: { connect: [{ id }, { invoiceKey }] } } })',
+    'await prisma.advanceRequest.update({ where: { id }, data: { invoices: { set: [{ invoiceKey }] } } })',
+    'await prisma.advanceRequest.update({ where: { id }, data: { invoices: { connectOrCreate: { where: { invoiceKey }, create: row } } } })',
+    'await prisma.advanceRequest.update({ where: { id }, data: { invoices: { update: { where: { invoiceKey }, data: {} } } } })',
+    'await prisma.advanceRequest.create({ data: { history: { connect: { advanceRequestId: id } } } })',
+  ])('partial-unique: %s', (source) => {
+    expect(violationsIn(source)).toHaveLength(1)
+    expect(violationsIn(source)[0]).toMatchObject({ rule: 'partial-unique', file: path })
+  })
+
+  it.each([
+    'await prisma.invoice.findUnique({ where: { id } })',
+    'await prisma.invoice.findMany({ where: { invoiceKey: { in: keys } } })',
+    'await prisma.invoice.findFirst({ where: { invoiceKey } })',
+    'await prisma.invoice.updateMany({ where: { invoiceKey }, data: {} })',
+    'await prisma.invoice.createMany({ data: [{ invoiceKey }] })',
+    'await prisma.statusHistory.findUnique({ where: { advanceRequestId_version: { advanceRequestId, version: 1 } } })',
+    'await prisma.advanceRequest.update({ where: { id }, data: { invoices: { connect: { id } } } })',
+    'await prisma.payer.findUnique({ where: { invoiceKey } })',
+    'cache.delete({ where: { invoiceKey } })',
+  ])('sin violación: %s', (source) => {
+    expect(violationsIn(source)).toEqual([])
   })
 })
 

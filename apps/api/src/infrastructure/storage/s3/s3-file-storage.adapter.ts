@@ -92,6 +92,8 @@ const FORBIDDEN_OBJECT_KEY_CHARS = /[\p{Cc}\p{Cs}]/u
  * sobre un objeto (`DeleteObject` pasa a borrar el bucket, `HeadObject` a consultarlo y un `GetObject`
  * firmado a listar todas sus claves); los segmentos vacíos, `.` y `..` son rutas que un proxy o el
  * proveedor pueden normalizar hacia otra clave o hacia el bucket. Nunca lanza, reciba lo que reciba.
+ * La base aplica la misma regla a `stored_files.key` (`stored_files_key_check`); el test estructural
+ * compara las dos: si cambia una, cambia la otra con una migración.
  */
 export function objectKeyProblem(key: string): string | undefined {
   if (typeof key !== 'string') return 'no es texto'

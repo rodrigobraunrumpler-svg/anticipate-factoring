@@ -7,6 +7,7 @@ import {
 } from '#/infrastructure/prisma/index.js'
 import { CATALOG_TABLES, createTestPrisma, tablesToTruncate, truncateAll } from '../support/db.js'
 import {
+  createCompleteAdvanceRequest,
   createPayer,
   createSupplier,
   SEA,
@@ -43,6 +44,15 @@ describe('PrismaService contra PostgreSQL', () => {
     expect(user).not.toHaveProperty('passwordHash')
     const forLogin = await prisma.user.findFirstOrThrow({ omit: { passwordHash: false } })
     expect(forLogin.passwordHash).toBe(ARGON2ID_HASH)
+  })
+
+  it('omite invoices.creating_xact_start: es de la base, y el cliente lo truncaría a milisegundos', async () => {
+    const { invoices } = await createCompleteAdvanceRequest(prisma)
+    const invoice = await prisma.invoice.findUniqueOrThrow({ where: { id: invoices[0]?.id ?? '' } })
+    expect(invoice).not.toHaveProperty('creatingXactStart')
+    const [row] = await prisma.$queryRaw<{ start: Date | null }[]>`
+      SELECT creating_xact_start AS start FROM invoices WHERE id = ${invoice.id}::uuid`
+    expect(row?.start).toBeInstanceOf(Date)
   })
 
   it('la base asigna UUIDv7 también a un INSERT en SQL crudo, y acepta los de newId()', async () => {

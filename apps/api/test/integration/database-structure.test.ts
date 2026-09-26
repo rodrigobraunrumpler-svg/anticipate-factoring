@@ -14,6 +14,7 @@ import { afterAll, beforeEach, describe, expect, it } from 'vitest'
 import { dbDateToIso } from '#/infrastructure/prisma/db-values.js'
 import { newId } from '#/infrastructure/prisma/id.js'
 import { PrismaService } from '#/infrastructure/prisma/prisma.service.js'
+import { objectKeyProblem } from '#/infrastructure/storage/s3/s3-file-storage.adapter.js'
 import { createTestApp } from '../support/app.js'
 import { testConfig } from '../support/config.js'
 import { createTestPrisma, truncateAll } from '../support/db.js'
@@ -467,6 +468,7 @@ const CHECK_CASES: { constraint: string; table: string; row: Row; disableTrigger
     row: { purpose: 'INVOICE_PDF', content_type: 'image/png' },
   },
   { constraint: 'stored_files_status_check', table: 'stored_files', row: { status: 'ATTACHED' } },
+  { constraint: 'stored_files_key_check', table: 'stored_files', row: { key: 'base/../otra' } },
   { constraint: 'status_history_initial_check', table: 'status_history', row: { version: 2 } },
   {
     constraint: 'status_history_initial_status_check',
@@ -912,7 +914,6 @@ describe('estructura de la base', () => {
       "CREATE INDEX ON public.stored_files USING btree (created_at) WHERE (status = 'PENDING'::stored_file_status)",
       'CREATE INDEX ON public.stored_files USING btree (purge_after) WHERE ((purged_at IS NULL) AND (deleted_at IS NOT NULL))',
       'CREATE INDEX ON public.follow_ups USING btree (user_id, created_at DESC)',
-      'CREATE UNIQUE INDEX ON public.status_history USING btree (advance_request_id) WHERE (from_status IS NULL)',
       'CREATE INDEX ON public.audit_logs USING btree (entity_id, created_at DESC)',
       'CREATE INDEX ON public.audit_logs USING btree (user_id, created_at DESC)',
       'CREATE INDEX ON public.audit_logs USING brin (created_at)',
@@ -930,7 +931,7 @@ describe('estructura de la base', () => {
         'advance_requests_idempotency_key_key',
         'advance_requests_invoice_scope_key',
         'invoices_open_invoice_key_key',
-        'status_history_one_initial_key',
+        'status_history_advance_request_id_version_key',
         'outbox_events_dedupe_key_key',
         'suppliers_legal_name_trgm_idx',
         'audit_logs_created_brin_idx',
@@ -939,6 +940,9 @@ describe('estructura de la base', () => {
         'legal_representatives_id_supplier_key',
       ]),
     )
+    // Redundante con (advance_request_id, version) + status_history_initial_check, y Prisma exponía
+    // un findUnique por advanceRequestId que ignoraba el predicado (D40): se quitó.
+    expect(indexes.map((index) => index.name)).not.toContain('status_history_one_initial_key')
     const [scope] = await queryRows<{ on_update: string; on_delete: string }>(`
       SELECT confupdtype AS on_update, confdeltype AS on_delete FROM pg_constraint
       WHERE conname = 'invoices_request_scope_fkey'`)
@@ -2968,5 +2972,165 @@ describe('comportamiento de los triggers', () => {
     } finally {
       client.release()
     }
+  })
+})
+
+describe('stored_files.key: la misma regla que el adaptador de almacenamiento (objectKeyProblem)', () => {
+  /**
+   * Prueba cada clave contra la CHECK real: un INSERT por clave con SAVEPOINT, dentro de una
+   * transacción que nunca se confirma (el mismo patrón que `probePayerChecks`).
+   */
+  async function probeKeys(
+    keys: readonly string[],
+  ): Promise<{ accepted: boolean; code?: string | undefined; constraint?: string | undefined }[]> {
+    const client = await pool.connect()
+    const results: {
+      accepted: boolean
+      code?: string | undefined
+      constraint?: string | undefined
+    }[] = []
+    try {
+      await client.query('BEGIN')
+      for (const key of keys) {
+        await client.query('SAVEPOINT probe')
+        try {
+          await insert(client, 'stored_files', { ...BASE.stored_files?.(), key })
+          results.push({ accepted: true })
+        } catch (error) {
+          const { code, constraint } = error as SqlError
+          results.push({ accepted: false, code, constraint })
+        } finally {
+          await client.query('ROLLBACK TO SAVEPOINT probe')
+        }
+      }
+      await client.query('ROLLBACK')
+    } finally {
+      client.release()
+    }
+    return results
+  }
+
+  it.each([
+    ['vacía', ''],
+    ['con "/" inicial', '/payers/x/invoice.xml'],
+    ['con un segmento vacío', 'payers//invoice.xml'],
+    ['con "/" al final', 'payers/x/'],
+    ['con un segmento "."', 'payers/./invoice.xml'],
+    ['con un segmento ".."', 'payers/../invoice.xml'],
+    ['que es solo ".."', '..'],
+    ['con un control C0', 'payers/x\u0001.xml'],
+    ['con DEL', 'payers/x\u007f.xml'],
+    ['con un control C1', 'payers/x\u0085.xml'],
+    ['de más de 1024 bytes en UTF-8 (342 caracteres de 3 bytes)', '€'.repeat(342)],
+  ])('(e) rechaza una clave %s con stored_files_key_check', async (_rule, key) => {
+    expect(objectKeyProblem(key)).toBeDefined()
+    const [result] = await probeKeys([key])
+    expect(result).toEqual({ accepted: false, code: '23514', constraint: 'stored_files_key_check' })
+  })
+
+  it('(e) acepta las claves que arma la API y las del borde', async () => {
+    const keys = [
+      `payers/${OTHER_ID}/advance-requests/${OTHER_ID}/invoices/${OTHER_ID}/invoice.xml`,
+      'a',
+      '...',
+      '.oculto/a..b/c.',
+      '€'.repeat(341),
+      'a'.repeat(512),
+      'ñandú/año 2026/factura (1).pdf',
+    ]
+    for (const key of keys) expect(objectKeyProblem(key), key).toBeUndefined()
+    expect((await probeKeys(keys)).map((result) => result.accepted)).toEqual(keys.map(() => true))
+  })
+
+  it('(f) acepta exactamente lo que acepta objectKeyProblem en 3000 claves generadas', async () => {
+    // Sin U+0000 ni surrogates sueltos: PostgreSQL no guarda U+0000 en un texto (error 22021, no
+    // la CHECK) y el driver cambia un surrogate suelto por U+FFFD antes de mandarlo. Hasta 512
+    // caracteres, el largo de la columna: más allá la rechaza el VARCHAR(512) (22001) aunque el
+    // adaptador acepte hasta 1024 bytes.
+    const unit = fc.constantFrom(
+      'a',
+      'Z',
+      '0',
+      '-',
+      '_',
+      ' ',
+      '/',
+      '/',
+      '.',
+      '.',
+      'ñ',
+      '€',
+      '😀',
+      '\u0001',
+      '\u001f',
+      '\u007f',
+      '\u0080',
+      '\u0085',
+      '\u009f',
+      '\u00a0',
+      '\u2028',
+    )
+    const keys = fc.sample(fc.string({ unit, maxLength: 24 }), { numRuns: 3000, seed: 20260926 })
+    const long = fc.sample(
+      fc.tuple(fc.integer({ min: 330, max: 350 }), fc.constantFrom('€', 'ñ€', '😀')),
+      { numRuns: 40, seed: 20260926 },
+    )
+    const candidates = [
+      ...keys,
+      ...long.map(([count, text]) => text.repeat(count).slice(0, 512)),
+    ].filter((key) => [...key].length <= 512)
+    const results = await probeKeys(candidates)
+    const mismatches = candidates
+      .map((key, index) => ({
+        key: JSON.stringify(key).slice(0, 60),
+        adapter: objectKeyProblem(key) === undefined,
+        database: results[index]?.accepted,
+        constraint: results[index]?.constraint,
+      }))
+      .filter((row) => row.adapter !== row.database)
+    expect(mismatches).toEqual([])
+    const rejected = results.filter((result) => !result.accepted)
+    expect(rejected.every((result) => result.constraint === 'stored_files_key_check')).toBe(true)
+    expect(rejected.length).toBeGreaterThan(500)
+    expect(results.length - rejected.length).toBeGreaterThan(300)
+  })
+})
+
+describe('status_history: una sola fila inicial por solicitud sin índice parcial', () => {
+  it('(i) una segunda fila inicial (from_status NULL) se rechaza por la versión, con cualquier versión', async () => {
+    const request = await createCompleteAdvanceRequest(db.prisma)
+    const initial = { advance_request_id: request.id, to_status: 'NEW' }
+
+    // Versión 1: ya la tiene la fila inicial de la solicitud.
+    const sameVersion = await sqlError((client) =>
+      insert(client, 'status_history', { ...initial, version: 1 }),
+    )
+    expect({ code: sameVersion?.code, constraint: sameVersion?.constraint }).toEqual({
+      code: '23505',
+      constraint: 'status_history_advance_request_id_version_key',
+    })
+
+    // Otra versión: una fila inicial solo puede ser la versión 1.
+    const otherVersion = await sqlError((client) =>
+      insert(client, 'status_history', { ...initial, version: 2 }),
+    )
+    expect({ code: otherVersion?.code, constraint: otherVersion?.constraint }).toEqual({
+      code: '23514',
+      constraint: 'status_history_initial_check',
+    })
+  })
+
+  it('(b) la CHECK que lo garantiza está validada y version no admite NULL', async () => {
+    const [check] = await queryRows<{ definition: string; validated: boolean }>(`
+      SELECT pg_get_constraintdef(oid) AS definition, convalidated AS validated
+      FROM pg_constraint WHERE conname = 'status_history_initial_check'`)
+    expect(check).toEqual({
+      definition: 'CHECK (((from_status IS NULL) = (version = 1)))',
+      validated: true,
+    })
+    const [column] = await queryRows<{ nullable: string }>(`
+      SELECT is_nullable AS nullable FROM information_schema.columns
+      WHERE table_schema = 'public' AND table_name = 'status_history' AND column_name = 'version'`)
+    expect(column).toEqual({ nullable: 'NO' })
   })
 })
