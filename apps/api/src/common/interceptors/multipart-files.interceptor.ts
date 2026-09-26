@@ -136,6 +136,16 @@ export function MultipartFilesInterceptor(
       if (!request.is('multipart/form-data')) {
         throw apiError('MALFORMED_MULTIPART', 'la solicitud no es multipart/form-data')
       }
+      // Si el cliente cortó mientras corrían los guards (el del captcha espera a Cloudflare), sus
+      // 'close' ya pasaron: el respaldo de abajo nunca correría y multer esperaría para siempre un
+      // cuerpo que no llega, con la reserva tomada. Se corta aquí, sin reservar ni leer. Entre esta
+      // comprobación y el registro del respaldo no corre nada asíncrono.
+      if (request.destroyed || request.socket.destroyed || response.destroyed) {
+        throw apiError(
+          'MALFORMED_MULTIPART',
+          'el cliente cerró la conexión antes de enviar el cuerpo',
+        )
+      }
       const release = this.reserve(request, response)
       let reading = true
       // Respaldo: si la conexión se cierra durante la lectura, la reserva se libera aunque multer no

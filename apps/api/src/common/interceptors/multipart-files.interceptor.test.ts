@@ -6,7 +6,17 @@ import {
   type ApiErrorCode,
   apiErrorEnvelopeSchema,
 } from '@anticipate/shared/api'
-import { Body, Controller, HttpCode, Post, UploadedFiles, UseInterceptors } from '@nestjs/common'
+import {
+  Body,
+  type CanActivate,
+  Controller,
+  HttpCode,
+  Injectable,
+  Post,
+  UploadedFiles,
+  UseGuards,
+  UseInterceptors,
+} from '@nestjs/common'
 import type { NestExpressApplication } from '@nestjs/platform-express'
 import { Test } from '@nestjs/testing'
 import multer from 'multer'
@@ -100,6 +110,18 @@ const BUDGET_LIMITS: MultipartLimits = {
 let handled = 0
 let releaseHandler: () => void = () => undefined
 let handlerGate: Promise<void> = Promise.resolve()
+let guardGate: Promise<void> = Promise.resolve()
+let guardEntered = 0
+
+/** Un guard lento, como el del captcha que espera a Cloudflare antes de leer el cuerpo. */
+@Injectable()
+class SlowGuard implements CanActivate {
+  async canActivate(): Promise<boolean> {
+    guardEntered += 1
+    await guardGate
+    return true
+  }
+}
 
 @Controller('upload')
 class UploadController {
@@ -240,6 +262,15 @@ class BudgetUploadController {
     if (body.form === 'esperar') await handlerGate
     return { form: body.form ?? null }
   }
+
+  @Post('lento')
+  @HttpCode(200)
+  @UseGuards(SlowGuard)
+  @UseInterceptors(MultipartFilesInterceptor([{ name: 'xml', maxCount: 3 }], () => BUDGET_LIMITS))
+  slow(@Body() body: Record<string, string>) {
+    handled += 1
+    return { form: body.form ?? null }
+  }
 }
 
 describe('MultipartFilesInterceptor: presupuesto de cuerpos en memoria', () => {
@@ -268,7 +299,12 @@ describe('MultipartFilesInterceptor: presupuesto de cuerpos en memoria', () => {
   })
 
   /** Una petición multipart a mano: `declared` en `Content-Length` (o chunked) y `body` como cuerpo. */
-  async function openUpload(options: { declared: number | null; body: string; end: boolean }) {
+  async function openUpload(options: {
+    declared: number | null
+    body: string
+    end: boolean
+    path?: string
+  }) {
     const server = app.getHttpServer()
     if (!server.listening)
       await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
@@ -285,7 +321,7 @@ describe('MultipartFilesInterceptor: presupuesto de cuerpos en memoria', () => {
         host: '127.0.0.1',
         port,
         method: 'POST',
-        path: '/budget-upload',
+        path: options.path ?? '/budget-upload',
         headers: {
           'content-type': 'multipart/form-data; boundary=limite',
           ...(options.declared === null
@@ -401,5 +437,29 @@ describe('MultipartFilesInterceptor: presupuesto de cuerpos en memoria', () => {
     await waitFor(() => budget.reservedBytes === HELD_BYTES)
     cut.req.destroy()
     await waitFor(() => budget.reservedBytes === 0)
+  })
+
+  it('si el cliente corta mientras corren los guards, no reserva nada ni deja la lectura colgada', async () => {
+    let openGate: () => void = () => undefined
+    guardGate = new Promise((resolve) => {
+      openGate = resolve
+    })
+    const entered = guardEntered
+    const before = handled
+    const cut = await openUpload({
+      path: '/budget-upload/lento',
+      declared: HELD_BYTES,
+      body: multipartOf('{}', HELD_BYTES).slice(0, 100),
+      end: false,
+    })
+    await waitFor(() => guardEntered === entered + 1)
+    // El cliente se va mientras el guard espera: los 'close' pasan antes de que corra el interceptor.
+    cut.req.destroy()
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    openGate()
+    guardGate = Promise.resolve()
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(budget.reservedBytes).toBe(0)
+    expect(handled).toBe(before)
   })
 })
