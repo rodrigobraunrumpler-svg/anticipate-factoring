@@ -1,6 +1,6 @@
 # Landing de proveedores · Plan de implementación (paso 3)
 
-> **BORRADOR INCOMPLETO (rama `wip/plan-step3`).** Faltan las tareas 9 y 10 (formulario: paso 01; pasos 02, 03 y cierre) y la 13 (comportamiento móvil), y todavía no pasó la revisión ni la corrección. No se ejecuta hasta completarlo. Contrato de diseño: `docs/superpowers/specs/2026-09-26-landing-contrato.md`.
+> **BORRADOR (rama `wip/plan-step3`).** Las 15 tareas están escritas. Las Tareas 1 a 9 se aplicaron y probaron en un laboratorio: tests, `astro check`, lint, build con fixtures, la integración de la API contra PostgreSQL, S3Mock y Mailpit reales, y la Tarea 9 en Chromium. Las Tareas 10 a 15 no se probaron, y la 10 y la 13 todavía hay que ajustarlas a la versión final de la 9. La revisión en dos lentes quedó a medias: las Tareas 1 a 4 ya tienen aplicadas sus correcciones verificadas, y lo pendiente está en `docs/superpowers/plans/2026-09-26-landing-de-proveedores.pendientes.md`. No se ejecuta hasta aplicarlo. Contrato de diseño: `docs/superpowers/specs/2026-09-26-landing-contrato.md`.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -536,7 +536,7 @@ Archivos de la API que importaban lo que se mueve, verificado con `grep -rn "pdf
       - `netPendingTotal` es la suma exacta (céntimos `bigint`) de `netPendingAmount`, el mismo dato que suma `validateInvoices`, y `maxAdvance = percentOf(netPendingTotal, advancePercent)`.
       - Orden: `netPendingTotal` de mayor a menor, luego la cantidad de facturas de mayor a menor, luego `key` (comparación de texto, sin `localeCompare`). Sin facturas, `[]`.
       - Una factura cuya moneda no es de `CURRENCIES` o sin neto pendiente (`null` o `0.00`) no entra en ningún grupo.
-      - Un grupo cuyo neto pasa `MAX_AMOUNT` conserva sus facturas con `netPendingTotal` y `maxAdvance` en `'0.00'`, como los informa `validateInvoices` junto con `TOTAL_OUT_OF_RANGE`; por eso queda al final y nunca es el grupo por defecto.
+      - Un grupo cuyo neto pasa `MAX_AMOUNT` conserva sus facturas con `netPendingTotal` y `maxAdvance` en `'0.00'`, como los informa `validateInvoices` junto con `TOTAL_OUT_OF_RANGE`; por eso queda detrás de todo grupo con neto en rango, pero si no hay ninguno es el primero de la lista. El grupo por defecto se elige entre los que tienen `maxAdvance` mayor que `'0.00'` (la Tarea 7 descarta los demás en `viewIntake`).
       - Lanza `RangeError` si `advancePercent` no es finito o está fuera de 0 a 100, aun con la lista vacía.
   - En la API:
     ```ts
@@ -1859,7 +1859,7 @@ describe('groupInvoicesForSubmission · propiedades', () => {
     )
   })
 
-  it('el máximo es el porcentaje del neto, y ninguno es 0.00 con un neto mayor que cero', () => {
+  it('el máximo es el porcentaje del neto, y ninguno es 0.00 con un neto de 1.00 o más', () => {
     fc.assert(
       fc.property(invoicesArb, percentArb, (invoices, pct) => {
         for (const g of groupInvoicesForSubmission(invoices, pct)) {
@@ -1971,7 +1971,8 @@ function byPriority(a: InvoiceGroup, b: InvoiceGroup): number {
  * - `netPendingTotal` suma `netPendingAmount` en céntimos exactos, el mismo dato que suma
  *   `validateInvoices`. Si pasa `MAX_AMOUNT` (solo con XML fuera de toda realidad), el grupo se
  *   conserva con sus facturas pero con neto y máximo en "0.00", como informa `validateInvoices`
- *   junto con `TOTAL_OUT_OF_RANGE`: así queda al final de la lista y nunca es el grupo por defecto.
+ *   junto con `TOTAL_OUT_OF_RANGE`: así queda detrás de todo grupo con neto en rango; si no hay
+ *   ninguno, es el primero. Quien elige el grupo por defecto descarta los de máximo "0.00".
  * - Una factura que ninguna solicitud puede llevar (moneda fuera de `CURRENCIES`, o sin neto
  *   pendiente) no entra en ningún grupo: `INVOICE_RULES` ya la marca con su problema.
  * - Orden: `netPendingTotal` de mayor a menor, luego la cantidad de facturas de mayor a menor, luego
@@ -2144,7 +2145,7 @@ Expected: `✔ Build complete` y `index.d.ts  index.js`: tsdown acepta `--no-cle
 - [ ] **Step 8: Verificación completa y commit**
 
 Run: `pnpm --filter @anticipate/shared test`
-Expected: PASS, 694 tests en 35 archivos, y la cobertura sobre los umbrales (90 % de líneas, funciones y sentencias; 85 % de ramas). En el laboratorio, `intake` quedó con 100 % de líneas y 94 % de ramas.
+Expected: PASS, 694 tests en 35 archivos, y la cobertura sobre los umbrales (90 % de líneas, funciones y sentencias; 85 % de ramas). En el laboratorio, `intake` quedó con 100 % de líneas y 96 % de ramas.
 
 Run: `pnpm --filter @anticipate/shared typecheck`
 Expected: sin errores en `tsconfig.src.json` (sin tipos de Node: `isPdf` ya no usa `Buffer`) ni en `tsconfig.json`.
@@ -2239,12 +2240,12 @@ git commit -m "feat(shared): subpath intake con la admisión movida desde la api
   - `src/env.d.ts` declara la interfaz mínima de `URLSearchParams` (recorrer sus pares) solo para compilar `src` sin DOM ni Node; los `.d.ts` publicados nombran el `URLSearchParams` global de quien los consume (DOM en la landing, `@types/node` en la API).
 
 Decisiones de esta tarea, comprobadas en laboratorio sobre el resultado de la Tarea 1 (Zod 4.6.5, Vitest 5.0.1, fast-check 4.10.2, Node 24.20 con ICU 78.3):
-- Base: `SCRATCH/step3-lab/form-logic/paste/normalize.ts`, ajustada al contrato: cero da `null`; `12.` da `null` (un separador decimal necesita 1 o 2 dígitos detrás); no se aceptan las etiquetas `DNI`/`RUC` ni los sufijos `soles`/`dólares`; el RUC no se valida con el módulo 11; el correo solo se limpia y pasa a minúsculas.
+- Ajustes al contrato: cero da `null`; `12.` da `null` (un separador decimal necesita 1 o 2 dígitos detrás); no se aceptan las etiquetas `DNI`/`RUC` ni los sufijos `soles`/`dólares`; el RUC no se valida con el módulo 11; el correo solo se limpia y pasa a minúsculas.
 - `S/.` se acepta además de `S/`: es la forma antigua del símbolo que la gente sigue escribiendo, y quitarla nunca cambia un dígito.
 - La comprobación de caracteres de un monto usa dos expresiones lineales (`^[\d.,]+$` y `\d`), sin cuantificadores anidados: un texto pegado enorme no congela la página.
 - Zod 4.6 cuenta el largo de un texto en puntos de código (`z.string().max(2)` acepta dos emoji), igual que `sanitizeUtm` al cortar un valor en 200: el resultado siempre pasa `utmValueSchema`.
 - `URLSearchParams` cambia un sustituto suelto por U+FFFD al construirse, así que a `sanitizeUtm` solo le llegan U+0000, controles C0, U+FFFE y U+FFFF como caracteres que la base no guarda: el test usa esos.
-- El saludo de WhatsApp es una función del pagador (`supplierGreeting`), no una constante con "SEA": ningún texto de la landing lleva el pagador fijo.
+- El saludo de WhatsApp es una función del pagador (`supplierGreeting`), no una constante con "SEA": ningún texto de la landing lleva el pagador fijo. Por eso no se crea el `SUPPLIER_WHATSAPP_GREETING` que nombra la sección 3.2 del contrato: la sección 8 solo fija `supplierGreeting`.
 - `CONTACT_TIME_SLOT_PHRASES` va en `form.ts`, junto a `CONTACT_TIME_SLOT_LABELS`. Su comentario no repite el número de Anticipate: el único lugar del número es `ANTICIPATE_COMPANY`.
 
 - [ ] **Step 1: Escribir los tests de `cleanPasted` y `normalizeEmailInput`, que fallan**
@@ -2631,7 +2632,7 @@ const ALLOWED: Record<string, readonly string[]> = {
 `text` no importa a nadie, así que la tabla sigue sin ciclos.
 
 Run: `pnpm --filter @anticipate/shared exec vitest run src/money src/architecture.test.ts`
-Expected: FAIL: `amount-input.test.ts` con `Error: Cannot find module './amount-input.js'` y `format.test.ts` con `Error: Cannot find module './format.js'`; `amount.test.ts`, `currency.test.ts` y `architecture.test.ts` pasan.
+Expected: FAIL: `amount-input.test.ts` con `Error: Cannot find module './amount-input.js'` y `format.test.ts` también con `Error: Cannot find module './amount-input.js'` (lo importa antes que `./format.js`); `amount.test.ts`, `currency.test.ts` y `architecture.test.ts` pasan (65 tests).
 
 - [ ] **Step 4: Implementar `parseAmountInput` y `formatMoney`**
 
@@ -3955,7 +3956,7 @@ git commit -m "feat(shared): normalizadores de lo pegado, formatMoney, utm y ref
 - Modify: `apps/api/src/common/config/schemas/throttle.schema.ts`, `apps/api/src/common/config/app-config.test.ts`, `apps/api/src/common/config/env-example.test.ts`, `apps/api/.env.example`
 - Modify: `apps/api/prisma/seed.ts`
 - Modify: `.github/workflows/ci.yml` (prueba de humo del job `image`)
-- Modify: `apps/api/PROJECT_STRUCTURE.md` (módulo `legal-documents` y `seed-data.ts`), `docs/STACK.md` (las dos frases que citan el cupo de 5 envíos)
+- Modify: `apps/api/PROJECT_STRUCTURE.md` (módulo `legal-documents` y `seed-data.ts`), `README.md` (la ruta nueva en la tabla de rutas de la API), `docs/STACK.md` (las dos frases que citan el cupo de 5 envíos, y el módulo y la ruta nuevos en la sección 8)
 - Test: `packages/shared/src/api/legal-documents.test.ts`
 - Test: `apps/api/src/modules/legal-documents/application/use-cases/list-current-legal-documents.use-case.test.ts`, `apps/api/src/modules/legal-documents/presentation/http/mappers/current-legal-document.mapper.test.ts`, `apps/api/src/modules/legal-documents/presentation/http/swagger/legal-documents.swagger.test.ts`, `apps/api/src/modules/legal-documents/legal-documents.module.test.ts`
 - Test: `apps/api/src/infrastructure/prisma/repositories/legal-documents/mappers/legal-document-row.mapper.test.ts`, `apps/api/src/infrastructure/prisma/repositories/legal-documents/prisma-legal-document.repository.test.ts`
@@ -5189,6 +5190,32 @@ por
   `advance-requests/presentation/http/constants/intake-limits.constants.ts`: la de `GET /api/v1/intake-limits`, y `legal-documents/presentation/http/constants/legal-documents.constants.ts`: la de `GET /api/v1/legal-documents`)
   ```
 
+`README.md`: en la tabla de rutas de la API, después de la fila
+```markdown
+| `GET /api/v1/intake-limits` | Topes de un envío (archivos por solicitud, bytes de cada XML y de cada PDF, bytes del cuerpo), para que la landing avise antes de enviar (`docs/STACK.md`, D58) |
+```
+agregar
+```markdown
+| `GET /api/v1/legal-documents` | Versiones vigentes de los Términos y Condiciones y de la política de datos personales, con su URL, para el build de la landing, que envía la más reciente de cada tipo (`docs/STACK.md`, sección 11) |
+```
+
+`docs/STACK.md`, sección 8: en la tabla «Módulos», después de la fila
+```markdown
+| `payers` | Pagadores activos y su configuración pública para la landing | Paso 2 |
+```
+agregar
+```markdown
+| `legal-documents` | Versiones vigentes de los documentos legales para el build de la landing | Paso 3 |
+```
+y en la tabla «Endpoints», después de la fila
+```markdown
+| `GET` | `/api/v1/intake-limits` | Público | Topes de un envío, para que la landing avise antes de enviar: archivos por solicitud, bytes de cada XML y de cada PDF, y bytes del cuerpo entero (D58); `Cache-Control: public, max-age=300` | Paso 2 |
+```
+agregar
+```markdown
+| `GET` | `/api/v1/legal-documents` | Público | Versiones legales vigentes (`retired_at IS NULL`) con su URL para el build de la landing: `TERMS` y luego `PERSONAL_DATA`, cada tipo de la más nueva a la más vieja; 500 si alguna no cumple el contrato; `Cache-Control: public, max-age=300` | Paso 3 |
+```
+
 Run: `pnpm --filter @anticipate/api exec vitest run --project api:integration test/integration/legal-documents.test.ts`
 Expected: PASS, 9 tests.
 
@@ -5591,7 +5618,7 @@ import type { ConsentType } from '@anticipate/shared/api'
 import type { PublicPayer } from '@anticipate/shared/payer'
 
 /**
- * Pagadores del seed. SEA con sus datos reales (RUC y razón social de SUNARP, 85 %). El plazo mínimo,
+ * Pagadores del seed. SEA con sus datos reales (RUC y razón social de SUNAT, 85 %). El plazo mínimo,
  * el máximo de facturas, el color y el logo están por confirmar con Matías; en producción SEA llega
  * con una migración de datos revisada al salir a producción, nunca con este seed (docs/STACK.md,
  * sección 14). Los tests de la API usan su propio pagador (`test/support/factories.ts`, RUC
@@ -5852,10 +5879,10 @@ Permitido en esta tarea (contrato §1): `pnpm db:seed` contra la base de desarro
 Run: `pnpm db:seed`
 Expected: `Seed listo: 1 pagador(es) creados o actualizados, N versión(es) legal(es) nueva(s) y …` (N es 0 si las versiones `2026-09` ya estaban). Si la base de desarrollo ya tiene solicitudes de SEA, además sale el aviso `El pagador «sea» ya tiene solicitudes hechas al RUC 20131312955: …`, y ese RUC queda: es lo esperado, y la landing de desarrollo muestra igual el 85 % y la razón social real.
 
-Si la API de desarrollo está levantada (`pnpm --filter @anticipate/api dev`, puerto 4001; con `nest start --watch` ya recargó `LegalDocumentsModule`):
+Si la API de desarrollo está levantada (`curl -fsS http://127.0.0.1:4001/health` responde), se comprueba lo que publica. Con `pnpm --filter @anticipate/api dev` (`nest start --watch`) ya recargó `LegalDocumentsModule`. Si corre desde `dist` (`start`) con un build anterior a esta tarea, no se reinicia (Notas de ejecución, «La API local») y `legal-documents` responde 404 `RESOURCE_NOT_FOUND`: en ese caso se comprueba solo `payers` y se anota en el reporte.
 
 Run: `curl -s http://127.0.0.1:4001/api/v1/payers; echo; curl -s http://127.0.0.1:4001/api/v1/legal-documents; echo`
-Expected: `payers` trae a SEA con `"legalName":"SERVICIOS ENERGETICOS AMBIENTALES S.R.L. - SEA S.R.L."`, `"advancePercent":85` y `"ruc":"20525998577"` (o el RUC conservado del aviso); `legal-documents` trae `"success":true` y las dos versiones `2026-09`, `TERMS` primero, con `"url":"http://localhost:4321/legal/terminos"` y `"url":"http://localhost:4321/legal/datos-personales"`. Si la API no está levantada, este paso termina con el seed.
+Expected: `payers` trae a SEA con `"legalName":"SERVICIOS ENERGETICOS AMBIENTALES S.R.L. - SEA S.R.L."`, `"advancePercent":85` y `"ruc":"20525998577"` (o el RUC conservado del aviso); `legal-documents` trae `"success":true` y las dos versiones `2026-09`, `TERMS` primero, con `"url":"http://localhost:4321/legal/terminos"` y `"url":"http://localhost:4321/legal/datos-personales"`. Con una API que corre desde un `dist` anterior a esta tarea, `legal-documents` responde 404 (ver arriba). Si la API no está levantada, este paso termina con el seed.
 
 - [ ] **Step 20: Verificar todo y hacer el commit**
 
@@ -5878,7 +5905,7 @@ Run: `git status --short`
 Expected: solo los archivos de `Files` de esta tarea (y ` M .vscode/settings.json`, que no se agrega).
 
 ```bash
-git add packages/shared/src/api packages/shared/src/architecture.test.ts apps/api/src apps/api/prisma apps/api/test/integration apps/api/.env.example apps/api/PROJECT_STRUCTURE.md docs/STACK.md .github/workflows/ci.yml
+git add packages/shared/src/api packages/shared/src/architecture.test.ts apps/api/src apps/api/prisma apps/api/test/integration apps/api/.env.example apps/api/PROJECT_STRUCTURE.md README.md docs/STACK.md .github/workflows/ci.yml
 git commit -m "feat(api): versiones legales vigentes, cupo de 20 envíos por hora y SEA real en el seed (D66, D69)"
 ```
 
@@ -5896,7 +5923,7 @@ git commit -m "feat(api): versiones legales vigentes, cupo de 20 envíos por hor
 
 **Interfaces:**
 - Consumes:
-  - Tarea 2: `formatMoney(amount: Amount, currency: Currency): string` (`@anticipate/shared/money`: `S/ 12,450.00`, `US$ 3,200.00`); `CONTACT_TIME_SLOT_PHRASES: Readonly<Record<ContactTimeSlot, string>>` (`@anticipate/shared/advance-request`: `por la mañana (9 a 13 h)`, `por la tarde (14 a 18 h)`, `en cualquier horario`); `formatMobile(nineDigits: string): string` (`@anticipate/shared/identity`: `987 654 321`); `ANTICIPATE_COMPANY` (`phoneDisplay: '+51 954 180 802'`, `supportEmail: 'soporte@anticipate.pe'`) y `whatsappUrl(text?: string): string` (`@anticipate/shared/company`: `https://wa.me/51954180802?text=` con `encodeURIComponent`).
+  - Tarea 2: `formatMoney(amount: Amount, currency: Currency): string` (`@anticipate/shared/money`: `S/ 12,450.00`, `US$ 3,200.00`); `CONTACT_TIME_SLOT_PHRASES: Readonly<Record<ContactTimeSlot, string>>` (`@anticipate/shared/advance-request`: `por la mañana (9 a 13 h)`, `por la tarde (14 a 18 h)`, `en cualquier horario`); `formatMobile(nineDigits: string): string` (`@anticipate/shared/identity`: `987 654 321`) e `isValidMobile(text: string): boolean` (del mismo subpath: nueve dígitos que empiezan con 9, sin recortar); `ANTICIPATE_COMPANY` (`phoneDisplay: '+51 954 180 802'`, `supportEmail: 'soporte@anticipate.pe'`) y `whatsappUrl(text?: string): string` (`@anticipate/shared/company`: `https://wa.me/51954180802?text=` con `encodeURIComponent`).
   - Paso 2 (ya existe): `CONTACT_TIME_SLOT_LABELS` y `CAVALI_REGISTRATION_LABELS` (`@anticipate/shared/advance-request`); `formatDateTimeIn`, `formatIsoDate` y `LIMA_TIME_ZONE` (`@anticipate/shared/dates`); `type Currency` (`@anticipate/shared/money`); `renderAdvanceRequestConfirmation`, `renderNewAdvanceRequestAlert`, `type AdvanceRequestConfirmationData`, `type NewAdvanceRequestAlertData` y `type NewAdvanceRequestAlertInvoice` (`@anticipate/emails`); `AdvanceRequestNotificationReaderPort` con `findById` y `findTeamAlertById`, `loadNotificationView`, `SupplierConfirmationEmailHandler` y `TeamAlertEmailHandler`; `ADVANCE_REQUEST_NOTIFICATION_SELECT`, `TEAM_ALERT_NOTIFICATION_SELECT`, `toAdvanceRequestNotificationView` y `toTeamAlertNotificationView`; los helpers de integración `createTestApp`, `submitAdvanceRequest`, `validForm`, `findMailsTo` y `readMail` (Mailpit nunca se vacía: cada test usa destinatarios propios).
   - Esta tarea no usa nada de las Tareas 1 y 3.
 - Produces:
@@ -6969,7 +6996,7 @@ import {
   CONTACT_TIME_SLOT_LABELS,
 } from '@anticipate/shared/advance-request'
 import { formatDateTimeIn, formatIsoDate, LIMA_TIME_ZONE } from '@anticipate/shared/dates'
-import { formatMobile } from '@anticipate/shared/identity'
+import { formatMobile, isValidMobile } from '@anticipate/shared/identity'
 import { type Currency, formatMoney } from '@anticipate/shared/money'
 import type {
   TeamAlertInvoice,
@@ -6981,11 +7008,9 @@ export type TeamAlertEmailDataOptions = {
   adminBaseUrl: string | null
 }
 
-/** Celular peruano de `shared` (`^9\d{8}$`): nueve dígitos que empiezan con 9. */
-const PERUVIAN_MOBILE = /^9\d{8}$/
-
+/** Un celular peruano (`isValidMobile` de shared) se agrupa y se llama con +51; otro va tal cual. */
 function mobileOf(mobile: string): { mobile: string; mobileHref: string } {
-  if (!PERUVIAN_MOBILE.test(mobile)) {
+  if (!isValidMobile(mobile)) {
     return { mobile, mobileHref: `tel:${mobile.replace(/[^\d+]/g, '')}` }
   }
   return { mobile: formatMobile(mobile), mobileHref: `tel:+51${mobile}` }
@@ -17472,9 +17497,9748 @@ git commit -m "feat(landing): calculadora con monto discreto, pegado tolerante y
 
 ---
 
-### Task 9: Formulario, paso 01 (pendiente de escribir)
+### Task 9: Formulario, paso 01: lista de facturas, agregar y quitar con deshacer, PDF, grupos, topes, Cavali y condiciones vivas
 
-### Task 10: Formulario, pasos 02 y 03 y cierre (pendiente de escribir)
+**Files:**
+- Create: `apps/landing/src/islands/request-form/form-model.ts`, `apps/landing/src/islands/request-form/use-hydrated.ts`, `apps/landing/src/islands/request-form/use-live-config.ts`, `apps/landing/src/islands/request-form/RequestForm.tsx`, `apps/landing/src/islands/request-form/RequestForm.module.css`, `apps/landing/src/islands/request-form/RequestAside.tsx`
+- Create: `apps/landing/src/islands/request-form/steps/InvoicesStep.tsx`, `apps/landing/src/islands/request-form/steps/Step.module.css`
+- Create: `apps/landing/src/islands/request-form/invoices/list-model.ts`, `apps/landing/src/islands/request-form/invoices/icons.tsx`, `apps/landing/src/islands/request-form/invoices/CavaliField.tsx`, `apps/landing/src/islands/request-form/invoices/InvoiceRow.tsx`, `apps/landing/src/islands/request-form/invoices/GroupChoice.tsx`, `apps/landing/src/islands/request-form/invoices/UndoToast.tsx`, `apps/landing/src/islands/request-form/invoices/Invoices.module.css`
+- Create: `apps/landing/src/lib/api/live-conditions.ts`
+- Modify: `apps/landing/src/pages/[payer].astro` (monta la isla con `client:idle` dentro de `section#solicitud` y le da a la sección su fondo y sus márgenes)
+- Test: `apps/landing/src/islands/request-form/form-model.test.ts`, `apps/landing/src/islands/request-form/use-hydrated.test.tsx`, `apps/landing/src/islands/request-form/invoices/list-model.test.ts`, `apps/landing/src/islands/request-form/invoices/CavaliField.test.tsx`, `apps/landing/src/islands/request-form/RequestForm.test.tsx`, `apps/landing/src/islands/request-form/steps/InvoicesStep.test.tsx`, `apps/landing/src/lib/api/live-conditions.test.ts`
+
+Esta tarea no agrega dependencias: `react-dom` (con `react-dom/server` y `react-dom/client`), `@types/react-dom` y Testing Library ya están declarados desde la Tarea 5.
+
+**Interfaces:**
+- Consumes:
+  - Tarea 8:
+    - `src/lib/store/intake-store.ts`: `intakeStore` (`configure(ctx)`, `readAndAdd(files)`, `readAndReplace(id, files)`, `dispatch(action)` con `remove`, `undo`, `assign-pdf`, `choose-group`, `add` y `reset`, `getSnapshot()`, `context()` y `prepareReader()`) y `useIntake(): { state: IntakeState; view: IntakeView | null; reading: boolean }`, que en el servidor y durante la hidratación devuelve la lista vacía, `view: null` y `reading: false`. `configure` vuelve a evaluar las entradas con el contexto nuevo, así que se puede llamar otra vez con las condiciones vivas. `reset` deja `nextId` en 1: los `id` de las entradas vuelven a empezar en `f1`.
+    - `src/islands/calculator/calculator-text.ts`: `countedEntries(view: IntakeView): IntakeEntry[]`, `excludedLines(view: IntakeView, maxInvoices: number): ExcludedLine[]` (motivos "está en {soles o dólares} y va en otra solicitud", "es de otro emisor y va en otra solicitud" y "pasa el máximo de {maxInvoices} facturas por solicitud") y `shareLink(shortName: string, pageUrl: string): { title: string; text: string; mailto: string }`.
+  - Tarea 7 (`src/lib/intake/`):
+    - `intake-state.ts`: `type IntakeView`, `type IntakeEntry` (con `status`, `pairedPdfId` y `assignedToId`) e `isInvoiceEntry(entry)`; en los tests, `emptyIntake()`, `addReadings`, `chooseGroup` y `viewIntake`. Comportamiento que se da por hecho: un PDF emparejado se llama `<base del XML>.pdf` y es `ready`; un PDF que viaja o que lleva el nombre base de un XML tiene `assignedToId` aunque pese de más o no sea un PDF; `view.entries` trae el estado de cada entrada; `view.chosenGroup` es el grupo elegido o el primero.
+    - `problem-text.ts`: `problemText(problem: Problem, invoice?: ParsedInvoice | null): string`.
+    - `invoice-text.ts`: `invoiceChecksText(invoice, payerShortName, today): string` y `lastDueDate(invoice): IsoDate | null`.
+    - Solo en los tests: `readXmlBytes(name, bytes, maxXmlBytes)` (`read-intake-file.ts`), `rejectedReading(name, size, problem)` (`rejections.ts`) y `type FileReading`, `type IntakeContext` (`types.ts`).
+  - Tarea 6: `src/pages/[payer].astro` con `data`, `config` y `copy`, y la sección vacía `<section id="solicitud"></section>` dentro de `main#contenido`; la sección `#donde-esta-el-xml` (`XmlGuide`); los CTA y el menú apuntan a `#paso-facturas`.
+  - Tarea 5: `type IslandConfig` (`src/lib/island-config.ts`); `readSuccessEnvelope<T>(body: unknown, dataSchema: z.ZodType<T>): EnvelopeReading<T>` (`src/lib/api/envelope.ts`); los tokens de `src/styles/tokens.css` (`--ink`, `--muted`, `--line`, `--field`, `--surface`, `--teal`, `--teal-100`, `--teal-200`, `--teal-600`, `--teal-700`, `--teal-800`, `--teal-900`, `--err`, `--err-bg`, `--warn`, `--warn-bg`, `--off`, `--off-bg`, `--page-max`, `--gutter` y `--header-height`); la clase global `.sr-only`; `src/env.d.ts` con los tipos de los CSS Modules; Vitest con jsdom y jest-dom. Solo en los tests: `startFakeApi`, `successEnvelope` y `type FakeReply` (`src/test/fake-api.ts`) y `FIXTURE_PAYERS` y `FIXTURE_INTAKE_LIMITS` (`src/lib/build-data/fixtures.ts`).
+  - Tarea 2: `formatMoney(amount, currency)` (`/money`); `ANTICIPATE_COMPANY`, `whatsappUrl(text?)` y `supplierGreeting(payerShortName)` (`/company`).
+  - Tarea 1: `type InvoiceGroup` (`/intake`); en los tests, `type PayerConditions`.
+  - Ya en shared: `CAVALI_REGISTRATION`, `CAVALI_REGISTRATION_LABELS`, `type CavaliRegistration`, `CONTACT_TIME_SLOTS` y `type ContactTimeSlot` (`/advance-request`); `formatIsoDate`, `todayIn`, `LIMA_TIME_ZONE` y `type IsoDate` (`/dates`); `CURRENCIES`, `isCurrency` y `type Currency` (`/money`); `type ParsedInvoice` (`/invoice`); `intakeLimitsSchema` y `type IntakeLimits` (`/api`); `publicPayerSchema` y `type PublicPayer` (`/payer`). Solo en los tests: `createProblem` (`/errors`) y `buildInvoiceXml`, `buildCdrXml` y `type TestXmlOptions` (`/testing`).
+- Produces:
+  - `src/islands/request-form/form-model.ts`, con las firmas de la sección 8 del contrato (la Tarea 10 le agrega la validación y el armado del `form` en el mismo archivo) y una ayuda más:
+    ```ts
+    export type FormModel = { cavali: CavaliRegistration | null; amountText: string; purpose: string; fullName: string; dniText: string; mobileText: string; emailText: string; isLegalRepresentative: boolean | null; jobTitle: string; contactTimeSlot: ContactTimeSlot | null; acceptTerms: boolean; acceptPrivacy: boolean }
+    export type FormAction = { type: 'set'; field: keyof FormModel; value: FormModel[keyof FormModel] } | { type: 'reset' } | { type: 'restore'; model: FormModel }
+    export const initialFormModel: FormModel   // congelado: textos en '', consentimientos en false y el resto en null
+    export function formReducer(model: FormModel, action: FormAction): FormModel
+    // Agregada por esta tarea:
+    export function setField<K extends keyof FormModel>(field: K, value: FormModel[K]): FormAction
+    ```
+    `set` devuelve el mismo modelo si el valor no cambia o si no es del tipo del campo (un texto donde va una elección, una opción que no existe); `reset` devuelve `initialFormModel` y `restore`, el modelo recibido tal cual.
+  - `src/islands/request-form/use-hydrated.ts`: `export function useHydrated(): boolean` (`useSyncExternalStore`: `false` en el servidor y durante la hidratación, `true` después).
+  - Condiciones vivas (D62):
+    ```ts
+    // src/lib/api/live-conditions.ts
+    export const LIVE_CONDITIONS_TIMEOUT_MS = 5000
+    export type LiveConditions = { payer: PublicPayer; intakeLimits: IntakeLimits }
+    export type LiveConditionsOptions = { fetchImpl?: typeof fetch; timeoutMs?: number; signal?: AbortSignal }
+    export function fetchLiveConditions(apiBaseUrl: string, slug: string, options?: LiveConditionsOptions): Promise<LiveConditions | null>
+    export function withLiveConditions(config: IslandConfig, live: LiveConditions | null): IslandConfig
+    // src/islands/request-form/use-live-config.ts
+    export function useLiveConfig(config: IslandConfig): IslandConfig
+    ```
+    `fetchLiveConditions` nunca lanza: devuelve `null` en modo demostración (sin pedir nada) y ante cualquier falla. `withLiveConditions` devuelve la misma configuración si `live` es `null`, y si no, `{ ...config, payer: live.payer, intakeLimits: live.intakeLimits }`.
+  - `src/islands/request-form/RequestForm.tsx`: `export default function RequestForm(props: { config: IslandConfig })`, montada con `client:idle` en `section#solicitud`. Así queda para la Tarea 10 (nombres locales, no interfaces): `export default function RequestForm({ config: buildConfig }: { config: IslandConfig })` y `const config = useLiveConfig(buildConfig)`: desde ahí, `config` es la configuración efectiva, la que usan los textos, el almacén y, en la Tarea 10, el armado del `form`. Siguen `const { payer, intakeLimits } = config`, `const [model, dispatch] = useReducer(formReducer, initialFormModel)`, `const { view, reading } = useIntake()`, `const hydrated = useHydrated()`, un `useEffect` que llama a `intakeStore.configure({ payer, limits: intakeLimits, today: todayIn(LIMA_TIME_ZONE, new Date()) })` cada vez que cambian `payer` o `intakeLimits` (al montarse y al llegar las condiciones vivas), un `onSubmit` `(event: SubmitEvent<HTMLFormElement>)` que por ahora solo hace `event.preventDefault()`, y el JSX `<div className={styles.root}><RequestAside config={config} view={view} /><form className={styles.form} noValidate aria-busy={hydrated ? undefined : true} onSubmit={onSubmit}><InvoicesStep … /></form></div>`. La Tarea 10 pasa el `nav` de pasos como hijo de `RequestAside`, pone el resumen de errores antes de `InvoicesStep` y los pasos 02 y 03 y el cierre después, y le pasa `cavaliError`; la Tarea 11, `apiProblems`; la Tarea 12, `restoredIds`.
+  - `src/islands/request-form/RequestAside.tsx`: `export type RequestAsideProps = { config: IslandConfig; view: IntakeView | null; children?: ReactNode }` y `export default function RequestAside(props: RequestAsideProps)`. `children` va entre la bajada y el recuadro "Adelanto máximo". Hasta 767 px la columna es `display: contents`: sus piezas, `children` incluido, son hijos directos de la raíz de la isla, cuyo bloque abarca el formulario entero (la Tarea 13 deja fija la barra de pasos).
+  - `src/islands/request-form/steps/InvoicesStep.tsx`:
+    ```ts
+    export const FILES_ACCEPT: string   // '.xml,.pdf,.zip,text/xml,application/xml,application/pdf,application/zip'
+    export const UNDO_WINDOW_MS = 8000
+    export type InvoicesStepProps = { config: IslandConfig; view: IntakeView | null; reading: boolean; disabled: boolean; cavali: CavaliRegistration | null; onCavaliChange: (value: CavaliRegistration) => void; cavaliError?: string | undefined; apiProblems?: EntryProblems | undefined; restoredIds?: ReadonlySet<string> | undefined }
+    export default function InvoicesStep(props: InvoicesStepProps)
+    ```
+    `apiProblems` son los problemas que la API devolvió al enviar (un 422), por `id` de entrada; la Tarea 11 la llena desde `RequestForm` con los del 422 (por `invoice` o por `file`) y la vacía al volver a enviar o al cambiar las facturas. `restoredIds` son las entradas que releyó el borrador de la Tarea 12: no cuentan como traídas de la calculadora. Su raíz es `<fieldset id="paso-facturas">` con la `legend` como primer hijo; lleva un único `input[type="file"]` cuyo `accept` incluye `.zip` y otro, oculto y fuera del orden de tabulación (`display: none`, `tabIndex={-1}`, `aria-hidden`), para "Agregar PDF (opcional)" y "Reemplazar archivo", cuyo `accept` es `.pdf,application/pdf` o `.xml,text/xml,application/xml`. Ninguno lleva `data-testid`: los tests buscan el segundo como el campo de archivos del paso que no acepta `.zip`.
+  - `src/islands/request-form/steps/Step.module.css`: `.step` (el `fieldset` de un paso, con el borde superior entre pasos seguidos), `.legend`, `.legendTitle` y `.legendHint`. Los pasos 02 y 03 de la Tarea 10 pueden usarlos.
+  - `src/islands/request-form/invoices/`:
+    ```ts
+    // CavaliField.tsx
+    export const CAVALI_FIELD_ID = 'cavali'   // id del fieldset: el resumen de errores enlaza a #cavali
+    export type CavaliFieldProps = { value: CavaliRegistration | null; onChange: (value: CavaliRegistration) => void; error?: string | undefined }
+    export default function CavaliField(props: CavaliFieldProps)
+    // InvoiceRow.tsx
+    export function entryDomId(entryId: string): string   // 'archivo-<id>': el <li> de cada entrada
+    export type InvoiceRowProps = { row: IntakeRow; apiProblems?: readonly string[] | undefined; onRemove: (id: string, label: string) => void; onAddPdf: (id: string, xmlName: string) => void; onReplace: (id: string, accept: 'xml' | 'pdf') => void; onAssign: (pdfId: string, invoiceId: string) => void }
+    export default function InvoiceRow(props: InvoiceRowProps)
+    // GroupChoice.tsx
+    export default function GroupChoice(props: { model: GroupChoiceModel; onChoose: (key: string) => void })
+    // UndoToast.tsx
+    export default function UndoToast(props: { text: string | null; onUndo: () => void; undoRef: Ref<HTMLButtonElement> })
+    // icons.tsx: CheckIcon, CloseIcon, PlusIcon, UploadIcon, DropIcon, ChatIcon y ErrorIcon ({ size?: number; className?: string })
+    // list-model.ts (puro)
+    export const NOT_SENT_NOTE = 'No se enviará · no suma al total'
+    export const READING_TEXT = 'Estamos leyendo tus facturas.'
+    export type InvoiceRowModel = { kind: 'invoice'; id: string; label: string; installments: string; checks: string; net: string | null; due: string | null; files: string; hasPdf: boolean; canAddPdf: boolean; xmlName: string }
+    export type ExcludedRowModel = { kind: 'excluded'; id: string; label: string; badge: string; struck: boolean; net: string | null; reasons: string[] }
+    export type UnreadableRowModel = { kind: 'unreadable'; id: string; label: string; text: string; replaceWith: 'xml' | 'pdf' }
+    export type LoosePdfRowModel = { kind: 'loose-pdf'; id: string; label: string; text: string; invoices: { id: string; label: string }[] }
+    export type HeavyPdfRowModel = { kind: 'heavy-pdf'; id: string; label: string; title: string; text: string }
+    export type IntakeRow = InvoiceRowModel | ExcludedRowModel | UnreadableRowModel | LoosePdfRowModel | HeavyPdfRowModel
+    export type RowContext = { payerShortName: string; maxInvoices: number; today: IsoDate }
+    export function intakeRows(view: IntakeView, context: RowContext): IntakeRow[]
+    export type ReadySummary = { lead: string; rest: string | null }
+    export function readySummary(view: IntakeView): ReadySummary | null
+    export type GroupOption = { key: string; label: string; total: string; issuer: string | null; chosen: boolean }
+    export type GroupChoiceModel = { title: string; body: string; options: GroupOption[] }
+    export function groupChoice(view: IntakeView): GroupChoiceModel | null
+    export type Notice = { title: string; body: string }
+    export function overflowNotice(view: IntakeView): Notice | null
+    export function weightNotice(view: IntakeView, limits: IntakeLimits): Notice | null
+    export function broughtCount(view: IntakeView, ownIds: ReadonlySet<string>): number
+    export type EntryProblems = ReadonlyMap<string, readonly string[]>
+    export function problemsByRow(view: IntakeView, problems: EntryProblems): Map<string, string[]>
+    export function calculatorNoticeText(count: number, maxInvoices: number): string
+    export function legendTitle(payerShortName: string): string
+    export function legendHint(minTermDays: number): string
+    export function limitsHint(limits: IntakeLimits): string
+    export function issuerLine(group: InvoiceGroup): string
+    export function netNote(payerShortName: string): string
+    export function installmentsText(count: number): string
+    export function filesText(hasPdf: boolean): string
+    export function sizeText(bytes: number): string
+    export function removedText(label: string): string
+    export function dropCountText(count: number): string
+    export function joinWithY(items: readonly string[]): string
+    ```
+  - `src/pages/[payer].astro`: `<section id="solicitud" class="request">` con `<RequestForm client:idle config={config} />` y un estilo con ámbito para el fondo y los márgenes de la sección.
+  - Lo que el E2E de la Tarea 15 busca en el paso 01: el `fieldset#paso-facturas` con un solo campo de archivos que acepta `.zip` (Tab llega a él y Enter abre el selector); cada factura o archivo como `<li>` con su número o su nombre, `XML ✓ · PDF opcional` o `XML ✓ · PDF ✓`, `No se puede adelantar` con el texto de `problemText` y `No se enviará · no suma al total`, `No se pudo leer` con el botón `Reemplazar archivo`, o `¿De qué factura es?` con un `<select>` cuyas opciones llevan el número de cada factura y el `id` de su entrada como `value`; un botón con `Quitar` en el nombre en cada `<li>`; el aviso `role="status"` `Quitaste {número o nombre}` con `Deshacer`; `Subiste facturas en soles y en dólares` con los botones `{n} en soles` y `{n} en dólares` (`aria-pressed`); `Trajimos tus {n} facturas de la calculadora. Puedes agregar más, hasta {maxInvoices}.`; el `fieldset` `¿Tus facturas ya están registradas en Cavali?` con `Sí`, `No` y `No sé`. `#paso-facturas` tiene dos `legend` (la del paso y la de Cavali): un selector `#paso-facturas legend` necesita `.first()`.
+
+**Decisiones de esta tarea** (comprobadas en el laboratorio sobre las Tareas 1 a 8, con este mismo código: Vitest 5.0.1 con jsdom 30.1.1, Testing Library 16.3.3 y user-event 14.6.7, React 19.3, TypeScript 6.0.3, Astro 7.3.5 y Biome 2.5.14 con el `biome.json` del repo; los 213 tests de la landing en verde, la cobertura de `src/lib/**` sobre los umbrales y `astro check` sin errores, avisos ni hints. Además, el build con fixtures en modo demostración, servido como archivos estáticos, se probó en Chromium 141 con Playwright 1.63 a 1440×900, 390×844 y 360×740 px: el paso sale deshabilitado en el HTML y se habilita al hidratar, sin errores en la consola (salvo el 404 de `/favicon.ico`, de la Tarea 14); Tab lleva de "Saltar al formulario" al campo de archivos, con el foco visible en su etiqueta, y Enter abre el selector del sistema; con XML de `buildInvoiceXml`, un .zip con un XML, su PDF y `__MACOSX` hecho con fflate, una CDR y un PDF mínimo se vieron las tarjetas y los motivos de la tabla de abajo, la elección de soles o dólares con el máximo de la columna izquierda, "Quitaste …" con "Deshacer" (el foco vuelve a la fila y el aviso se va a los 8 s), "Agregar PDF (opcional)" y "Reemplazar archivo" con el selector del sistema sin `.zip`, la asignación del PDF suelto, Cavali con las flechas, el arrastre del tablero 6 y el aviso de las facturas que trae la calculadora; sin desplazamiento horizontal y sin objetivos de menos de 44×44 px, y axe (WCAG 2.2 AA) sin violaciones a 1440, 1024, 768 y 390 px. Con la API corriendo en local, la página pidió `GET /api/v1/payers` y `GET /api/v1/intake-limits` (200, sin errores de CORS), aplicó otras condiciones cuando la respuesta las traía y siguió con las del build cuando la API no respondía):
+- **La isla ocupa toda la sección.** `RequestForm` dibuja las dos columnas de `Main.dc.html`: la izquierda (`RequestAside`) y el `<form noValidate>`. El fondo con degradé y los márgenes son de `section#solicitud`, con un estilo con ámbito en `[payer].astro`: así la confirmación de la Tarea 11, que reemplaza todo lo que dibuja la isla, queda dentro de la misma sección. Desde 1024 px, columnas de 320 px y el resto con 64 px entre ellas, y la izquierda fija (`position: sticky`) a `--header-height` más 24 px del borde superior, porque la cabecera es fija en escritorio. Entre 768 y 1023 px, una sola columna, con la izquierda arriba y sin fijar. Hasta 767 px, `MobileForm.dc.html`: la columna izquierda es `display: contents` y muestra solo el antetítulo, el título y "Toma unos 5 minutos.". El tablero de móvil no trae el recuadro "Adelanto máximo" ni "¿Dudas? Escríbenos por WhatsApp", que se ocultan; en móvil el máximo lo muestra la barra fija de la Tarea 13 y el WhatsApp está en "¿No encuentras el XML?".
+- **Hidratación.** `useHydrated` usa `useSyncExternalStore` con una instantánea del servidor en `false`. Mientras es `false`, el `fieldset` del paso lleva `disabled` y el `<form>` `aria-busy="true"`; el CSS atenúa los controles del paso deshabilitado y pone el cursor de espera. Un test lo comprueba con `renderToString` y con `hydrateRoot`, sin errores de hidratación: `useIntake()` también devuelve la lista vacía al hidratar, así que el HTML coincide aunque la calculadora ya haya leído facturas.
+- **Condiciones vivas (D62).** El HTML es estático: si el pagador cambió su plazo o su tope de facturas, o cambiaron los topes de subida, después del build, recargar no lo arregla. Por eso, al montarse y fuera del modo demostración, la isla pide una vez y a la vez `GET /api/v1/payers` y `GET /api/v1/intake-limits` (`cache: 'no-store'`, 5 s como máximo), valida los sobres con `readSuccessEnvelope` y los esquemas de shared y busca el pagador por `slug`. Si todo llega, `useLiveConfig` devuelve la configuración con el pagador y los topes vivos y la isla vuelve a llamar a `intakeStore.configure` con ellos: los textos del paso (plazo, tope de facturas, pesos), el almacén y, en la Tarea 10, el `form` usan lo vivo. Si la red falla, vence el plazo, un sobre no cumple el contrato o el pagador ya no está, sigue con los datos del build sin avisar: al enviar decide la API (un 422 con `payerSlug` lleva al aviso de recargar, Tarea 11). En modo demostración (`apiBaseUrl` vacío) no pide nada. El primer render usa siempre la configuración del build, así la hidratación coincide con el HTML. Son GET simples (solo `Accept`), sin preflight de CORS. La calculadora no pide nada: como comparte el almacén, las facturas que lee se evalúan con lo vivo cuando llega, pero sus textos siguen con los datos del build.
+- **Un solo campo de archivos con `.zip`.** Está oculto a la vista pero conserva el foco de teclado, y va justo antes de su etiqueta: el foco se ve en la etiqueta (`.fileInput:focus-visible + label`, como `.dropzone:focus-within` del diseño). Con la lista vacía, la etiqueta es el área grande del tablero 3 y el campo se llama "Elegir archivos"; con facturas, "+ Agregar otra factura · XML, PDF o .zip" y se llama "Agregar otra factura" (`aria-labelledby`). Es el mismo elemento en los dos casos, así que el foco no se pierde cuando aparece la lista. Enter o la barra espaciadora sobre el campo abren el selector del sistema (lo hace el navegador). "Agregar PDF (opcional)" y "Reemplazar archivo" usan un segundo campo oculto (`display: none`, sin foco) con `accept` de PDF o de XML, nunca `.zip`: el E2E sube archivos por el único campo que acepta `.zip`. Sin `data-testid`: los tests encuentran el segundo campo como el `input[type="file"]` del paso que no acepta `.zip`. Las dos constantes `accept` repiten la de la calculadora, que es privada de la Tarea 8.
+- **Agregar el PDF de una factura.** El PDF elegido se lee con el nombre `<base del XML>.pdf`: así se empareja por nombre, como en la API, y viaja con esa factura. Si pesa de más o no es un PDF, aparece en su propia fila con su motivo.
+- **Una fila por estado** (`intakeRows`, puro, con sus tests):
+
+  | Entrada | Fila |
+  |---|---|
+  | Factura del grupo elegido que viaja | Tarjeta "Lista" con cuotas, marcas (`invoiceChecksText`), neto, vencimiento (la última cuota) y `XML ✓ · PDF ✓` o `XML ✓ · PDF opcional`; "Agregar PDF (opcional)" si ningún PDF lleva su nombre |
+  | `not-eligible` | Atenuada y tachada, "No se puede adelantar", el texto de `problemText` de cada problema y "No se enviará · no suma al total" |
+  | `duplicate` | Igual, con "Repetida" |
+  | `overflow` | Atenuada sin tachar, "No entró" y el motivo de `excludedLines` ("Pasa el máximo de {maxInvoices} facturas por solicitud.") |
+  | Lista, pero de otro grupo | Atenuada sin tachar, "En otra solicitud" y el motivo de `excludedLines` ("Está en dólares y va en otra solicitud.") |
+  | XML o archivo que no se leyó | "No se pudo leer", `problemText` y "Reemplazar archivo" (por un XML; por un PDF si era un PDF) |
+  | PDF suelto | "¿De qué factura es?", `problemText` y un `<select>` con las facturas leídas sin PDF que pueden viajar, también las de otro grupo (no las que no califican ni las repetidas) |
+  | PDF que pesa de más | "{nombre} pesa {n} MB" y `problemText` con su factura |
+  | PDF emparejado | Sin fila: su factura dice `XML ✓ · PDF ✓` |
+
+  Cada fila es un `<li id="archivo-<id>" tabIndex={-1}>` con un botón "Quitar". La tarjeta "Lista" es una sola grilla que cambia de áreas entre escritorio y móvil (su pie es `display: contents` en escritorio), así que los botones nunca se duplican en el HTML. En escritorio la X ocupa las dos primeras filas y "Agregar PDF (opcional)" queda debajo, a la altura de los datos, como en `Main.dc.html`. Hasta 767 px la X comparte el área del encabezado, "Neto pendiente" y "Vence" se reparten todo el ancho (a 360 px, `S/ 12,450.00` entra en una línea) y, en el pie, "Agregar PDF (opcional)" baja a la derecha si no entra junto a los archivos, sin partir ninguno de los dos textos. El `<select>` del PDF suelto lista números de factura: un localizador de fila que filtra por texto (`hasText`) encuentra también esa fila mientras el PDF no tiene factura.
+- **Problemas de la API en la fila (decisión 3 de la corrección).** `problemsByRow` lleva los textos de `apiProblems` a su fila: los de un PDF que viaja con su factura van a la fila de esa factura, porque ese PDF no tiene fila propia, y los de una entrada que ya no está se ignoran. Cada fila tiene siempre una región `role="status"`; con problemas muestra cada texto con el estilo de error de los campos (tablero 5: 13 px, `--err`, el ícono de error) y el borde izquierdo de la tarjeta pasa a `--err`. Es `status` y no `alert` para no interrumpir el aviso del envío de la Tarea 11, que recibe el foco. Vacía queda fuera del flujo (`position: absolute`) y no suma espacio a la tarjeta.
+- **Quitar y deshacer.** La región `role="status"` del aviso está siempre en la página, vacía y oculta cuando no hay aviso, para que el lector de pantalla anuncie "Quitaste …". Al quitar, el foco pasa a "Deshacer"; el aviso dura 8 s (`UNDO_WINDOW_MS`) y, si se va con el foco adentro, el foco pasa al campo de archivos; "Deshacer" devuelve la entrada a su lugar y el foco a su fila. El aviso va fijo abajo al centro, como el del tablero 3. Deshacer alcanza a la última entrada quitada, como el almacén.
+- **Facturas traídas de la calculadora.** El paso recuerda qué entradas agregó él mismo: las que aparecen entre antes y después de cada lectura propia (selector, arrastre, "Agregar PDF" y "Reemplazar archivo"). El aviso cuenta las facturas (XML) de la lista que no agregó el formulario ni releyó el borrador (`restoredIds`, decisión 4 de la corrección). Cuando la lista queda vacía y no hay nada que deshacer, el paso olvida qué agregó: `reset` ("Enviar otra solicitud", "Empezar de nuevo") vuelve a empezar los `id` en `f1`, y sin eso una factura nueva de la calculadora podría contarse como agregada por el formulario.
+- **Resumen del tablero 1.** Es un `role="status"` que siempre está: visible mientras se leen archivos ("Estamos leyendo tus facturas.", el texto de la Tarea 8) y cuando alguna factura no se envía; si todas se envían, queda solo para el lector de pantalla, porque `Main.dc.html` no lo muestra en ese caso.
+- **Grupos.** Con más de un grupo aparece la elección del tablero 2, en un `role="status"` como en el diseño. El nombre de cada botón empieza con "{n} en soles" o "{n} en dólares", sigue con el total (`formatMoney`) y, si los emisores difieren, con la razón social. El elegido lleva `aria-pressed="true"`. Las palabras "soles" y "dólares" repiten las de `calculator-text.ts`, que no las exporta. El recuadro "Adelanto máximo" muestra `formatMoney(view.chosenGroup.maxAdvance, currency)` y no aparece sin grupo.
+- **Arrastrar y soltar.** Los manejadores van en el `fieldset` del paso: en un `div` Biome los rechaza (`lint/a11y/noStaticElementInteractions`). Al arrastrar archivos, el área de la lista muestra el tablero 6 con la cantidad de `dataTransfer.items` (sin cantidad si el navegador no la da, como Safari); con una lista larga, el mensaje acompaña a la pantalla (`position: sticky`). La página ignora un archivo soltado fuera del paso: si no, el navegador lo abriría en la pestaña y se perdería lo avanzado.
+- **Cavali.** Radios nativos que cubren toda la opción: un clic en cualquier parte la marca, y las flechas del teclado funcionan sin código propio. Con error, cada radio lleva `aria-invalid="true"`, porque ARIA 1.2 no admite `aria-invalid` en un grupo, y el `fieldset` suma el error a su `aria-describedby`. La ayuda de escritorio termina en ": lo revisamos contigo"; en móvil se corta, como en el tablero.
+- **Nombres accesibles.** El botón del diseño con `aria-label="Agregar PDF de {número} (opcional)"` se llama "Agregar PDF (opcional) a {número}", porque el nombre tiene que contener el texto visible (WCAG 2.5.3). Siguen el diseño "Quitar factura {número}" (botón de ícono) y "Quitar {número} de la lista"; el resto usa "Quitar {nombre}" y "Reemplazar archivo {nombre}".
+- **Bordes de 2 px sin mover el texto.** La opción elegida (Cavali y grupos) pasa de 1,5 a 2 px con medio píxel de `box-shadow` por dentro.
+- **`configure` recibe `config.payer`**, como la calculadora: un `PublicPayer` cumple `PayerConditions`.
+- **`SubmitEvent` de React en `onSubmit`.** `FormEvent` está marcado como obsoleto en `@types/react` 19.3 y `astro check` lo informa como hint.
+- **Textos que el diseño no trae** (los fija este plan): "Trajimos tu factura de la calculadora." (singular) y el aviso sin "Puedes agregar más" cuando ya se llegó al máximo; "1 factura lista para enviar.", "Ninguna factura lista para enviar." y "{m} no se enviarán"; los rótulos "Repetida", "No entró" y "En otra solicitud"; "Subiste facturas de {n} emisores distintos" (y "en soles y en dólares y de {n} emisores distintos"), con "En una solicitud van todas del mismo emisor" (o "en la misma moneda y del mismo emisor"); "Elegiste {n} facturas: agregamos la primera" y "{número} no entró. Envíala en otra solicitud cuando termines esta."; el aviso de peso "Son más de {maxFiles} archivos para una solicitud" o "Tus archivos pesan más de lo que podemos recibir en una solicitud", con "Quita algunos PDF: son opcionales y tus facturas se envían igual con su XML."; "Al crédito y con 1 día o más al vencimiento" y "Al crédito y sin vencer" (plazo mínimo 0); "Elige la factura" como primera opción del `<select>`, con la etiqueta oculta "¿De qué factura es {nombre}?"; "No pudimos leer este archivo." si una entrada ilegible no trae problema; "1 archivo" o "{n} archivos" al arrastrar. Los topes del área grande ("XML hasta 1 MB, PDF hasta 10 MB") salen de `config.intakeLimits`.
+
+Antes de empezar: `pnpm turbo run build --filter=@anticipate/shared`. La landing lee el `dist` de shared.
+
+- [ ] **Step 1: Escribir el test del modelo del formulario**
+
+`apps/landing/src/islands/request-form/form-model.test.ts`:
+```ts
+import { describe, expect, it } from 'vitest'
+import { type FormModel, formReducer, initialFormModel, setField } from './form-model'
+
+describe('formReducer', () => {
+  it('el modelo inicial tiene los textos vacíos, los consentimientos sin marcar y las elecciones en null', () => {
+    expect(initialFormModel).toEqual({
+      cavali: null,
+      amountText: '',
+      purpose: '',
+      fullName: '',
+      dniText: '',
+      mobileText: '',
+      emailText: '',
+      isLegalRepresentative: null,
+      jobTitle: '',
+      contactTimeSlot: null,
+      acceptTerms: false,
+      acceptPrivacy: false,
+    })
+    expect(Object.isFrozen(initialFormModel)).toBe(true)
+  })
+
+  it('set cambia solo ese campo y devuelve un modelo nuevo', () => {
+    const next = formReducer(initialFormModel, setField('cavali', 'UNKNOWN'))
+    expect(next).not.toBe(initialFormModel)
+    expect(next).toEqual({ ...initialFormModel, cavali: 'UNKNOWN' })
+    expect(formReducer(next, setField('isLegalRepresentative', false))).toEqual({
+      ...next,
+      isLegalRepresentative: false,
+    })
+    expect(formReducer(next, setField('cavali', null)).cavali).toBeNull()
+  })
+
+  it('set con el mismo valor devuelve el mismo modelo', () => {
+    const next = formReducer(initialFormModel, setField('fullName', 'Carla Quispe'))
+    expect(formReducer(next, setField('fullName', 'Carla Quispe'))).toBe(next)
+  })
+
+  it('set ignora un valor que no es del tipo del campo', () => {
+    expect(formReducer(initialFormModel, { type: 'set', field: 'cavali', value: 'QUIZAS' })).toBe(
+      initialFormModel,
+    )
+    expect(formReducer(initialFormModel, { type: 'set', field: 'amountText', value: true })).toBe(
+      initialFormModel,
+    )
+    expect(formReducer(initialFormModel, { type: 'set', field: 'acceptTerms', value: null })).toBe(
+      initialFormModel,
+    )
+    expect(
+      formReducer(initialFormModel, { type: 'set', field: 'contactTimeSlot', value: 'NIGHT' }),
+    ).toBe(initialFormModel)
+    expect(
+      formReducer(initialFormModel, { type: 'set', field: 'isLegalRepresentative', value: 'Sí' }),
+    ).toBe(initialFormModel)
+  })
+
+  it('reset vuelve al modelo inicial y restore pone el modelo recibido', () => {
+    const saved: FormModel = {
+      ...initialFormModel,
+      cavali: 'YES',
+      fullName: 'Carla Quispe',
+      contactTimeSlot: 'ANY',
+    }
+    expect(formReducer(saved, { type: 'reset' })).toBe(initialFormModel)
+    expect(formReducer(initialFormModel, { type: 'restore', model: saved })).toBe(saved)
+  })
+})
+```
+
+- [ ] **Step 2: Correr el test y ver que falla**
+
+Run: `ASTRO_TELEMETRY_DISABLED=1 pnpm --filter @anticipate/landing exec vitest run src/islands/request-form/form-model.test.ts`
+Expected: FAIL: `Error: Failed to resolve import "./form-model" from "src/islands/request-form/form-model.test.ts". Does the file exist?`
+
+- [ ] **Step 3: Implementar el modelo y el reducer**
+
+`apps/landing/src/islands/request-form/form-model.ts`:
+```ts
+import {
+  CAVALI_REGISTRATION,
+  type CavaliRegistration,
+  CONTACT_TIME_SLOTS,
+  type ContactTimeSlot,
+} from '@anticipate/shared/advance-request'
+
+/**
+ * Lo que la persona escribe y elige en el formulario, tal cual. Los textos van sin normalizar (se
+ * normalizan al salir del campo y al armar el `form`, Tarea 10), las elecciones quedan en `null`
+ * hasta que se marcan y los consentimientos empiezan sin marcar (el borrador nunca los guarda).
+ */
+export type FormModel = {
+  cavali: CavaliRegistration | null
+  amountText: string
+  purpose: string
+  fullName: string
+  dniText: string
+  mobileText: string
+  emailText: string
+  isLegalRepresentative: boolean | null
+  jobTitle: string
+  contactTimeSlot: ContactTimeSlot | null
+  acceptTerms: boolean
+  acceptPrivacy: boolean
+}
+
+export type FormAction =
+  | { type: 'set'; field: keyof FormModel; value: FormModel[keyof FormModel] }
+  | { type: 'reset' }
+  | { type: 'restore'; model: FormModel }
+
+export const initialFormModel: FormModel = Object.freeze({
+  cavali: null,
+  amountText: '',
+  purpose: '',
+  fullName: '',
+  dniText: '',
+  mobileText: '',
+  emailText: '',
+  isLegalRepresentative: null,
+  jobTitle: '',
+  contactTimeSlot: null,
+  acceptTerms: false,
+  acceptPrivacy: false,
+})
+
+const isText = (value: unknown): value is string => typeof value === 'string'
+const isFlag = (value: unknown): value is boolean => typeof value === 'boolean'
+const isAnswer = (value: unknown): value is boolean | null =>
+  value === null || typeof value === 'boolean'
+const isOptionOf =
+  <T extends string>(options: readonly T[]) =>
+  (value: unknown): value is T | null =>
+    value === null || (typeof value === 'string' && (options as readonly string[]).includes(value))
+
+/** Qué valor admite cada campo: `set` ignora uno que no le corresponde. */
+const FIELD_GUARDS: { readonly [K in keyof FormModel]: (value: unknown) => value is FormModel[K] } =
+  {
+    cavali: isOptionOf(CAVALI_REGISTRATION),
+    amountText: isText,
+    purpose: isText,
+    fullName: isText,
+    dniText: isText,
+    mobileText: isText,
+    emailText: isText,
+    isLegalRepresentative: isAnswer,
+    jobTitle: isText,
+    contactTimeSlot: isOptionOf(CONTACT_TIME_SLOTS),
+    acceptTerms: isFlag,
+    acceptPrivacy: isFlag,
+  }
+
+/** La acción `set` de un campo, con el tipo de ese campo: `dispatch(setField('cavali', 'YES'))`. */
+export function setField<K extends keyof FormModel>(field: K, value: FormModel[K]): FormAction {
+  return { type: 'set', field, value }
+}
+
+/**
+ * Reducer del formulario. `set` cambia un campo y devuelve el mismo modelo si el valor no cambia o
+ * si no es del tipo del campo (un texto donde va una elección, o una opción que no existe); `reset`
+ * vuelve al modelo inicial y `restore` pone un modelo completo (el borrador de la Tarea 12).
+ */
+export function formReducer(model: FormModel, action: FormAction): FormModel {
+  switch (action.type) {
+    case 'set': {
+      const { field, value } = action
+      if (!FIELD_GUARDS[field](value) || Object.is(model[field], value)) return model
+      return { ...model, [field]: value }
+    }
+    case 'reset':
+      return initialFormModel
+    case 'restore':
+      return action.model
+  }
+}
+```
+
+Run: `ASTRO_TELEMETRY_DISABLED=1 pnpm --filter @anticipate/landing exec vitest run src/islands/request-form/form-model.test.ts`
+Expected: PASS, 5 tests.
+
+- [ ] **Step 4: Escribir el test de la hidratación**
+
+`apps/landing/src/islands/request-form/use-hydrated.test.tsx`:
+```tsx
+import { act, cleanup, render, screen } from '@testing-library/react'
+import { hydrateRoot } from 'react-dom/client'
+import { renderToString } from 'react-dom/server'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { useHydrated } from './use-hydrated'
+
+function Probe() {
+  return <p>{useHydrated() ? 'hidratado' : 'sin hidratar'}</p>
+}
+
+afterEach(() => {
+  cleanup()
+})
+
+describe('useHydrated', () => {
+  it('en el servidor devuelve false', () => {
+    expect(renderToString(<Probe />)).toBe('<p>sin hidratar</p>')
+  })
+
+  it('en un render del navegador devuelve true', () => {
+    render(<Probe />)
+    expect(screen.getByText('hidratado')).toBeInTheDocument()
+  })
+
+  it('al hidratar el HTML del servidor pasa a true sin errores de hidratación', async () => {
+    const container = document.createElement('div')
+    container.innerHTML = renderToString(<Probe />)
+    document.body.append(container)
+    const onRecoverableError = vi.fn()
+    const root = await act(async () => hydrateRoot(container, <Probe />, { onRecoverableError }))
+    expect(container.textContent).toBe('hidratado')
+    expect(onRecoverableError).not.toHaveBeenCalled()
+    act(() => root.unmount())
+    container.remove()
+  })
+})
+```
+
+Run: `ASTRO_TELEMETRY_DISABLED=1 pnpm --filter @anticipate/landing exec vitest run src/islands/request-form/use-hydrated.test.tsx`
+Expected: FAIL: `Error: Failed to resolve import "./use-hydrated" from "src/islands/request-form/use-hydrated.test.tsx". Does the file exist?`
+
+- [ ] **Step 5: Implementar `useHydrated`**
+
+`apps/landing/src/islands/request-form/use-hydrated.ts`:
+```ts
+import { useSyncExternalStore } from 'react'
+
+const noop = (): void => undefined
+const subscribe = (): (() => void) => noop
+const inBrowser = (): boolean => true
+const onServer = (): boolean => false
+
+/**
+ * `false` en el servidor y mientras React hidrata el HTML del build; `true` desde el primer render
+ * después de hidratar. Con él, el formulario sale deshabilitado en el HTML y se habilita recién cuando
+ * sus manejadores existen: nada de lo que se toque antes se pierde en silencio.
+ */
+export function useHydrated(): boolean {
+  return useSyncExternalStore(subscribe, inBrowser, onServer)
+}
+```
+
+Run: `ASTRO_TELEMETRY_DISABLED=1 pnpm --filter @anticipate/landing exec vitest run src/islands/request-form/use-hydrated.test.tsx`
+Expected: PASS, 3 tests.
+
+- [ ] **Step 6: Escribir el test de las condiciones vivas**
+
+En entorno node, como `fetch.test.ts` de la Tarea 5: la API falsa de `src/test/fake-api.ts` responde por ruta, y la falla de red usa un `fetchImpl` que rechaza.
+
+`apps/landing/src/lib/api/live-conditions.test.ts`:
+```ts
+// @vitest-environment node
+import type { IntakeLimits } from '@anticipate/shared/api'
+import type { PublicPayer } from '@anticipate/shared/payer'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { type FakeApi, type FakeReply, startFakeApi, successEnvelope } from '../../test/fake-api'
+import { FIXTURE_INTAKE_LIMITS, FIXTURE_PAYERS } from '../build-data/fixtures'
+import type { IslandConfig } from '../island-config'
+import { fetchLiveConditions, withLiveConditions } from './live-conditions'
+
+const [BUILD_PAYER] = FIXTURE_PAYERS as [PublicPayer]
+/** Lo que publica la API hoy: el pagador cambió su plazo y su tope, y los topes de un envío también. */
+const LIVE_PAYER: PublicPayer = { ...BUILD_PAYER, minTermDays: 20, maxInvoices: 4 }
+const OTHER_PAYER: PublicPayer = { ...BUILD_PAYER, slug: 'otro', ruc: '20100070970' }
+const LIVE_LIMITS: IntakeLimits = { ...FIXTURE_INTAKE_LIMITS, maxFiles: 12 }
+
+const CONFIG: IslandConfig = {
+  payer: BUILD_PAYER,
+  intakeLimits: FIXTURE_INTAKE_LIMITS,
+  legal: {
+    termsVersion: '2026-09',
+    termsUrl: 'https://legal.anticipate.test/terminos/2026-09',
+    privacyVersion: '2026-09',
+    privacyUrl: 'https://legal.anticipate.test/datos-personales/2026-09',
+  },
+  apiBaseUrl: 'https://api.anticipate.test',
+  turnstileSiteKey: '1x00000000000000000000AA',
+  siteUrl: 'https://proveedores.anticipate.test',
+  pageUrl: 'https://proveedores.anticipate.test/sea',
+}
+
+let api: FakeApi | undefined
+
+afterEach(async () => {
+  await api?.close()
+  api = undefined
+})
+
+/** API falsa que responde por ruta: los pagadores y los topes de hoy, salvo lo que cambie `replies`. */
+async function serve(replies: Partial<Record<string, FakeReply>> = {}): Promise<FakeApi> {
+  api = await startFakeApi(
+    (path) =>
+      replies[path] ??
+      (path === '/api/v1/payers'
+        ? { status: 200, json: successEnvelope([OTHER_PAYER, LIVE_PAYER]) }
+        : { status: 200, json: successEnvelope(LIVE_LIMITS) }),
+  )
+  return api
+}
+
+describe('fetchLiveConditions', () => {
+  it('pide los pagadores y los topes sin caché y devuelve las condiciones del pagador', async () => {
+    const server = await serve()
+    await expect(fetchLiveConditions(server.baseUrl, 'sea')).resolves.toEqual({
+      payer: LIVE_PAYER,
+      intakeLimits: LIVE_LIMITS,
+    })
+    expect(server.requests.map((request) => request.url).sort()).toEqual([
+      '/api/v1/intake-limits',
+      '/api/v1/payers',
+    ])
+    for (const request of server.requests) {
+      expect(request.headers.accept).toBe('application/json')
+      expect(request.headers['cache-control']).toBe('no-cache')
+    }
+  })
+
+  it('en modo demostración no pide nada', async () => {
+    const fetchImpl = vi.fn<typeof fetch>()
+    await expect(fetchLiveConditions('', 'sea', { fetchImpl })).resolves.toBeNull()
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
+  it('devuelve null si el pagador ya no está en la lista', async () => {
+    const server = await serve({
+      '/api/v1/payers': { status: 200, json: successEnvelope([OTHER_PAYER]) },
+    })
+    await expect(fetchLiveConditions(server.baseUrl, 'sea')).resolves.toBeNull()
+  })
+
+  it('devuelve null si una respuesta no cumple el contrato o no es un 200', async () => {
+    const broken = await serve({
+      '/api/v1/intake-limits': {
+        status: 200,
+        json: successEnvelope({ ...LIVE_LIMITS, maxFiles: -1 }),
+      },
+    })
+    await expect(fetchLiveConditions(broken.baseUrl, 'sea')).resolves.toBeNull()
+    await broken.close()
+    const down = await serve({ '/api/v1/payers': { status: 503, json: { success: false } } })
+    await expect(fetchLiveConditions(down.baseUrl, 'sea')).resolves.toBeNull()
+    await down.close()
+    const html = await serve({ '/api/v1/payers': { status: 200, text: '<html>' } })
+    await expect(fetchLiveConditions(html.baseUrl, 'sea')).resolves.toBeNull()
+  })
+
+  it('devuelve null si la red falla o la API no responde a tiempo', async () => {
+    const fetchImpl = vi.fn<typeof fetch>(() => Promise.reject(new TypeError('Failed to fetch')))
+    await expect(
+      fetchLiveConditions('https://api.anticipate.test', 'sea', { fetchImpl }),
+    ).resolves.toBeNull()
+    const slow = await serve({
+      '/api/v1/payers': {
+        status: 200,
+        json: successEnvelope([LIVE_PAYER]),
+        delayMs: 1000,
+      },
+    })
+    await expect(fetchLiveConditions(slow.baseUrl, 'sea', { timeoutMs: 50 })).resolves.toBeNull()
+  })
+
+  it('devuelve null si se cancela antes de la respuesta, como al desmontar la isla', async () => {
+    const server = await serve({
+      '/api/v1/payers': { status: 200, json: successEnvelope([LIVE_PAYER]), delayMs: 1000 },
+    })
+    const controller = new AbortController()
+    const pending = fetchLiveConditions(server.baseUrl, 'sea', { signal: controller.signal })
+    controller.abort()
+    await expect(pending).resolves.toBeNull()
+    const aborted = AbortSignal.abort()
+    await expect(
+      fetchLiveConditions(server.baseUrl, 'sea', { signal: aborted }),
+    ).resolves.toBeNull()
+  })
+})
+
+describe('withLiveConditions', () => {
+  it('sin condiciones vivas deja la configuración del build tal cual', () => {
+    expect(withLiveConditions(CONFIG, null)).toBe(CONFIG)
+  })
+
+  it('pone el pagador y los topes vivos y conserva lo demás', () => {
+    expect(withLiveConditions(CONFIG, { payer: LIVE_PAYER, intakeLimits: LIVE_LIMITS })).toEqual({
+      ...CONFIG,
+      payer: LIVE_PAYER,
+      intakeLimits: LIVE_LIMITS,
+    })
+  })
+})
+```
+
+Run: `ASTRO_TELEMETRY_DISABLED=1 pnpm --filter @anticipate/landing exec vitest run src/lib/api/live-conditions.test.ts`
+Expected: FAIL: `Error: Cannot find module './live-conditions' imported from` y la ruta absoluta de `src/lib/api/live-conditions.test.ts` (en entorno node, Vitest no dice `Failed to resolve import`).
+
+- [ ] **Step 7: Implementar las condiciones vivas**
+
+`apps/landing/src/lib/api/live-conditions.ts`:
+```ts
+import { type IntakeLimits, intakeLimitsSchema } from '@anticipate/shared/api'
+import { type PublicPayer, publicPayerSchema } from '@anticipate/shared/payer'
+import type { z } from 'zod'
+import type { IslandConfig } from '../island-config'
+import { readSuccessEnvelope } from './envelope'
+
+/** Cuánto espera el navegador las condiciones vivas antes de quedarse con las del build. */
+export const LIVE_CONDITIONS_TIMEOUT_MS = 5000
+
+/** Las condiciones del pagador y los topes de un envío, tal como los publica hoy la API. */
+export type LiveConditions = { payer: PublicPayer; intakeLimits: IntakeLimits }
+
+/** Por defecto: `globalThis.fetch` y `LIVE_CONDITIONS_TIMEOUT_MS`. `signal` cancela la lectura. */
+export type LiveConditionsOptions = {
+  fetchImpl?: typeof fetch
+  timeoutMs?: number
+  signal?: AbortSignal
+}
+
+/**
+ * Condiciones vivas del pagador `slug` (D62): pide una vez y sin caché `GET /api/v1/payers` y
+ * `GET /api/v1/intake-limits`, y valida los sobres con los esquemas de shared. Devuelve `null`, sin
+ * lanzar ni avisar, en modo demostración (`apiBaseUrl` vacío: no pide nada), si la red falla, si
+ * vence el plazo o se cancela, si una respuesta no es un 200 con el sobre del contrato o si el
+ * pagador ya no está: la isla sigue con los datos del build y, al enviar, decide la API.
+ */
+export async function fetchLiveConditions(
+  apiBaseUrl: string,
+  slug: string,
+  options: LiveConditionsOptions = {},
+): Promise<LiveConditions | null> {
+  if (apiBaseUrl === '') return null
+  const controller = new AbortController()
+  const abort = (): void => controller.abort()
+  const timer = setTimeout(abort, options.timeoutMs ?? LIVE_CONDITIONS_TIMEOUT_MS)
+  options.signal?.addEventListener('abort', abort)
+  if (options.signal?.aborted === true) abort()
+  try {
+    const read = <T>(path: string, schema: z.ZodType<T>): Promise<T | null> =>
+      readData(new URL(path, apiBaseUrl), schema, options.fetchImpl, controller.signal)
+    const [payers, intakeLimits] = await Promise.all([
+      read('/api/v1/payers', publicPayerSchema.array()),
+      read('/api/v1/intake-limits', intakeLimitsSchema),
+    ])
+    const payer = payers?.find((candidate) => candidate.slug === slug)
+    return payer === undefined || intakeLimits === null ? null : { payer, intakeLimits }
+  } finally {
+    clearTimeout(timer)
+    options.signal?.removeEventListener('abort', abort)
+  }
+}
+
+/** El `data` de un sobre de éxito que cumple `schema`, o `null` ante cualquier falla. */
+async function readData<T>(
+  url: URL,
+  schema: z.ZodType<T>,
+  fetchImpl: typeof fetch | undefined,
+  signal: AbortSignal,
+): Promise<T | null> {
+  try {
+    const response = await (fetchImpl ?? globalThis.fetch)(url, {
+      headers: { accept: 'application/json' },
+      cache: 'no-store',
+      signal,
+    })
+    if (response.status !== 200) return null
+    const reading = readSuccessEnvelope(await response.json(), schema)
+    return reading.ok ? reading.data : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * La configuración que usa el formulario: la del build con el pagador y los topes vivos, si
+ * llegaron. Sin condiciones vivas devuelve la misma configuración.
+ */
+export function withLiveConditions(
+  config: IslandConfig,
+  live: LiveConditions | null,
+): IslandConfig {
+  return live === null ? config : { ...config, payer: live.payer, intakeLimits: live.intakeLimits }
+}
+```
+
+Run: `ASTRO_TELEMETRY_DISABLED=1 pnpm --filter @anticipate/landing exec vitest run src/lib/api/live-conditions.test.ts`
+Expected: PASS, 8 tests.
+
+- [ ] **Step 8: Escribir el test de las filas y los textos del paso 01**
+
+Con lecturas reales de `buildInvoiceXml` y las funciones puras de la Tarea 7, como `calculator-text.test.ts`. El reloj se fija en el 26/09/2026 a las 10:00 de Lima, porque `problemText` cuenta los días desde hoy.
+
+`apps/landing/src/islands/request-form/invoices/list-model.test.ts`:
+```ts
+import type { IntakeLimits } from '@anticipate/shared/api'
+import type { IsoDate } from '@anticipate/shared/dates'
+import { createProblem } from '@anticipate/shared/errors'
+import type { PayerConditions } from '@anticipate/shared/intake'
+import { buildCdrXml, buildInvoiceXml, type TestXmlOptions } from '@anticipate/shared/testing'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { addReadings, chooseGroup, emptyIntake, viewIntake } from '../../../lib/intake/intake-state'
+import { readXmlBytes } from '../../../lib/intake/read-intake-file'
+import { rejectedReading } from '../../../lib/intake/rejections'
+import type { FileReading, IntakeContext } from '../../../lib/intake/types'
+import {
+  broughtCount,
+  calculatorNoticeText,
+  dropCountText,
+  filesText,
+  groupChoice,
+  installmentsText,
+  intakeRows,
+  issuerLine,
+  joinWithY,
+  legendHint,
+  legendTitle,
+  limitsHint,
+  netNote,
+  overflowNotice,
+  problemsByRow,
+  readySummary,
+  removedText,
+  sizeText,
+  weightNotice,
+} from './list-model'
+
+const MiB = 1024 * 1024
+const PAYER: PayerConditions = {
+  slug: 'sea',
+  ruc: '20131312955',
+  shortName: 'SEA',
+  advancePercent: 85,
+  minTermDays: 15,
+  maxInvoices: 10,
+  allowedCurrencies: ['PEN', 'USD'],
+}
+const LIMITS: IntakeLimits = {
+  maxFiles: 20,
+  maxXmlBytes: MiB,
+  maxPdfBytes: 10 * MiB,
+  maxBodyBytes: 95_000_000,
+}
+const TODAY = '2026-09-26' as IsoDate
+const CTX: IntakeContext = { payer: PAYER, limits: LIMITS, today: TODAY }
+const ROWS = { payerShortName: 'SEA', maxInvoices: 10, today: TODAY }
+const encoder = new TextEncoder()
+
+const xml = (name: string, options: TestXmlOptions): FileReading =>
+  readXmlBytes(name, encoder.encode(buildInvoiceXml(options)), LIMITS.maxXmlBytes)
+
+const pdf = (name: string, content = '%PDF-1.7\n%prueba\n'): FileReading => {
+  const bytes = encoder.encode(content)
+  return { kind: 'pdf', name, size: bytes.byteLength, bytes: bytes.buffer }
+}
+
+/** Una factura al crédito con su neto en la primera cuota y un céntimo en cada una de las demás. */
+const credit = (
+  seriesNumber: string,
+  net: string,
+  dueDates: string[],
+  extra: TestXmlOptions = {},
+): TestXmlOptions => ({
+  seriesNumber,
+  total: net,
+  netPendingAmount: net,
+  detraction: null,
+  installments: dueDates.map((dueDate, index) => ({
+    id: `Cuota00${index + 1}`,
+    amount: index === 0 ? net : '0.01',
+    dueDate,
+  })),
+  ...extra,
+})
+
+const add = (readings: FileReading[], ctx = CTX) => addReadings(emptyIntake(), readings, ctx)
+
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ['Date'] })
+  // 26/09/2026 a las 10:00 en Lima: los textos cuentan los días desde hoy.
+  vi.setSystemTime(new Date('2026-09-26T15:00:00Z'))
+})
+
+afterEach(() => {
+  vi.useRealTimers()
+})
+
+describe('intakeRows', () => {
+  it('arma una tarjeta por factura lista, con sus cuotas, marcas, neto, vencimiento y archivos', () => {
+    const state = add([
+      xml('F001-00001234.xml', credit('F001-00001234', '12450.00', ['2026-11-30'])),
+      pdf('F001-00001234.pdf'),
+      xml('F001-00001240.xml', credit('F001-00001240', '8300.00', ['2026-11-30', '2026-12-20'])),
+    ])
+    const [first, , third] = state.entries
+    expect(intakeRows(viewIntake(state, CTX), ROWS)).toEqual([
+      {
+        kind: 'invoice',
+        id: first?.id,
+        label: 'F001-00001234',
+        installments: '1 cuota',
+        checks: '✓ Emitida a SEA · ✓ Al crédito · ✓ Vence en 65 días',
+        net: 'S/ 12,450.00',
+        due: '30/11/2026',
+        files: 'XML ✓ · PDF ✓',
+        hasPdf: true,
+        canAddPdf: false,
+        xmlName: 'F001-00001234.xml',
+      },
+      {
+        kind: 'invoice',
+        id: third?.id,
+        label: 'F001-00001240',
+        installments: '2 cuotas',
+        checks: '✓ Emitida a SEA · ✓ Al crédito · ✓ Vence en 85 días',
+        net: 'S/ 8,300.00',
+        due: '20/12/2026',
+        files: 'XML ✓ · PDF opcional',
+        hasPdf: false,
+        canAddPdf: true,
+        xmlName: 'F001-00001240.xml',
+      },
+    ])
+  })
+
+  it('atenúa lo que no viaja: sin plazo, repetida o de otra moneda, cada una con su motivo', () => {
+    const state = add([
+      xml('F001-00001234.xml', credit('F001-00001234', '12450.00', ['2026-11-30'])),
+      xml('F001-00001251.xml', credit('F001-00001251', '4100.00', ['2026-10-05'])),
+      xml('copia.xml', credit('F001-00001234', '12450.00', ['2026-11-30'])),
+      xml(
+        'F001-00001300.xml',
+        credit('F001-00001300', '3200.00', ['2026-11-30'], { currency: 'USD' }),
+      ),
+    ])
+    const [, short, copy, dollars] = state.entries
+    expect(intakeRows(viewIntake(state, CTX), ROWS).slice(1)).toEqual([
+      {
+        kind: 'excluded',
+        id: short?.id,
+        label: 'F001-00001251',
+        badge: 'No se puede adelantar',
+        struck: true,
+        net: 'S/ 4,100.00',
+        reasons: [
+          'Vence el 05/10/2026, en 9 días. Para adelantarla deben faltar al menos 15 días.',
+        ],
+      },
+      {
+        kind: 'excluded',
+        id: copy?.id,
+        label: 'F001-00001234',
+        badge: 'Repetida',
+        struck: true,
+        net: 'S/ 12,450.00',
+        reasons: ['Esta factura ya está en la lista. No la enviamos dos veces.'],
+      },
+      {
+        kind: 'excluded',
+        id: dollars?.id,
+        label: 'F001-00001300',
+        badge: 'En otra solicitud',
+        struck: false,
+        net: 'US$ 3,200.00',
+        reasons: ['Está en dólares y va en otra solicitud.'],
+      },
+    ])
+  })
+
+  it('da su fila a lo que no se pudo leer, al PDF sin factura y al PDF que pesa de más', () => {
+    const heavy = createProblem('FILE_TOO_LARGE', {
+      file: 'F001-00001240.pdf',
+      data: { file: 'F001-00001240.pdf', max: 10 },
+    })
+    const state = add([
+      xml('F001-00001234.xml', credit('F001-00001234', '12450.00', ['2026-11-30'])),
+      xml('F001-00001240.xml', credit('F001-00001240', '8300.00', ['2026-11-30'])),
+      xml('F001-00001250.xml', credit('F001-00001250', '5000.00', ['2026-11-30'])),
+      readXmlBytes('factura-marzo.xml', encoder.encode(buildCdrXml()), LIMITS.maxXmlBytes),
+      pdf('escaneo.pdf'),
+      pdf('F001-00001234.pdf', '<html>no es un PDF</html>'),
+      rejectedReading('F001-00001240.pdf', 14 * MiB, heavy),
+    ])
+    const rows = intakeRows(viewIntake(state, CTX), ROWS)
+    const [first, second, third, cdr, loose, invalid, big] = state.entries
+    expect(rows.map((row) => [row.kind, row.id])).toEqual([
+      ['invoice', first?.id],
+      ['invoice', second?.id],
+      ['invoice', third?.id],
+      ['unreadable', cdr?.id],
+      ['loose-pdf', loose?.id],
+      ['unreadable', invalid?.id],
+      ['heavy-pdf', big?.id],
+    ])
+    expect(rows.map((row) => (row.kind === 'invoice' ? row.canAddPdf : null))).toEqual([
+      false,
+      false,
+      true,
+      null,
+      null,
+      null,
+      null,
+    ])
+    expect(rows[3]).toEqual({
+      kind: 'unreadable',
+      id: cdr?.id,
+      label: 'factura-marzo.xml',
+      text: 'Parece la constancia de recepción (CDR), no la factura. Busca el XML de la factura y reemplázalo. Mientras tanto, no se enviará.',
+      replaceWith: 'xml',
+    })
+    expect(rows[4]).toEqual({
+      kind: 'loose-pdf',
+      id: loose?.id,
+      label: 'escaneo.pdf',
+      text: 'No se llama igual que ningún XML. Si no eliges su factura, no lo enviamos; el PDF es opcional.',
+      invoices: [{ id: third?.id, label: 'F001-00001250' }],
+    })
+    expect(rows[5]).toMatchObject({
+      label: 'F001-00001234.pdf',
+      text: 'Este archivo no es un PDF válido. El PDF es opcional: quítalo o reemplázalo.',
+      replaceWith: 'pdf',
+    })
+    expect(rows[6]).toEqual({
+      kind: 'heavy-pdf',
+      id: big?.id,
+      label: 'F001-00001240.pdf',
+      title: 'F001-00001240.pdf pesa 14 MB',
+      text: 'El PDF puede pesar hasta 10 MB. Es opcional: la factura F001-00001240 se envía igual con su XML.',
+    })
+  })
+})
+
+describe('resumen y avisos del paso 01', () => {
+  it('resume cuántas facturas se envían y cuántas no', () => {
+    expect(readySummary(viewIntake(emptyIntake(), CTX))).toBeNull()
+    const one = add([xml('a.xml', credit('F001-1', '1000.00', ['2026-11-30']))])
+    expect(readySummary(viewIntake(one, CTX))).toEqual({
+      lead: '1 factura lista para enviar.',
+      rest: null,
+    })
+    const mixed = add([
+      xml('a.xml', credit('F001-1', '1000.00', ['2026-11-30'])),
+      xml('b.xml', credit('F001-2', '2000.00', ['2026-11-30'])),
+      xml('c.xml', credit('F001-3', '3000.00', ['2026-10-05'])),
+    ])
+    expect(readySummary(viewIntake(mixed, CTX))).toEqual({
+      lead: '2 facturas listas para enviar.',
+      rest: '1 no se enviará: te decimos por qué abajo.',
+    })
+    const none = add([
+      xml('c.xml', credit('F001-3', '3000.00', ['2026-10-05'])),
+      readXmlBytes('d.xml', encoder.encode(buildCdrXml()), LIMITS.maxXmlBytes),
+    ])
+    expect(readySummary(viewIntake(none, CTX))).toEqual({
+      lead: 'Ninguna factura lista para enviar.',
+      rest: '2 no se enviarán: te decimos por qué abajo.',
+    })
+  })
+
+  it('con soles y dólares ofrece elegir el grupo, con su total, y marca el elegido', () => {
+    const state = add([
+      xml('a.xml', credit('F001-00001234', '20750.00', ['2026-11-30'])),
+      xml('b.xml', credit('F001-00001300', '3200.00', ['2026-11-30'], { currency: 'USD' })),
+    ])
+    expect(groupChoice(viewIntake(state, CTX))).toEqual({
+      title: 'Subiste facturas en soles y en dólares',
+      body: 'En una solicitud van todas en la misma moneda. ¿Con cuáles sigues? Las otras las envías después, en otra solicitud.',
+      options: [
+        {
+          key: 'PEN|20100070970',
+          label: '1 en soles',
+          total: 'S/ 20,750.00',
+          issuer: null,
+          chosen: true,
+        },
+        {
+          key: 'USD|20100070970',
+          label: '1 en dólares',
+          total: 'US$ 3,200.00',
+          issuer: null,
+          chosen: false,
+        },
+      ],
+    })
+    const dollars = chooseGroup(state, 'USD|20100070970', CTX)
+    expect(groupChoice(viewIntake(dollars, CTX))?.options.map((option) => option.chosen)).toEqual([
+      false,
+      true,
+    ])
+    expect(
+      groupChoice(viewIntake(add([xml('a.xml', credit('F001-1', '10.00', ['2026-11-30']))]), CTX)),
+    ).toBeNull()
+  })
+
+  it('con dos emisores en la misma moneda, el grupo lleva la razón social', () => {
+    const state = add([
+      xml('a.xml', credit('F001-1', '12450.00', ['2026-11-30'])),
+      xml(
+        'b.xml',
+        credit('F001-2', '8300.00', ['2026-11-30'], {
+          issuerRuc: '20100047218',
+          issuerName: 'OTRA EMPRESA S.A.C.',
+        }),
+      ),
+    ])
+    const choice = groupChoice(viewIntake(state, CTX))
+    expect(choice?.title).toBe('Subiste facturas de 2 emisores distintos')
+    expect(choice?.body).toBe(
+      'En una solicitud van todas del mismo emisor. ¿Con cuáles sigues? Las otras las envías después, en otra solicitud.',
+    )
+    expect(choice?.options.map((option) => [option.label, option.issuer])).toEqual([
+      ['1 en soles', 'PROVEEDOR EJEMPLO S.A.C.'],
+      ['1 en soles', 'OTRA EMPRESA S.A.C.'],
+    ])
+  })
+
+  it('avisa las facturas que pasan el máximo del pagador y el envío que no entra', () => {
+    const ctx: IntakeContext = { ...CTX, payer: { ...PAYER, maxInvoices: 2 } }
+    const three = [1, 2, 3].map((n) =>
+      xml(`${n}.xml`, credit(`F001-${n}`, `${n}000.00`, ['2026-11-30'])),
+    )
+    expect(overflowNotice(viewIntake(add(three, ctx), ctx))).toEqual({
+      title: 'Elegiste 3 facturas: agregamos las primeras 2',
+      body: 'F001-3 no entró. Envíala en otra solicitud cuando termines esta.',
+    })
+    const four = [...three, xml('4.xml', credit('F001-4', '4000.00', ['2026-11-30']))]
+    expect(overflowNotice(viewIntake(add(four, ctx), ctx))?.body).toBe(
+      'F001-3 y F001-4 no entraron. Envíalas en otra solicitud cuando termines esta.',
+    )
+    expect(overflowNotice(viewIntake(add(three), CTX))).toBeNull()
+
+    const files: IntakeContext = { ...CTX, limits: { ...LIMITS, maxFiles: 2 } }
+    const withPdf = add(
+      [
+        xml('F001-1.xml', credit('F001-1', '1000.00', ['2026-11-30'])),
+        pdf('F001-1.pdf'),
+        xml('F001-2.xml', credit('F001-2', '2000.00', ['2026-11-30'])),
+      ],
+      files,
+    )
+    expect(weightNotice(viewIntake(withPdf, files), files.limits)).toEqual({
+      title: 'Son más de 2 archivos para una solicitud',
+      body: 'Quita algunos PDF: son opcionales y tus facturas se envían igual con su XML.',
+    })
+    const body: IntakeContext = { ...CTX, limits: { ...LIMITS, maxBodyBytes: 1000 } }
+    expect(weightNotice(viewIntake(add(three, body), body), body.limits)?.title).toBe(
+      'Tus archivos pesan más de lo que podemos recibir en una solicitud',
+    )
+    expect(weightNotice(viewIntake(add(three), CTX), LIMITS)).toBeNull()
+  })
+
+  it('junta los problemas de la API por fila: los de un PDF que viaja van a su factura', () => {
+    const state = add([
+      xml('F001-00001234.xml', credit('F001-00001234', '12450.00', ['2026-11-30'])),
+      pdf('F001-00001234.pdf'),
+      xml('F001-00001240.xml', credit('F001-00001240', '8300.00', ['2026-11-30'])),
+    ])
+    const [first, firstPdf, second] = state.entries
+    const taken = 'F001-00001234 ya está en otra solicitud en curso.'
+    const broken =
+      'El PDF F001-00001234.pdf está dañado. El PDF es opcional: quítalo o reemplázalo.'
+    const problems = new Map([
+      [first?.id ?? '', [taken]],
+      [firstPdf?.id ?? '', [broken, taken]],
+      [second?.id ?? '', []],
+      ['quitada', ['Una entrada que ya no está en la lista.']],
+    ])
+    expect(problemsByRow(viewIntake(state, CTX), problems)).toEqual(
+      new Map([[first?.id, [taken, broken]]]),
+    )
+    expect(problemsByRow(viewIntake(state, CTX), new Map())).toEqual(new Map())
+  })
+
+  it('cuenta como traídas de la calculadora solo las facturas que no agregó el formulario', () => {
+    const state = add([
+      xml('a.xml', credit('F001-1', '1000.00', ['2026-11-30'])),
+      xml('b.xml', credit('F001-2', '2000.00', ['2026-11-30'])),
+      pdf('F001-1.pdf'),
+    ])
+    const view = viewIntake(state, CTX)
+    expect(broughtCount(view, new Set())).toBe(2)
+    expect(broughtCount(view, new Set([state.entries[1]?.id ?? '']))).toBe(1)
+  })
+
+  it('escribe los textos del paso como el diseño, con los datos del pagador', () => {
+    expect(calculatorNoticeText(2, 10)).toBe(
+      'Trajimos tus 2 facturas de la calculadora. Puedes agregar más, hasta 10.',
+    )
+    expect(calculatorNoticeText(1, 4)).toBe(
+      'Trajimos tu factura de la calculadora. Puedes agregar más, hasta 4.',
+    )
+    expect(calculatorNoticeText(10, 10)).toBe('Trajimos tus 10 facturas de la calculadora.')
+    expect(legendTitle('SEA')).toBe('01 · Tus facturas a SEA')
+    expect(legendHint(15)).toBe('Al crédito y con 15 días o más al vencimiento')
+    expect(legendHint(1)).toBe('Al crédito y con 1 día o más al vencimiento')
+    expect(legendHint(0)).toBe('Al crédito y sin vencer')
+    expect(limitsHint(LIMITS)).toBe('También un .zip con varios. XML hasta 1 MB, PDF hasta 10 MB.')
+    expect(netNote('SEA')).toBe(
+      'Neto pendiente: el total de la factura menos detracción y retención; lo que SEA te va a pagar.',
+    )
+    expect(installmentsText(0)).toBe('')
+    expect(installmentsText(1)).toBe('1 cuota')
+    expect(installmentsText(3)).toBe('3 cuotas')
+    expect(filesText(true)).toBe('XML ✓ · PDF ✓')
+    expect(filesText(false)).toBe('XML ✓ · PDF opcional')
+    expect(sizeText(14 * MiB)).toBe('14 MB')
+    expect(sizeText(10 * MiB + 1)).toBe('10.1 MB')
+    expect(removedText('F001-00001240')).toBe('Quitaste F001-00001240')
+    expect(dropCountText(1)).toBe('1 archivo')
+    expect(dropCountText(3)).toBe('3 archivos')
+    expect(joinWithY([])).toBe('')
+    expect(joinWithY(['a'])).toBe('a')
+    expect(joinWithY(['a', 'b', 'c'])).toBe('a, b y c')
+    const state = add([xml('a.xml', credit('F001-1', '1000.00', ['2026-11-30']))])
+    const group = viewIntake(state, CTX).chosenGroup
+    expect(group === null ? null : issuerLine(group)).toBe(
+      'Emisor: PROVEEDOR EJEMPLO S.A.C. · RUC 20100070970 · leído de tus XML',
+    )
+  })
+})
+```
+
+Run: `ASTRO_TELEMETRY_DISABLED=1 pnpm --filter @anticipate/landing exec vitest run src/islands/request-form/invoices/list-model.test.ts`
+Expected: FAIL: `Error: Failed to resolve import "./list-model" from "src/islands/request-form/invoices/list-model.test.ts". Does the file exist?`
+
+- [ ] **Step 9: Implementar las filas y los textos**
+
+`apps/landing/src/islands/request-form/invoices/list-model.ts`:
+```ts
+import type { IntakeLimits } from '@anticipate/shared/api'
+import { formatIsoDate, type IsoDate } from '@anticipate/shared/dates'
+import type { InvoiceGroup } from '@anticipate/shared/intake'
+import type { ParsedInvoice } from '@anticipate/shared/invoice'
+import { CURRENCIES, type Currency, formatMoney, isCurrency } from '@anticipate/shared/money'
+import { type IntakeEntry, type IntakeView, isInvoiceEntry } from '../../../lib/intake/intake-state'
+import { invoiceChecksText, lastDueDate } from '../../../lib/intake/invoice-text'
+import { problemText } from '../../../lib/intake/problem-text'
+import { countedEntries, excludedLines } from '../../calculator/calculator-text'
+
+const BYTES_PER_MB = 1024 * 1024
+const CURRENCY_WORDS: Readonly<Record<Currency, string>> = { PEN: 'soles', USD: 'dólares' }
+
+/** Pie de toda tarjeta de una factura que no viaja en esta solicitud (tablero 1 de Estados). */
+export const NOT_SENT_NOTE = 'No se enviará · no suma al total'
+
+/** Mientras el lector trabaja (el mismo texto de la calculadora). */
+export const READING_TEXT = 'Estamos leyendo tus facturas.'
+
+/** Una factura que viaja: la tarjeta "Lista" de `Main.dc.html`. */
+export type InvoiceRowModel = {
+  kind: 'invoice'
+  id: string
+  label: string
+  installments: string
+  checks: string
+  net: string | null
+  due: string | null
+  files: string
+  hasPdf: boolean
+  /** Si se le puede agregar un PDF: no tiene ninguno, ni siquiera uno que pesa de más o no se leyó. */
+  canAddPdf: boolean
+  /** El nombre del XML: un PDF agregado desde su tarjeta se lee con este nombre base. */
+  xmlName: string
+}
+
+/** Una factura leída que no viaja: no califica, está repetida, pasa el tope o es de otro grupo. */
+export type ExcludedRowModel = {
+  kind: 'excluded'
+  id: string
+  label: string
+  badge: string
+  /** Tachada si no se puede adelantar (tablero 1); sin tachar si va en otra solicitud. */
+  struck: boolean
+  net: string | null
+  reasons: string[]
+}
+
+/** Un archivo que no se pudo leer: se puede reemplazar por un XML (o un PDF, si era un PDF). */
+export type UnreadableRowModel = {
+  kind: 'unreadable'
+  id: string
+  label: string
+  text: string
+  replaceWith: 'xml' | 'pdf'
+}
+
+/** Un PDF que no se llama como ningún XML: "¿De qué factura es?" con las facturas sin PDF. */
+export type LoosePdfRowModel = {
+  kind: 'loose-pdf'
+  id: string
+  label: string
+  text: string
+  invoices: { id: string; label: string }[]
+}
+
+/** Un PDF que pesa más de lo permitido: no viaja, y su factura se envía igual. */
+export type HeavyPdfRowModel = {
+  kind: 'heavy-pdf'
+  id: string
+  label: string
+  title: string
+  text: string
+}
+
+export type IntakeRow =
+  | InvoiceRowModel
+  | ExcludedRowModel
+  | UnreadableRowModel
+  | LoosePdfRowModel
+  | HeavyPdfRowModel
+
+export type RowContext = { payerShortName: string; maxInvoices: number; today: IsoDate }
+
+const capitalize = (text: string): string => `${text.charAt(0).toUpperCase()}${text.slice(1)}`
+
+/** "a", "a y b" o "a, b y c". */
+export function joinWithY(items: readonly string[]): string {
+  if (items.length <= 1) return items.join('')
+  return `${items.slice(0, -1).join(', ')} y ${items.at(-1) ?? ''}`
+}
+
+/** "1 cuota" o "2 cuotas"; vacío si la factura no trae cuotas. */
+export function installmentsText(count: number): string {
+  if (count === 0) return ''
+  return count === 1 ? '1 cuota' : `${count} cuotas`
+}
+
+/** "XML ✓ · PDF ✓" o "XML ✓ · PDF opcional". */
+export function filesText(hasPdf: boolean): string {
+  return hasPdf ? 'XML ✓ · PDF ✓' : 'XML ✓ · PDF opcional'
+}
+
+/** El peso de un archivo en MB, redondeado hacia arriba a un decimal: "14 MB" o "10.1 MB". */
+export function sizeText(bytes: number): string {
+  return `${Math.ceil((bytes * 10) / BYTES_PER_MB) / 10} MB`
+}
+
+/** Un tope en MB, truncado a dos decimales (nunca anuncia más de lo permitido). */
+const limitMegabytes = (bytes: number): number => Math.floor((bytes / BYTES_PER_MB) * 100) / 100
+
+/** Leyenda del paso 01: "01 · Tus facturas a {pagador}". */
+export function legendTitle(payerShortName: string): string {
+  return `01 · Tus facturas a ${payerShortName}`
+}
+
+/** La condición del pagador junto a la leyenda: "Al crédito y con {n} días o más al vencimiento". */
+export function legendHint(minTermDays: number): string {
+  if (minTermDays === 0) return 'Al crédito y sin vencer'
+  const days = minTermDays === 1 ? '1 día' : `${minTermDays} días`
+  return `Al crédito y con ${days} o más al vencimiento`
+}
+
+/** Los topes del área grande de la lista vacía (tablero 3 de Estados). */
+export function limitsHint(limits: IntakeLimits): string {
+  return `También un .zip con varios. XML hasta ${limitMegabytes(limits.maxXmlBytes)} MB, PDF hasta ${limitMegabytes(limits.maxPdfBytes)} MB.`
+}
+
+/** El aviso de las facturas que llegaron desde la calculadora. */
+export function calculatorNoticeText(count: number, maxInvoices: number): string {
+  const brought =
+    count === 1
+      ? 'Trajimos tu factura de la calculadora.'
+      : `Trajimos tus ${count} facturas de la calculadora.`
+  return count < maxInvoices ? `${brought} Puedes agregar más, hasta ${maxInvoices}.` : brought
+}
+
+/** Las facturas (XML, leídos o no) de la lista que no agregó el propio formulario. */
+export function broughtCount(view: IntakeView, ownIds: ReadonlySet<string>): number {
+  return view.entries.filter((entry) => isInvoiceEntry(entry) && !ownIds.has(entry.id)).length
+}
+
+/** Problemas que la API devolvió al enviar (un 422), por `id` de entrada: textos para personas. */
+export type EntryProblems = ReadonlyMap<string, readonly string[]>
+
+/**
+ * Los problemas de la API por fila, sin repetir, en el orden de la lista. Los de un PDF que viaja
+ * con su factura van a la fila de esa factura (el PDF no tiene fila); los de una entrada que ya no
+ * está se ignoran.
+ */
+export function problemsByRow(view: IntakeView, problems: EntryProblems): Map<string, string[]> {
+  const byRow = new Map<string, string[]>()
+  for (const entry of view.entries) {
+    const texts = problems.get(entry.id) ?? []
+    if (texts.length === 0) continue
+    // Un PDF que viaja lleva en `assignedToId` la factura con la que viaja.
+    const owner = !isInvoiceEntry(entry) && entry.status === 'ready' ? entry.assignedToId : null
+    const rowId = owner ?? entry.id
+    byRow.set(rowId, [...new Set([...(byRow.get(rowId) ?? []), ...texts])])
+  }
+  return byRow
+}
+
+/** El aviso de "Deshacer". */
+export function removedText(label: string): string {
+  return `Quitaste ${label}`
+}
+
+/** Cuántos archivos se están arrastrando (tablero 6 de Estados). */
+export function dropCountText(count: number): string {
+  return count === 1 ? '1 archivo' : `${count} archivos`
+}
+
+/** La línea del emisor leído de los XML del grupo elegido. */
+export function issuerLine(group: InvoiceGroup): string {
+  return `Emisor: ${group.issuerName} · RUC ${group.issuerRuc} · leído de tus XML`
+}
+
+/** Qué es el neto pendiente, con el pagador. */
+export function netNote(payerShortName: string): string {
+  return `Neto pendiente: el total de la factura menos detracción y retención; lo que ${payerShortName} te va a pagar.`
+}
+
+export type ReadySummary = { lead: string; rest: string | null }
+
+/**
+ * Resumen del tablero 1 de Estados: "2 facturas listas para enviar. 1 no se enviará: te decimos por
+ * qué abajo." `null` si la lista no tiene facturas (solo PDF o nada).
+ */
+export function readySummary(view: IntakeView): ReadySummary | null {
+  if (!view.entries.some(isInvoiceEntry)) return null
+  const ready = view.readyCount
+  const lead =
+    ready === 0
+      ? 'Ninguna factura lista para enviar.'
+      : ready === 1
+        ? '1 factura lista para enviar.'
+        : `${ready} facturas listas para enviar.`
+  const notSent = view.notSentCount
+  const rest =
+    notSent === 0
+      ? null
+      : `${notSent} no se ${notSent === 1 ? 'enviará' : 'enviarán'}: te decimos por qué abajo.`
+  return { lead, rest }
+}
+
+export type GroupOption = {
+  key: string
+  label: string
+  total: string
+  issuer: string | null
+  chosen: boolean
+}
+export type GroupChoiceModel = { title: string; body: string; options: GroupOption[] }
+
+/**
+ * La elección de grupo (tablero 2 de Estados) cuando las facturas listas son de más de una moneda o
+ * de más de un emisor: un botón por grupo, "{n} en soles" con su total. `null` con un solo grupo.
+ */
+export function groupChoice(view: IntakeView): GroupChoiceModel | null {
+  const { groups, chosenGroup } = view
+  if (groups.length < 2) return null
+  const currencies = CURRENCIES.filter((currency) =>
+    groups.some((group) => group.currency === currency),
+  )
+  const issuerCount = new Set(groups.map((group) => group.issuerRuc)).size
+  const byCurrency = currencies.length > 1
+  const byIssuer = issuerCount > 1
+  const inCurrencies = currencies.map((currency) => `en ${CURRENCY_WORDS[currency]}`).join(' y ')
+  const issuers = `de ${issuerCount} emisores distintos`
+  const title = byIssuer
+    ? `Subiste facturas ${byCurrency ? `${inCurrencies} y ${issuers}` : issuers}`
+    : `Subiste facturas ${inCurrencies}`
+  const rule = byIssuer
+    ? byCurrency
+      ? 'en la misma moneda y del mismo emisor'
+      : 'del mismo emisor'
+    : 'en la misma moneda'
+  return {
+    title,
+    body: `En una solicitud van todas ${rule}. ¿Con cuáles sigues? Las otras las envías después, en otra solicitud.`,
+    options: groups.map((group) => ({
+      key: group.key,
+      label: `${group.invoices.length} en ${CURRENCY_WORDS[group.currency]}`,
+      total: formatMoney(group.netPendingTotal, group.currency),
+      issuer: byIssuer ? group.issuerName : null,
+      chosen: group.key === chosenGroup?.key,
+    })),
+  }
+}
+
+export type Notice = { title: string; body: string }
+
+/** "Elegiste 12 facturas: agregamos las primeras 10" (tablero 2 de Estados). */
+export function overflowNotice(view: IntakeView): Notice | null {
+  const names = view.overflowNames
+  const kept = view.chosenGroup?.invoices.length ?? 0
+  if (names.length === 0 || kept === 0) return null
+  const total = kept + names.length
+  const title =
+    kept === 1
+      ? `Elegiste ${total} facturas: agregamos la primera`
+      : `Elegiste ${total} facturas: agregamos las primeras ${kept}`
+  const body =
+    names.length === 1
+      ? `${joinWithY(names)} no entró. Envíala en otra solicitud cuando termines esta.`
+      : `${joinWithY(names)} no entraron. Envíalas en otra solicitud cuando termines esta.`
+  return { title, body }
+}
+
+/** Aviso de peso: el envío pasa `maxFiles` o `maxBodyBytes` y hay que quitar PDF. */
+export function weightNotice(view: IntakeView, limits: IntakeLimits): Notice | null {
+  if (!view.tooManyFiles && !view.bodyTooLarge) return null
+  return {
+    title: view.tooManyFiles
+      ? `Son más de ${limits.maxFiles} archivos para una solicitud`
+      : 'Tus archivos pesan más de lo que podemos recibir en una solicitud',
+    body: 'Quita algunos PDF: son opcionales y tus facturas se envían igual con su XML.',
+  }
+}
+
+function netText(invoice: ParsedInvoice): string | null {
+  const { netPendingAmount, currency } = invoice
+  return netPendingAmount !== null && isCurrency(currency)
+    ? formatMoney(netPendingAmount, currency)
+    : null
+}
+
+/** Los textos de los problemas de una entrada, sin repetir. */
+function problemTexts(entry: IntakeEntry): string[] {
+  return [...new Set(entry.problems.map((problem) => problemText(problem, entry.invoice)))]
+}
+
+function firstProblemText(entry: IntakeEntry, invoice: ParsedInvoice | null): string {
+  const [problem] = entry.problems
+  return problem === undefined ? 'No pudimos leer este archivo.' : problemText(problem, invoice)
+}
+
+function excludedRow(
+  entry: IntakeEntry,
+  invoice: ParsedInvoice,
+  reason: string | undefined,
+): ExcludedRowModel {
+  const struck = entry.status === 'not-eligible' || entry.status === 'duplicate'
+  const badge =
+    entry.status === 'duplicate'
+      ? 'Repetida'
+      : entry.status === 'overflow'
+        ? 'No entró'
+        : struck
+          ? 'No se puede adelantar'
+          : 'En otra solicitud'
+  const problems = struck ? problemTexts(entry) : []
+  const reasons =
+    problems.length > 0 ? problems : [`${capitalize(reason ?? 'no se puede adelantar')}.`]
+  return {
+    kind: 'excluded',
+    id: entry.id,
+    label: invoice.seriesNumber,
+    badge,
+    struck,
+    net: netText(invoice),
+    reasons,
+  }
+}
+
+/**
+ * Las filas de la lista del paso 01, en el orden de llegada. Cada factura leída es una tarjeta (lista,
+ * o atenuada con su motivo si no viaja); cada archivo que no se pudo leer, un PDF suelto o uno que
+ * pesa de más tiene la suya. Un PDF que viaja con su XML no es una fila: su factura dice "PDF ✓".
+ */
+export function intakeRows(view: IntakeView, context: RowContext): IntakeRow[] {
+  const counted = new Set(countedEntries(view).map((entry) => entry.id))
+  const reasons = new Map(
+    excludedLines(view, context.maxInvoices).map((line) => [line.id, line.reason]),
+  )
+  const byId = new Map(view.entries.map((entry) => [entry.id, entry]))
+  // Una factura "tiene PDF" si algún PDF lleva su nombre base, aunque pese de más o no se leyera.
+  const withPdf = new Set(
+    view.entries.flatMap((entry) =>
+      !isInvoiceEntry(entry) && entry.assignedToId !== null ? [entry.assignedToId] : [],
+    ),
+  )
+  const pdfCandidates = view.entries.flatMap((entry) =>
+    entry.kind === 'xml' &&
+    entry.invoice !== null &&
+    entry.status !== 'not-eligible' &&
+    entry.status !== 'duplicate' &&
+    !withPdf.has(entry.id)
+      ? [{ id: entry.id, label: entry.invoice.seriesNumber }]
+      : [],
+  )
+
+  return view.entries.flatMap((entry): IntakeRow[] => {
+    if (!isInvoiceEntry(entry)) {
+      if (entry.status === 'ready') return []
+      if (entry.status === 'loose-pdf') {
+        return [
+          {
+            kind: 'loose-pdf',
+            id: entry.id,
+            label: entry.name,
+            text: firstProblemText(entry, null),
+            invoices: pdfCandidates,
+          },
+        ]
+      }
+      if (entry.status === 'oversized') {
+        const owner = entry.assignedToId === null ? undefined : byId.get(entry.assignedToId)
+        return [
+          {
+            kind: 'heavy-pdf',
+            id: entry.id,
+            label: entry.name,
+            title: `${entry.name} pesa ${sizeText(entry.size)}`,
+            text: firstProblemText(entry, owner?.invoice ?? null),
+          },
+        ]
+      }
+      return [
+        {
+          kind: 'unreadable',
+          id: entry.id,
+          label: entry.name,
+          text: firstProblemText(entry, null),
+          replaceWith: 'pdf',
+        },
+      ]
+    }
+    const { invoice } = entry
+    if (invoice === null) {
+      return [
+        {
+          kind: 'unreadable',
+          id: entry.id,
+          label: entry.name,
+          text: firstProblemText(entry, null),
+          replaceWith: 'xml',
+        },
+      ]
+    }
+    if (!counted.has(entry.id)) return [excludedRow(entry, invoice, reasons.get(entry.id))]
+    const due = lastDueDate(invoice)
+    const hasPdf = entry.pairedPdfId !== null
+    return [
+      {
+        kind: 'invoice',
+        id: entry.id,
+        label: invoice.seriesNumber,
+        installments: installmentsText(invoice.installments.length),
+        checks: invoiceChecksText(invoice, context.payerShortName, context.today),
+        net: netText(invoice),
+        due: due === null ? null : formatIsoDate(due),
+        files: filesText(hasPdf),
+        hasPdf,
+        canAddPdf: !withPdf.has(entry.id),
+        xmlName: entry.name,
+      },
+    ]
+  })
+}
+```
+
+Run: `ASTRO_TELEMETRY_DISABLED=1 pnpm --filter @anticipate/landing exec vitest run src/islands/request-form/invoices/list-model.test.ts`
+Expected: PASS, 10 tests.
+
+- [ ] **Step 10: Escribir el test de Cavali**
+
+`apps/landing/src/islands/request-form/invoices/CavaliField.test.tsx`:
+```tsx
+import type { CavaliRegistration } from '@anticipate/shared/advance-request'
+import { cleanup, render, screen } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import CavaliField from './CavaliField'
+
+const QUESTION = '¿Tus facturas ya están registradas en Cavali?'
+
+afterEach(() => {
+  cleanup()
+})
+
+describe('CavaliField', () => {
+  it('pregunta con Sí, No y No sé y avisa la opción elegida', async () => {
+    const user = userEvent.setup()
+    const onChange = vi.fn<(value: CavaliRegistration) => void>()
+    const { rerender } = render(<CavaliField value={null} onChange={onChange} />)
+    const group = screen.getByRole('group', { name: QUESTION })
+    expect(group).toHaveAttribute('id', 'cavali')
+    expect(screen.getAllByRole('radio').map((radio) => radio.getAttribute('value'))).toEqual([
+      'YES',
+      'NO',
+      'UNKNOWN',
+    ])
+    await user.click(screen.getByRole('radio', { name: 'No sé' }))
+    expect(onChange).toHaveBeenCalledWith('UNKNOWN')
+    rerender(<CavaliField value="UNKNOWN" onChange={onChange} />)
+    expect(screen.getByRole('radio', { name: 'No sé' })).toBeChecked()
+    expect(screen.getByRole('radio', { name: 'Sí' })).not.toBeChecked()
+    expect(screen.getByRole('radio', { name: 'No' })).not.toBeChecked()
+  })
+
+  it('trae la ayuda completa y en móvil corta la última frase', () => {
+    render(<CavaliField value={null} onChange={() => undefined} />)
+    const group = screen.getByRole('group', { name: QUESTION })
+    expect(group).toHaveAccessibleDescription(
+      'Cavali es la entidad donde se registran las facturas negociables en el Perú. Si no lo sabes, marca «No sé»: lo revisamos contigo.',
+    )
+    expect(screen.getByText(': lo revisamos contigo')).toBeInTheDocument()
+    for (const radio of screen.getAllByRole('radio')) {
+      expect(radio).not.toHaveAttribute('aria-invalid')
+    }
+  })
+
+  it('con un error lo muestra, lo suma a la descripción y marca las opciones inválidas', () => {
+    render(
+      <CavaliField value={null} onChange={() => undefined} error="Elige si ya están en Cavali." />,
+    )
+    const group = screen.getByRole('group', { name: QUESTION })
+    expect(screen.getByText('Elige si ya están en Cavali.')).toBeInTheDocument()
+    expect(group).toHaveAccessibleDescription(/Elige si ya están en Cavali\.$/)
+    for (const radio of screen.getAllByRole('radio')) {
+      expect(radio).toHaveAttribute('aria-invalid', 'true')
+    }
+  })
+})
+```
+
+Run: `ASTRO_TELEMETRY_DISABLED=1 pnpm --filter @anticipate/landing exec vitest run src/islands/request-form/invoices/CavaliField.test.tsx`
+Expected: FAIL: `Error: Failed to resolve import "./CavaliField" from "src/islands/request-form/invoices/CavaliField.test.tsx". Does the file exist?`
+
+- [ ] **Step 11: Implementar los íconos, los estilos del paso 01 y Cavali**
+
+Los íconos son los trazos de los tableros. `Invoices.module.css` traduce el paso 01 de `Main.dc.html` (escritorio), el de `MobileForm.dc.html` (hasta 767 px) y los tableros 1, 2, 3 y 6 de `Estados.dc.html`, más el estilo de error de los campos del tablero 5 para los problemas de la API; lo usan todos los componentes de `invoices/` y el paso.
+
+`apps/landing/src/islands/request-form/invoices/icons.tsx`:
+```tsx
+import type { ReactNode } from 'react'
+
+type IconProps = { size?: number | undefined; className?: string | undefined }
+
+/** Íconos de trazo del diseño: decorativos, fuera del árbol de accesibilidad. */
+function Svg({
+  size,
+  strokeWidth,
+  className,
+  children,
+}: {
+  size: number
+  strokeWidth: number
+  className: string | undefined
+  children: ReactNode
+}) {
+  return (
+    <svg
+      aria-hidden="true"
+      focusable="false"
+      className={className}
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={strokeWidth}
+      strokeLinecap="square"
+    >
+      {children}
+    </svg>
+  )
+}
+
+export function CheckIcon({ size = 16, className }: IconProps) {
+  return (
+    <Svg size={size} strokeWidth={3} className={className}>
+      <path d="M20 6 9 17l-5-5" />
+    </Svg>
+  )
+}
+
+export function CloseIcon({ size = 18, className }: IconProps) {
+  return (
+    <Svg size={size} strokeWidth={2} className={className}>
+      <path d="M6 6l12 12" />
+      <path d="M18 6 6 18" />
+    </Svg>
+  )
+}
+
+export function PlusIcon({ size = 18, className }: IconProps) {
+  return (
+    <Svg size={size} strokeWidth={2.5} className={className}>
+      <path d="M12 5v14" />
+      <path d="M5 12h14" />
+    </Svg>
+  )
+}
+
+export function UploadIcon({ size = 24, className }: IconProps) {
+  return (
+    <Svg size={size} strokeWidth={2.2} className={className}>
+      <path d="M12 15V3" />
+      <path d="m7 8 5-5 5 5" />
+      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+    </Svg>
+  )
+}
+
+export function DropIcon({ size = 26, className }: IconProps) {
+  return (
+    <Svg size={size} strokeWidth={2.2} className={className}>
+      <path d="M12 3v12" />
+      <path d="m7 10 5 5 5-5" />
+      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+    </Svg>
+  )
+}
+
+export function ChatIcon({ size = 18, className }: IconProps) {
+  return (
+    <Svg size={size} strokeWidth={2} className={className}>
+      <path d="M4 5h16v11H9l-5 4z" />
+      <path d="M8 9h8" />
+      <path d="M8 12h5" />
+    </Svg>
+  )
+}
+
+export function ErrorIcon({ size = 16, className }: IconProps) {
+  return (
+    <Svg size={size} strokeWidth={2.4} className={className}>
+      <path d="M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18z" />
+      <path d="M12 8v5" />
+      <path d="M12 16h.01" />
+    </Svg>
+  )
+}
+```
+
+`apps/landing/src/islands/request-form/invoices/Invoices.module.css`:
+```css
+/*
+ * Paso 01: medidas y colores de Main.dc.html (escritorio), MobileForm.dc.html (hasta 767 px) y los
+ * tableros 1, 2, 3 y 6 de Estados.dc.html. Esquinas rectas.
+ */
+
+.desktopOnly {
+  display: inline;
+}
+
+.noticeIcon {
+  flex: none;
+}
+
+/* "Trajimos tus 2 facturas de la calculadora…" */
+.fromCalculator {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+  padding: 10px 14px;
+  background: var(--teal-100);
+  color: var(--teal-800);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+/* Resumen del tablero 1: "2 facturas listas para enviar. 1 no se enviará…" */
+.summary {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 0;
+  padding: 12px 14px;
+  background: var(--teal-100);
+  color: var(--teal-800);
+  font-size: 14px;
+  line-height: 21px;
+}
+
+.summary .noticeIcon {
+  margin-top: 2px;
+}
+
+/* Elección de grupo (tablero 2). */
+.groups {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 16px;
+  border-top: 4px solid var(--teal);
+  background: var(--surface);
+  font-size: 14px;
+  line-height: 21px;
+}
+
+.groupsTitle {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 800;
+}
+
+.groupsBody {
+  margin: 0;
+  color: var(--muted);
+}
+
+.groupOptions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 8px;
+}
+
+.groupOption {
+  min-height: 56px;
+  padding: 6px 12px;
+  border: 1.5px solid var(--field);
+  background: #ffffff;
+  color: var(--ink);
+  font: inherit;
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 700;
+  text-align: left;
+  cursor: pointer;
+}
+
+/* El elegido: borde de 2 px como en el tablero, sin mover el texto. */
+.groupOption[aria-pressed="true"] {
+  border-color: var(--teal-600);
+  box-shadow: inset 0 0 0 0.5px var(--teal-600);
+  background: var(--teal-100);
+}
+
+.groupLabel,
+.groupTotal,
+.groupIssuer {
+  display: block;
+}
+
+.groupTotal,
+.groupIssuer {
+  font-weight: 500;
+  color: var(--muted);
+}
+
+.groupIssuer {
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Avisos de tope y de peso (tablero 2). */
+.warnNotice {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 14px 16px;
+  border-top: 4px solid #c98a00;
+  background: var(--warn-bg);
+  color: var(--warn);
+  font-size: 14px;
+  line-height: 21px;
+}
+
+.warnTitle {
+  margin: 0;
+  font-weight: 800;
+}
+
+.warnBody {
+  margin: 0;
+}
+
+/* Lista, agregar y soltar. */
+.filesZone {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.filesZone[data-dragging="true"] {
+  min-height: 220px;
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.list > li:focus {
+  outline: none;
+}
+
+.list > li:focus-visible {
+  outline: 2px solid var(--teal-600);
+  outline-offset: 2px;
+}
+
+/* Factura lista: una grilla que en móvil se reacomoda sin duplicar botones. */
+.card {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr)) auto;
+  grid-template-areas:
+    "head head head remove"
+    "checks checks checks remove"
+    "net due files pdf";
+  column-gap: 16px;
+  row-gap: 10px;
+  align-items: start;
+  padding: 18px 22px;
+  border: 1.5px solid var(--line);
+  border-left: 5px solid var(--teal);
+}
+
+.cardHead {
+  grid-area: head;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.cardTags {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.number {
+  font-size: 19px;
+  font-weight: 800;
+}
+
+.readyBadge {
+  padding: 4px 10px;
+  background: var(--teal-100);
+  color: var(--teal-800);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.installments {
+  font-size: 14px;
+  color: var(--muted);
+}
+
+.checks {
+  grid-area: checks;
+  font-size: 13px;
+  color: var(--teal-800);
+}
+
+.fact {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.factNet {
+  grid-area: net;
+}
+
+.factDue {
+  grid-area: due;
+}
+
+.factFiles {
+  grid-area: files;
+}
+
+.factLabel {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.factValue {
+  font-size: 17px;
+  font-weight: 700;
+}
+
+.filesValue {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.filesValue[data-complete="true"] {
+  color: var(--teal-700);
+}
+
+/* En escritorio el pie no existe: sus piezas van a la grilla. */
+.cardFooter {
+  display: contents;
+}
+
+.removeIcon {
+  grid-area: remove;
+  justify-self: end;
+  width: 44px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1.5px solid var(--field);
+  background: #ffffff;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+/* Como en Main.dc.html: debajo de la X, a la altura de los datos. */
+.pdfButton {
+  grid-area: pdf;
+  justify-self: end;
+  align-self: center;
+  min-height: 44px;
+  padding: 0 8px;
+  border: 0;
+  background: transparent;
+  color: var(--teal-700);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 700;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+
+/* Factura que no viaja (tablero 1): atenuada, con su motivo. */
+.offCard {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px 16px;
+  border: 1.5px dashed #c3cccb;
+  border-left: 5px solid #9aa7a5;
+  background: var(--off-bg);
+  color: var(--off);
+}
+
+.offTop,
+.offBottom {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.offTitle {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.offNumber {
+  font-size: 16px;
+  font-weight: 800;
+}
+
+.offNet {
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.offNumber[data-struck="true"],
+.offNet[data-struck="true"] {
+  text-decoration: line-through;
+}
+
+.offBadge {
+  padding: 3px 8px;
+  background: var(--off);
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.offReason {
+  margin: 0;
+  color: var(--ink);
+  font-size: 14px;
+  line-height: 21px;
+}
+
+.offNote {
+  font-size: 13px;
+  font-weight: 700;
+}
+
+/* Archivo que no se pudo leer (tablero 2). */
+.errorCard {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 16px;
+  border: 1.5px solid #f2c7c2;
+  border-left: 5px solid var(--err);
+  background: var(--err-bg);
+}
+
+.fileTitle {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.fileName {
+  min-width: 0;
+  font-size: 16px;
+  font-weight: 800;
+  overflow-wrap: anywhere;
+}
+
+.errorBadge {
+  padding: 3px 8px;
+  background: var(--err);
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.errorText {
+  margin: 0;
+  color: #5c1a14;
+  font-size: 14px;
+  line-height: 21px;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* PDF sin factura y PDF que pesa de más (tablero 2). */
+.warnCard,
+.heavyCard {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 16px;
+  border: 1.5px solid #f0d9a6;
+  border-left: 5px solid #c98a00;
+  background: var(--warn-bg);
+  color: var(--warn);
+}
+
+.heavyCard {
+  gap: 8px;
+  font-size: 14px;
+  line-height: 21px;
+}
+
+.heavyCard > button {
+  align-self: flex-start;
+}
+
+.warnBadge {
+  padding: 3px 8px;
+  background: #ffe7ad;
+  color: var(--warn);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.warnText,
+.heavyText {
+  margin: 0;
+  font-size: 14px;
+  line-height: 21px;
+}
+
+.heavyTitle {
+  font-weight: 800;
+  overflow-wrap: anywhere;
+}
+
+.assign {
+  display: flex;
+  gap: 8px;
+}
+
+.select {
+  flex: 1;
+  min-width: 0;
+  min-height: 44px;
+  padding: 0 12px;
+  border: 1.5px solid var(--field);
+  background: #ffffff;
+  color: var(--ink);
+  font: inherit;
+  font-size: 14px;
+}
+
+/* Lo que la API objetó de una fila al enviar (un 422), con el estilo de error de los campos. */
+.list > li[data-api-problem="true"] {
+  border-left-color: var(--err);
+}
+
+.apiProblems {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* Vacía queda fuera del flujo: no suma espacio a la tarjeta, pero la región sigue en la página. */
+.apiProblems:empty {
+  position: absolute;
+}
+
+.card > .apiProblems {
+  grid-column: 1 / -1;
+}
+
+.apiProblem {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 0;
+  font-size: 13px;
+  line-height: 19px;
+  color: var(--err);
+}
+
+.apiProblem > svg {
+  flex: none;
+  margin-top: 1px;
+}
+
+/* Botones de las tarjetas. */
+.textButton {
+  flex: none;
+  min-height: 44px;
+  padding: 0 14px;
+  border: 1.5px solid var(--field);
+  background: #ffffff;
+  color: var(--ink);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.primaryButton {
+  min-height: 44px;
+  padding: 0 14px;
+  border: 0;
+  background: var(--teal-600);
+  color: #ffffff;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.primaryButton:hover {
+  background: var(--teal-700);
+}
+
+.removeIcon:hover,
+.textButton:hover {
+  background: var(--surface);
+}
+
+/* El campo de archivos: oculto a la vista, pero con foco de teclado; su etiqueta muestra el foco. */
+.fileInput {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  opacity: 0;
+}
+
+/* "+ Agregar otra factura · XML, PDF o .zip". */
+.addZone {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-height: 56px;
+  padding: 8px 20px;
+  border: 1.5px dashed var(--teal-600);
+  background: var(--surface);
+  color: var(--teal-700);
+  font-size: 16px;
+  font-weight: 700;
+  text-align: center;
+  cursor: pointer;
+}
+
+.addZone:hover,
+.emptyZone:hover {
+  background: var(--teal-100);
+}
+
+.addHint {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--muted);
+}
+
+/* Lista vacía: el área grande del tablero 3. */
+.emptyZone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 36px 24px;
+  border: 2px dashed var(--teal);
+  background: var(--surface);
+  text-align: center;
+  cursor: pointer;
+}
+
+.emptyIcon {
+  width: 52px;
+  height: 52px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--teal-600);
+  color: #ffffff;
+}
+
+.emptyTitle {
+  font-size: 17px;
+  line-height: 23px;
+  font-weight: 800;
+}
+
+.emptyButton {
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 18px;
+  border: 1.5px solid var(--teal-600);
+  background: #ffffff;
+  color: var(--teal-700);
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.emptyHint {
+  font-size: 13px;
+  line-height: 19px;
+  color: var(--muted);
+}
+
+/* El foco del campo oculto se ve en su etiqueta (Main.dc.html: .dropzone:focus-within). */
+.fileInput:focus-visible + .addZone,
+.fileInput:focus-visible + .emptyZone {
+  outline: 3px solid var(--teal-700);
+  outline-offset: 3px;
+}
+
+/* Arrastrando sobre la lista (tablero 6). */
+.dropOverlay {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  padding: 36px 20px;
+  border: 2px solid var(--teal-600);
+  background: var(--teal-200);
+  text-align: center;
+  pointer-events: none;
+}
+
+/* Con una lista larga, el mensaje acompaña a la pantalla en vez de quedar en el medio de la lista. */
+.dropMessage {
+  position: sticky;
+  top: calc(50vh - 70px);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
+
+.dropIcon {
+  width: 56px;
+  height: 56px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--teal-700);
+  color: #ffffff;
+}
+
+.dropTitle {
+  font-size: 19px;
+  font-weight: 900;
+  color: var(--teal-900);
+}
+
+.dropCount {
+  font-size: 14px;
+  color: var(--teal-800);
+}
+
+.hiddenInput {
+  display: none;
+}
+
+/* "¿No encuentras el XML?" y, en móvil, "Envíate este enlace". */
+.help {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 14px;
+  line-height: 21px;
+  color: var(--muted);
+}
+
+.helpLine {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+  padding: 0 2px;
+}
+
+.helpIcon {
+  flex: none;
+  color: var(--teal-700);
+}
+
+.strongLink {
+  font-weight: 700;
+}
+
+/* El número de WhatsApp no se parte entre dos líneas. */
+.phone {
+  white-space: nowrap;
+}
+
+.shareLine {
+  display: none;
+  margin: 0;
+}
+
+/* Emisor leído de los XML y qué es el neto pendiente. */
+.issuer {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 14px;
+  line-height: 21px;
+}
+
+.issuerLine {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  color: var(--teal-800);
+  font-weight: 600;
+}
+
+.netNote {
+  margin: 0;
+  color: var(--muted);
+}
+
+/* Cavali. */
+.cavali {
+  min-width: 0;
+  margin: 0;
+  padding: 18px 0 0;
+  border: 0;
+  border-top: 1.5px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.cavaliLegend {
+  float: left;
+  width: 100%;
+  padding: 0;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.cavaliOptions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.cavaliOption {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 110px;
+  min-height: 48px;
+  padding: 0 16px;
+  border: 1.5px solid var(--field);
+  background: #ffffff;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+/* Elegida: borde de 2 px (el de 1,5 px más medio píxel por dentro), sin mover el texto. */
+.cavaliOption[data-checked="true"] {
+  border-color: var(--teal-600);
+  box-shadow: inset 0 0 0 0.5px var(--teal-600);
+  background: var(--teal-100);
+}
+
+.cavali[data-invalid="true"] .cavaliOption:not([data-checked="true"]) {
+  border-color: var(--err);
+}
+
+/* El radio cubre toda la opción: un clic en cualquier parte lo marca. */
+.cavaliRadio {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.cavaliOption:has(.cavaliRadio:focus-visible) {
+  outline: 2px solid var(--teal-600);
+  outline-offset: 2px;
+}
+
+.cavaliDot {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1.5px solid var(--field);
+  background: #ffffff;
+  color: #ffffff;
+}
+
+.cavaliOption[data-checked="true"] .cavaliDot {
+  border-color: var(--teal-600);
+  background: var(--teal-600);
+}
+
+.cavaliHelp {
+  margin: 0;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--muted);
+}
+
+.fieldError {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  font-size: 13px;
+  color: var(--err);
+}
+
+/* "Quitaste F001-… · Deshacer" (tablero 3): abajo al centro, 8 segundos. */
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  z-index: 30;
+  transform: translateX(-50%);
+  width: max-content;
+  max-width: calc(100% - 32px);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 8px 6px 18px;
+  background: var(--teal-900);
+  color: #ffffff;
+  font-size: 15px;
+  box-shadow: 0 16px 30px -16px rgba(7, 52, 50, 0.6);
+}
+
+.undoButton {
+  flex: none;
+  min-height: 44px;
+  padding: 0 14px;
+  border: 0;
+  background: transparent;
+  color: var(--teal-200);
+  font: inherit;
+  font-size: 15px;
+  font-weight: 800;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+
+.undoButton:focus-visible {
+  outline-color: #ffffff;
+}
+
+@media (max-width: 767px) {
+  .desktopOnly,
+  .addHint,
+  .helpIcon {
+    display: none;
+  }
+
+  .fromCalculator {
+    align-items: flex-start;
+    gap: 8px;
+    padding: 10px 12px;
+    line-height: 20px;
+  }
+
+  .fromCalculator .noticeIcon,
+  .issuerLine .noticeIcon {
+    margin-top: 2px;
+  }
+
+  /* La X comparte el área del encabezado (MobileForm.dc.html): así "Neto pendiente" y "Vence" se
+     reparten todo el ancho de la tarjeta. */
+  .card {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-areas:
+      "head head"
+      "checks checks"
+      "net due"
+      "footer footer";
+    column-gap: 12px;
+    padding: 16px;
+  }
+
+  .cardHead {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+    padding-right: 56px;
+  }
+
+  .removeIcon {
+    grid-area: head;
+  }
+
+  .cardTags {
+    gap: 8px;
+  }
+
+  .number {
+    font-size: 17px;
+  }
+
+  .readyBadge {
+    padding: 3px 8px;
+  }
+
+  .installments {
+    font-size: 13px;
+  }
+
+  .checks {
+    line-height: 19px;
+  }
+
+  .factValue {
+    font-size: 16px;
+  }
+
+  /* Si no entran en una línea, "Agregar PDF (opcional)" baja a la derecha sin partir los textos. */
+  .cardFooter {
+    grid-area: footer;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    column-gap: 12px;
+    padding-top: 8px;
+    border-top: 1px solid var(--line);
+  }
+
+  .factFiles .factLabel {
+    display: none;
+  }
+
+  .filesValue {
+    font-size: 14px;
+    white-space: nowrap;
+  }
+
+  .pdfButton {
+    margin-left: auto;
+    padding: 0 4px;
+    white-space: nowrap;
+  }
+
+  .assign {
+    flex-wrap: wrap;
+  }
+
+  .addZone {
+    gap: 8px;
+    padding: 8px 14px;
+  }
+
+  .emptyZone {
+    padding: 26px 18px;
+  }
+
+  .helpLine {
+    padding: 0;
+  }
+
+  .shareLine {
+    display: block;
+  }
+
+  .issuerLine {
+    align-items: flex-start;
+  }
+
+  .cavali {
+    padding-top: 16px;
+  }
+
+  .cavaliOptions {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .cavaliOption {
+    justify-content: center;
+    min-width: 0;
+    padding: 0 8px;
+  }
+
+  .toast {
+    bottom: 16px;
+    width: calc(100% - 32px);
+  }
+}
+```
+
+`apps/landing/src/islands/request-form/invoices/CavaliField.tsx`:
+```tsx
+import {
+  CAVALI_REGISTRATION,
+  CAVALI_REGISTRATION_LABELS,
+  type CavaliRegistration,
+} from '@anticipate/shared/advance-request'
+import { useId } from 'react'
+import styles from './Invoices.module.css'
+import { CheckIcon, ErrorIcon } from './icons'
+
+/** `id` del grupo: el resumen de errores de la Tarea 10 enlaza aquí. */
+export const CAVALI_FIELD_ID = 'cavali'
+
+export type CavaliFieldProps = {
+  value: CavaliRegistration | null
+  onChange: (value: CavaliRegistration) => void
+  /** Error del campo (lo llena la validación de la Tarea 10). */
+  error?: string | undefined
+}
+
+/**
+ * "¿Tus facturas ya están registradas en Cavali?" con Sí, No y No sé (`CAVALI_REGISTRATION_LABELS`).
+ * Radios nativos dentro de etiquetas con la forma del diseño: las flechas del teclado cambian la
+ * opción sin código propio. La ayuda tiene su versión de escritorio y la corta de móvil.
+ */
+export default function CavaliField({ value, onChange, error }: CavaliFieldProps) {
+  const id = useId()
+  const helpId = `${id}-ayuda`
+  const errorId = `${id}-error`
+  const invalid = error !== undefined && error !== ''
+  return (
+    <fieldset
+      id={CAVALI_FIELD_ID}
+      className={styles.cavali}
+      aria-describedby={invalid ? `${helpId} ${errorId}` : helpId}
+      data-invalid={invalid}
+    >
+      <legend className={styles.cavaliLegend}>¿Tus facturas ya están registradas en Cavali?</legend>
+      <div className={styles.cavaliOptions}>
+        {CAVALI_REGISTRATION.map((option) => (
+          <label key={option} className={styles.cavaliOption} data-checked={option === value}>
+            <input
+              className={styles.cavaliRadio}
+              type="radio"
+              name={`${id}-cavali`}
+              value={option}
+              checked={option === value}
+              aria-invalid={invalid ? true : undefined}
+              onChange={() => onChange(option)}
+            />
+            <span className={styles.cavaliDot} aria-hidden="true">
+              <CheckIcon size={10} />
+            </span>
+            {CAVALI_REGISTRATION_LABELS[option]}
+          </label>
+        ))}
+      </div>
+      <p id={helpId} className={styles.cavaliHelp}>
+        Cavali es la entidad donde se registran las facturas negociables en el Perú. Si no lo sabes,
+        marca «No sé»<span className={styles.desktopOnly}>: lo revisamos contigo</span>.
+      </p>
+      {invalid && (
+        <p id={errorId} className={styles.fieldError}>
+          <ErrorIcon />
+          {error}
+        </p>
+      )}
+    </fieldset>
+  )
+}
+```
+
+Run: `ASTRO_TELEMETRY_DISABLED=1 pnpm --filter @anticipate/landing exec vitest run src/islands/request-form/invoices/CavaliField.test.tsx`
+Expected: PASS, 3 tests.
+
+- [ ] **Step 12: Escribir los tests de la isla y del paso**
+
+Testing Library con `user-event` y el almacén real: en jsdom no hay `Worker`, así que el almacén lee en el hilo principal con el lector de shared, como en `Calculator.test.tsx`. `bring` agrega lecturas al almacén por fuera del formulario, como la calculadora o el borrador. El test de "Deshacer" falsea también `setTimeout` y hace los clics con `fireEvent`: con ese reloj, la espera interna de `user-event` (un `setTimeout` de Testing Library) no avanzaría. El arrastre usa `fireEvent` con un `dataTransfer` armado a mano, porque jsdom no trae `DataTransfer`. Las condiciones vivas reemplazan el `fetch` global con `vi.stubGlobal` y responden con `Response.json` y el sobre de `successEnvelope`. `InvoicesStep.test.tsx` monta el paso solo, con el almacén real, para lo que le pasan el envío (`apiProblems`) y el borrador (`restoredIds`), y para el `reset` del almacén.
+
+`apps/landing/src/islands/request-form/RequestForm.test.tsx`:
+```tsx
+import type { IntakeLimits } from '@anticipate/shared/api'
+import { supplierGreeting, whatsappUrl } from '@anticipate/shared/company'
+import type { PublicPayer } from '@anticipate/shared/payer'
+import { buildCdrXml, buildInvoiceXml, type TestXmlOptions } from '@anticipate/shared/testing'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import { hydrateRoot } from 'react-dom/client'
+import { renderToString } from 'react-dom/server'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { viewIntake } from '../../lib/intake/intake-state'
+import { readXmlBytes } from '../../lib/intake/read-intake-file'
+import type { FileReading } from '../../lib/intake/types'
+import type { IslandConfig } from '../../lib/island-config'
+import { intakeStore } from '../../lib/store/intake-store'
+import { successEnvelope } from '../../test/fake-api'
+import RequestForm from './RequestForm'
+
+const MiB = 1024 * 1024
+const SEA: PublicPayer = {
+  slug: 'sea',
+  ruc: '20131312955',
+  legalName: 'SERVICIOS ENERGETICOS AMBIENTALES S.R.L. - SEA S.R.L.',
+  shortName: 'SEA',
+  advancePercent: 85,
+  minTermDays: 15,
+  maxInvoices: 10,
+  allowedCurrencies: ['PEN', 'USD'],
+  accentColor: '#0E7C86',
+  logoUrl: null,
+  texts: {},
+}
+const LIMITS: IntakeLimits = {
+  maxFiles: 20,
+  maxXmlBytes: MiB,
+  maxPdfBytes: 10 * MiB,
+  maxBodyBytes: 95_000_000,
+}
+
+/** Con `apiBaseUrl` vacío (el modo demostración) la isla no pide nada a la API. */
+const configFor = (
+  payer: PublicPayer = SEA,
+  limits: IntakeLimits = LIMITS,
+  apiBaseUrl = '',
+): IslandConfig => ({
+  payer,
+  intakeLimits: limits,
+  legal: {
+    termsVersion: '2026-09',
+    termsUrl: 'https://anticipate.pe/terminos',
+    privacyVersion: '2026-09',
+    privacyUrl: 'https://anticipate.pe/privacidad',
+  },
+  apiBaseUrl,
+  turnstileSiteKey: '1x00000000000000000000AA',
+  siteUrl: 'https://factoring.example.pe',
+  pageUrl: 'https://factoring.example.pe/sea',
+})
+
+const encoder = new TextEncoder()
+const PDF_CONTENT = '%PDF-1.7\n%prueba\n'
+
+/** Una factura al crédito con su neto en la primera cuota y un céntimo en cada una de las demás. */
+const credit = (
+  seriesNumber: string,
+  net: string,
+  dueDates: string[],
+  extra: TestXmlOptions = {},
+): TestXmlOptions => ({
+  seriesNumber,
+  total: net,
+  netPendingAmount: net,
+  detraction: null,
+  installments: dueDates.map((dueDate, index) => ({
+    id: `Cuota00${index + 1}`,
+    amount: index === 0 ? net : '0.01',
+    dueDate,
+  })),
+  ...extra,
+})
+
+const xmlFile = (name: string, options: TestXmlOptions): File =>
+  new File([buildInvoiceXml(options)], name, { type: 'text/xml' })
+
+const pdfFile = (name: string): File => new File([PDF_CONTENT], name, { type: 'application/pdf' })
+
+/** Un XML ya leído, como lo deja el lector en el almacén. */
+const reading = (name: string, options: TestXmlOptions): FileReading =>
+  readXmlBytes(name, encoder.encode(buildInvoiceXml(options)), LIMITS.maxXmlBytes)
+
+const pdfReading = (name: string): FileReading => {
+  const bytes = encoder.encode(PDF_CONTENT)
+  return { kind: 'pdf', name, size: bytes.byteLength, bytes: bytes.buffer }
+}
+
+const API_BASE_URL = 'https://api.anticipate.test'
+
+/** `fetch` de la página respondiendo como la API: los pagadores y los topes de hoy. */
+function stubApi(payers: PublicPayer[], limits: IntakeLimits) {
+  const fetchMock = vi.fn<typeof fetch>(async (input) =>
+    Response.json(
+      successEnvelope(new URL(String(input)).pathname === '/api/v1/payers' ? payers : limits),
+    ),
+  )
+  vi.stubGlobal('fetch', fetchMock)
+  return fetchMock
+}
+
+/** Deja correr las promesas pendientes (la lectura de las condiciones vivas). */
+async function settle(): Promise<void> {
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0))
+  })
+}
+
+/** Facturas que llegan al almacén por fuera del formulario, como las de la calculadora. */
+function bring(readings: FileReading[]): void {
+  act(() => {
+    intakeStore.dispatch({ type: 'add', readings })
+  })
+}
+
+/** El paso 01: su nombre accesible es su legend. */
+const step = () => screen.getByRole('group', { name: /^01 · Tus facturas a SEA/ })
+
+/** La fila de la lista del paso 01 que muestra ese texto. */
+function rowWith(text: string): HTMLElement {
+  const row = within(step())
+    .getAllByRole('listitem')
+    .find((item) => item.textContent?.includes(text))
+  if (row === undefined) throw new Error(`No hay una fila con «${text}».`)
+  return row
+}
+
+/** La región `role="status"` que muestra ese texto. */
+function statusWith(text: string): HTMLElement {
+  const region = screen
+    .getAllByRole('status')
+    .find((element) => element.textContent?.includes(text))
+  if (region === undefined) throw new Error(`No hay un aviso con «${text}».`)
+  return region
+}
+
+const maxBox = () => screen.getByText('Adelanto máximo').parentElement
+
+/**
+ * El campo oculto de "Agregar PDF (opcional)" y "Reemplazar archivo": el único campo de archivos del
+ * paso que no acepta .zip. No tiene nombre accesible (está fuera del árbol de accesibilidad).
+ */
+function secondaryInput(): HTMLInputElement {
+  const input = step().querySelector<HTMLInputElement>('input[type="file"]:not([accept*=".zip"])')
+  if (input === null) throw new Error('No está el campo de archivos secundario.')
+  return input
+}
+
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ['Date'] })
+  // 26/09/2026 a las 10:00 en Lima.
+  vi.setSystemTime(new Date('2026-09-26T15:00:00Z'))
+})
+
+afterEach(() => {
+  cleanup()
+  intakeStore.dispatch({ type: 'reset' })
+  vi.useRealTimers()
+  vi.unstubAllGlobals()
+})
+
+describe('RequestForm: columna izquierda, montaje e hidratación', () => {
+  it('dibuja la columna izquierda y el paso 01 vacío, con un solo selector que acepta .zip', () => {
+    render(<RequestForm config={configFor()} />)
+    expect(
+      screen.getByRole('heading', { level: 2, name: 'Solicita tu adelanto' }),
+    ).toBeInTheDocument()
+    expect(screen.getByText('Solicitud')).toBeInTheDocument()
+    expect(
+      screen.getByText(
+        'Empieza por tus facturas: con ellas sabemos quién las emite y cuánto puedes recibir.',
+      ),
+    ).toBeInTheDocument()
+    expect(screen.getByText('Toma unos 5 minutos.')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Escríbenos por WhatsApp' })).toHaveAttribute(
+      'href',
+      whatsappUrl(supplierGreeting('SEA')),
+    )
+    expect(screen.queryByText('Adelanto máximo')).not.toBeInTheDocument()
+
+    const fieldset = step()
+    expect(fieldset.tagName).toBe('FIELDSET')
+    expect(fieldset).toHaveAttribute('id', 'paso-facturas')
+    expect(fieldset.querySelector('legend')).toHaveTextContent(
+      '01 · Tus facturas a SEA Al crédito y con 15 días o más al vencimiento',
+    )
+    const zipInputs = fieldset.querySelectorAll('input[type="file"][accept*=".zip"]')
+    expect(zipInputs).toHaveLength(1)
+    expect(screen.getByLabelText('Elegir archivos')).toBe(zipInputs[0])
+    expect(screen.getByLabelText('Elegir archivos')).toHaveAttribute('multiple')
+    expect(
+      screen.getByText('También un .zip con varios. XML hasta 1 MB, PDF hasta 10 MB.'),
+    ).toBeInTheDocument()
+    expect(fieldset.querySelectorAll('input[type="file"]')).toHaveLength(2)
+    expect(secondaryInput()).toHaveAttribute('tabindex', '-1')
+    expect(within(fieldset).queryByRole('list')).not.toBeInTheDocument()
+    expect(
+      within(fieldset).getByRole('group', {
+        name: '¿Tus facturas ya están registradas en Cavali?',
+      }),
+    ).toBeInTheDocument()
+  })
+
+  it('configura el almacén con el pagador, sus topes y el día de hoy en Lima', () => {
+    const payer = { ...SEA, maxInvoices: 4 }
+    const limits = { ...LIMITS, maxFiles: 12 }
+    render(<RequestForm config={configFor(payer, limits)} />)
+    expect(intakeStore.context()).toEqual({ payer, limits, today: '2026-09-26' })
+  })
+
+  it('en el HTML del servidor el paso 01 sale deshabilitado y al hidratar se habilita', async () => {
+    const container = document.createElement('div')
+    container.innerHTML = renderToString(<RequestForm config={configFor()} />)
+    document.body.append(container)
+    expect(container.querySelector('form')).toHaveAttribute('aria-busy', 'true')
+    expect(container.querySelector('form')).toHaveAttribute('novalidate')
+    expect(container.querySelector('#paso-facturas')).toBeDisabled()
+
+    const onRecoverableError = vi.fn()
+    const root = await act(async () =>
+      hydrateRoot(container, <RequestForm config={configFor()} />, { onRecoverableError }),
+    )
+    expect(container.querySelector('#paso-facturas')).toBeEnabled()
+    expect(container.querySelector('form')).not.toHaveAttribute('aria-busy')
+    expect(onRecoverableError).not.toHaveBeenCalled()
+    act(() => root.unmount())
+    container.remove()
+  })
+})
+
+describe('RequestForm: condiciones vivas de la API (D62)', () => {
+  it('fuera del modo demostración usa las condiciones y los topes que publica hoy la API', async () => {
+    const livePayer = { ...SEA, minTermDays: 20, maxInvoices: 4 }
+    const liveLimits = { ...LIMITS, maxFiles: 12, maxPdfBytes: 5 * MiB }
+    const fetchMock = stubApi([livePayer], liveLimits)
+    render(<RequestForm config={configFor(SEA, LIMITS, API_BASE_URL)} />)
+    expect(step()).toHaveTextContent('Al crédito y con 15 días o más al vencimiento')
+
+    await waitFor(() =>
+      expect(step()).toHaveTextContent('Al crédito y con 20 días o más al vencimiento'),
+    )
+    expect(
+      screen.getByText('También un .zip con varios. XML hasta 1 MB, PDF hasta 5 MB.'),
+    ).toBeInTheDocument()
+    expect(intakeStore.context()).toEqual({
+      payer: livePayer,
+      limits: liveLimits,
+      today: '2026-09-26',
+    })
+    expect(fetchMock.mock.calls.map(([input, init]) => [String(input), init?.cache])).toEqual([
+      [`${API_BASE_URL}/api/v1/payers`, 'no-store'],
+      [`${API_BASE_URL}/api/v1/intake-limits`, 'no-store'],
+    ])
+    bring([reading('F001-00001234.xml', credit('F001-00001234', '12450.00', ['2026-11-30']))])
+    expect(
+      screen.getByText('Trajimos tu factura de la calculadora. Puedes agregar más, hasta 4.'),
+    ).toBeInTheDocument()
+  })
+
+  it('si el pagador ya no está en la API, sigue con los datos del build sin avisar', async () => {
+    const fetchMock = stubApi([{ ...SEA, slug: 'otro', minTermDays: 20 }], LIMITS)
+    render(<RequestForm config={configFor(SEA, LIMITS, API_BASE_URL)} />)
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
+    await settle()
+    expect(step()).toHaveTextContent('Al crédito y con 15 días o más al vencimiento')
+    expect(intakeStore.context()?.payer).toEqual(SEA)
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('en modo demostración no pide nada a la API', async () => {
+    const fetchMock = stubApi([SEA], LIMITS)
+    render(<RequestForm config={configFor()} />)
+    await settle()
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(intakeStore.context()?.payer).toEqual(SEA)
+  })
+})
+
+describe('RequestForm: la lista del paso 01', () => {
+  it('lee los XML elegidos y muestra cada factura, el emisor y el adelanto máximo', async () => {
+    const user = userEvent.setup()
+    render(<RequestForm config={configFor()} />)
+    await user.upload(screen.getByLabelText('Elegir archivos'), [
+      xmlFile('F001-00001234.xml', credit('F001-00001234', '12450.00', ['2026-11-30'])),
+      xmlFile(
+        'F001-00001240.xml',
+        credit('F001-00001240', '8300.00', ['2026-11-30', '2026-12-20']),
+      ),
+    ])
+    await waitFor(() => expect(within(step()).getAllByRole('listitem')).toHaveLength(2))
+
+    const first = rowWith('F001-00001234')
+    expect(first).toHaveTextContent('Lista')
+    expect(first).toHaveTextContent('1 cuota')
+    expect(first).toHaveTextContent('✓ Emitida a SEA · ✓ Al crédito · ✓ Vence en 65 días')
+    expect(first).toHaveTextContent('Neto pendiente')
+    expect(first).toHaveTextContent('S/ 12,450.00')
+    expect(first).toHaveTextContent('30/11/2026')
+    expect(first).toHaveTextContent('XML ✓ · PDF opcional')
+    expect(
+      within(first).getByRole('button', { name: 'Quitar factura F001-00001234' }),
+    ).toBeInTheDocument()
+    expect(
+      within(first).getByRole('button', { name: 'Agregar PDF (opcional) a F001-00001234' }),
+    ).toHaveTextContent('Agregar PDF (opcional)')
+    expect(rowWith('F001-00001240')).toHaveTextContent('2 cuotas')
+    expect(rowWith('F001-00001240')).toHaveTextContent('20/12/2026')
+
+    expect(screen.getByText('2 facturas listas para enviar.')).toBeInTheDocument()
+    expect(
+      screen.getByText('Emisor: PROVEEDOR EJEMPLO S.A.C. · RUC 20100070970 · leído de tus XML'),
+    ).toBeInTheDocument()
+    expect(
+      screen.getByText(
+        'Neto pendiente: el total de la factura menos detracción y retención; lo que SEA te va a pagar.',
+      ),
+    ).toBeInTheDocument()
+    expect(maxBox()).toHaveTextContent('Adelanto máximo S/ 17,637.50')
+    expect(screen.getByLabelText('Agregar otra factura')).toHaveAttribute('type', 'file')
+    expect(screen.queryByText(/^Trajimos/)).not.toBeInTheDocument()
+  })
+
+  it('avisa las facturas que trajo la calculadora, no las que agrega el formulario', async () => {
+    const user = userEvent.setup()
+    render(<RequestForm config={configFor()} />)
+    bring([
+      reading('F001-00001234.xml', credit('F001-00001234', '12450.00', ['2026-11-30'])),
+      reading('F001-00001240.xml', credit('F001-00001240', '8300.00', ['2026-11-30'])),
+    ])
+    const notice = 'Trajimos tus 2 facturas de la calculadora. Puedes agregar más, hasta 10.'
+    expect(screen.getByText(notice)).toBeInTheDocument()
+
+    await user.upload(screen.getByLabelText('Agregar otra factura'), [
+      xmlFile('F001-00001250.xml', credit('F001-00001250', '5000.00', ['2026-11-30'])),
+    ])
+    await waitFor(() => expect(within(step()).getAllByRole('listitem')).toHaveLength(3))
+    await waitFor(() => expect(screen.getByText(notice)).toBeInTheDocument())
+    expect(screen.queryByText(/^Trajimos tus 3/)).not.toBeInTheDocument()
+  })
+
+  it('marca sin bloquear lo que no se puede adelantar, lo que no se pudo leer y el PDF sin factura', async () => {
+    const user = userEvent.setup()
+    render(<RequestForm config={configFor()} />)
+    await user.upload(screen.getByLabelText('Elegir archivos'), [
+      xmlFile('F001-00001234.xml', credit('F001-00001234', '12450.00', ['2026-11-30'])),
+      xmlFile('F001-00001251.xml', credit('F001-00001251', '4100.00', ['2026-10-05'])),
+      new File([buildCdrXml()], 'factura-marzo.xml', { type: 'text/xml' }),
+      pdfFile('escaneo.pdf'),
+    ])
+    await waitFor(() => expect(within(step()).getAllByRole('listitem')).toHaveLength(4))
+
+    const short = rowWith('F001-00001251')
+    expect(short).toHaveTextContent('No se puede adelantar')
+    expect(short).toHaveTextContent(
+      'Vence el 05/10/2026, en 9 días. Para adelantarla deben faltar al menos 15 días.',
+    )
+    expect(short).toHaveTextContent('No se enviará · no suma al total')
+    expect(
+      within(short).getByRole('button', { name: 'Quitar F001-00001251 de la lista' }),
+    ).toHaveTextContent('Quitar')
+
+    const cdr = rowWith('factura-marzo.xml')
+    expect(cdr).toHaveTextContent('No se pudo leer')
+    expect(cdr).toHaveTextContent('Parece la constancia de recepción (CDR), no la factura.')
+    expect(
+      within(cdr).getByRole('button', { name: 'Reemplazar archivo factura-marzo.xml' }),
+    ).toHaveTextContent('Reemplazar archivo')
+    expect(
+      within(cdr).getByRole('button', { name: 'Quitar factura-marzo.xml' }),
+    ).toBeInTheDocument()
+
+    const loose = rowWith('escaneo.pdf')
+    expect(loose).toHaveTextContent('¿De qué factura es?')
+    expect(loose).toHaveTextContent(
+      'No se llama igual que ningún XML. Si no eliges su factura, no lo enviamos; el PDF es opcional.',
+    )
+    const select = within(loose).getByRole('combobox', {
+      name: '¿De qué factura es escaneo.pdf?',
+    })
+    expect(
+      within(select)
+        .getAllByRole('option')
+        .map((option) => option.textContent),
+    ).toEqual(['Elige la factura', 'F001-00001234'])
+
+    expect(statusWith('1 factura lista para enviar.')).toHaveTextContent(
+      '1 factura lista para enviar. 2 no se enviarán: te decimos por qué abajo.',
+    )
+
+    await user.selectOptions(select, 'F001-00001234')
+    expect(rowWith('F001-00001234')).toHaveTextContent('XML ✓ · PDF ✓')
+    expect(within(step()).getAllByRole('listitem')).toHaveLength(3)
+    expect(screen.queryByText('escaneo.pdf')).not.toBeInTheDocument()
+  })
+
+  it('quitar muestra «Quitaste …» con Deshacer durante 8 segundos, y Deshacer la devuelve', () => {
+    // Con el temporizador falso, los clics van con fireEvent: la espera interna de user-event
+    // (un setTimeout de Testing Library) no avanzaría.
+    vi.useRealTimers()
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] })
+    vi.setSystemTime(new Date('2026-09-26T15:00:00Z'))
+    render(<RequestForm config={configFor()} />)
+    bring([
+      reading('F001-00001234.xml', credit('F001-00001234', '12450.00', ['2026-11-30'])),
+      reading('F001-00001240.xml', credit('F001-00001240', '8300.00', ['2026-11-30'])),
+    ])
+
+    fireEvent.click(screen.getByRole('button', { name: 'Quitar factura F001-00001240' }))
+    const toast = statusWith('Quitaste F001-00001240')
+    expect(within(toast).getByRole('button', { name: 'Deshacer' })).toHaveFocus()
+    expect(within(step()).getAllByRole('listitem')).toHaveLength(1)
+    act(() => {
+      vi.advanceTimersByTime(7999)
+    })
+    expect(screen.getByText('Quitaste F001-00001240')).toBeInTheDocument()
+    act(() => {
+      vi.advanceTimersByTime(1)
+    })
+    expect(screen.queryByText('Quitaste F001-00001240')).not.toBeInTheDocument()
+    expect(screen.getByLabelText('Agregar otra factura')).toHaveFocus()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Quitar factura F001-00001234' }))
+    expect(within(step()).queryByRole('listitem')).not.toBeInTheDocument()
+    fireEvent.click(
+      within(statusWith('Quitaste F001-00001234')).getByRole('button', { name: 'Deshacer' }),
+    )
+    const [restored] = within(step()).getAllByRole('listitem')
+    expect(restored).toHaveTextContent('F001-00001234')
+    expect(restored).toHaveFocus()
+    expect(screen.queryByText(/^Quitaste/)).not.toBeInTheDocument()
+  })
+
+  it('elegir otro grupo cambia el total y el máximo del paso 01', async () => {
+    const user = userEvent.setup()
+    render(<RequestForm config={configFor()} />)
+    bring([
+      reading('F001-00001234.xml', credit('F001-00001234', '20750.00', ['2026-11-30'])),
+      reading(
+        'F001-00001300.xml',
+        credit('F001-00001300', '3200.00', ['2026-11-30'], { currency: 'USD' }),
+      ),
+    ])
+    expect(screen.getByText('Subiste facturas en soles y en dólares')).toBeInTheDocument()
+    const soles = screen.getByRole('button', { name: /^1 en soles/ })
+    const dollars = screen.getByRole('button', { name: /^1 en dólares/ })
+    expect(soles).toHaveAccessibleName('1 en soles S/ 20,750.00')
+    expect(dollars).toHaveAccessibleName('1 en dólares US$ 3,200.00')
+    expect(soles).toHaveAttribute('aria-pressed', 'true')
+    expect(dollars).toHaveAttribute('aria-pressed', 'false')
+    expect(maxBox()).toHaveTextContent('S/ 17,637.50')
+    expect(rowWith('F001-00001300')).toHaveTextContent('Está en dólares y va en otra solicitud.')
+
+    await user.click(dollars)
+
+    expect(dollars).toHaveAttribute('aria-pressed', 'true')
+    expect(soles).toHaveAttribute('aria-pressed', 'false')
+    expect(maxBox()).toHaveTextContent('US$ 2,720.00')
+    expect(rowWith('F001-00001300')).toHaveTextContent('Lista')
+    expect(rowWith('F001-00001234')).toHaveTextContent('Está en soles y va en otra solicitud.')
+    const context = intakeStore.context()
+    if (context === null) throw new Error('El almacén no quedó configurado.')
+    expect(viewIntake(intakeStore.getSnapshot(), context).submission).toMatchObject({
+      currency: 'USD',
+      netPendingTotal: '3200.00',
+      maxAdvance: '2720.00',
+      invoiceNumbers: ['F001-00001300'],
+    })
+  })
+
+  it('Agregar PDF (opcional) lee el PDF con el nombre de su XML y la factura pasa a PDF ✓', async () => {
+    const user = userEvent.setup()
+    render(<RequestForm config={configFor()} />)
+    bring([reading('F001-00001234.xml', credit('F001-00001234', '12450.00', ['2026-11-30']))])
+
+    await user.click(screen.getByRole('button', { name: 'Agregar PDF (opcional) a F001-00001234' }))
+    const secondary = secondaryInput()
+    expect(secondary).toHaveAttribute('accept', '.pdf,application/pdf')
+    await user.upload(secondary, pdfFile('escaneo de la factura.pdf'))
+
+    await waitFor(() => expect(rowWith('F001-00001234')).toHaveTextContent('XML ✓ · PDF ✓'))
+    expect(within(step()).getAllByRole('listitem')).toHaveLength(1)
+    expect(intakeStore.getSnapshot().entries.map((entry) => entry.name)).toEqual([
+      'F001-00001234.xml',
+      'F001-00001234.pdf',
+    ])
+    expect(screen.queryByRole('button', { name: /Agregar PDF/ })).not.toBeInTheDocument()
+  })
+
+  it('Reemplazar archivo cambia el archivo que no se pudo leer por el nuevo', async () => {
+    const user = userEvent.setup()
+    render(<RequestForm config={configFor()} />)
+    bring([readXmlBytes('factura-marzo.xml', encoder.encode(buildCdrXml()), LIMITS.maxXmlBytes)])
+    expect(
+      screen.getByText('Trajimos tu factura de la calculadora. Puedes agregar más, hasta 10.'),
+    ).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Reemplazar archivo factura-marzo.xml' }))
+    const secondary = secondaryInput()
+    expect(secondary).toHaveAttribute('accept', '.xml,text/xml,application/xml')
+    await user.upload(
+      secondary,
+      xmlFile('F001-00001234.xml', credit('F001-00001234', '12450.00', ['2026-11-30'])),
+    )
+
+    await waitFor(() => expect(rowWith('F001-00001234')).toHaveTextContent('Lista'))
+    expect(within(step()).getAllByRole('listitem')).toHaveLength(1)
+    expect(screen.queryByText('factura-marzo.xml')).not.toBeInTheDocument()
+    await waitFor(() => expect(screen.queryByText(/^Trajimos/)).not.toBeInTheDocument())
+  })
+})
+
+describe('RequestForm: topes, arrastre, Cavali y ayuda', () => {
+  it('avisa las facturas que pasan el máximo del pagador', () => {
+    render(<RequestForm config={configFor({ ...SEA, maxInvoices: 2 })} />)
+    bring([
+      reading('F001-00001234.xml', credit('F001-00001234', '12450.00', ['2026-11-30'])),
+      reading('F001-00001240.xml', credit('F001-00001240', '8300.00', ['2026-11-30'])),
+      reading('F001-00001250.xml', credit('F001-00001250', '5000.00', ['2026-11-30'])),
+    ])
+    expect(screen.getByText('Elegiste 3 facturas: agregamos las primeras 2')).toBeInTheDocument()
+    expect(
+      screen.getByText('F001-00001250 no entró. Envíala en otra solicitud cuando termines esta.'),
+    ).toBeInTheDocument()
+    const third = rowWith('F001-00001250')
+    expect(third).toHaveTextContent('No entró')
+    expect(third).toHaveTextContent('Pasa el máximo de 2 facturas por solicitud.')
+    expect(third).toHaveTextContent('No se enviará · no suma al total')
+    expect(screen.getByText('Trajimos tus 3 facturas de la calculadora.')).toBeInTheDocument()
+  })
+
+  it('pide quitar PDF cuando los archivos no entran en una solicitud', () => {
+    render(<RequestForm config={configFor(SEA, { ...LIMITS, maxFiles: 2 })} />)
+    bring([
+      reading('F001-00001234.xml', credit('F001-00001234', '12450.00', ['2026-11-30'])),
+      pdfReading('F001-00001234.pdf'),
+      reading('F001-00001240.xml', credit('F001-00001240', '8300.00', ['2026-11-30'])),
+    ])
+    expect(statusWith('Son más de 2 archivos para una solicitud')).toHaveTextContent(
+      'Quita algunos PDF: son opcionales y tus facturas se envían igual con su XML.',
+    )
+  })
+
+  it('arrastrar y soltar archivos sobre el paso 01 los agrega', async () => {
+    render(<RequestForm config={configFor()} />)
+    const fieldset = step()
+    const files = [
+      xmlFile('F001-00001234.xml', credit('F001-00001234', '12450.00', ['2026-11-30'])),
+    ]
+    const dataTransfer = { types: ['Files'], items: files.map(() => ({ kind: 'file' })), files }
+
+    fireEvent.dragEnter(fieldset, { dataTransfer })
+    expect(screen.getByText('Suelta aquí tus XML, PDF o .zip')).toBeInTheDocument()
+    expect(screen.getByText('1 archivo')).toBeInTheDocument()
+    fireEvent.dragLeave(fieldset, { dataTransfer })
+    expect(screen.queryByText('Suelta aquí tus XML, PDF o .zip')).not.toBeInTheDocument()
+
+    fireEvent.dragEnter(fieldset, { dataTransfer })
+    fireEvent.dragOver(fieldset, { dataTransfer })
+    fireEvent.drop(fieldset, { dataTransfer })
+    expect(screen.queryByText('Suelta aquí tus XML, PDF o .zip')).not.toBeInTheDocument()
+    await waitFor(() => expect(rowWith('F001-00001234')).toHaveTextContent('Lista'))
+  })
+
+  it('Cavali queda marcado con la opción elegida', async () => {
+    const user = userEvent.setup()
+    render(<RequestForm config={configFor()} />)
+    const cavali = screen.getByRole('group', {
+      name: '¿Tus facturas ya están registradas en Cavali?',
+    })
+    await user.click(within(cavali).getByRole('radio', { name: 'No sé' }))
+    expect(within(cavali).getByRole('radio', { name: 'No sé' })).toBeChecked()
+    await user.click(within(cavali).getByRole('radio', { name: 'Sí' }))
+    expect(within(cavali).getByRole('radio', { name: 'Sí' })).toBeChecked()
+    expect(within(cavali).getByRole('radio', { name: 'No sé' })).not.toBeChecked()
+  })
+
+  it('ayuda a encontrar el XML, lleva a WhatsApp y comparte el enlace de la página', async () => {
+    const shareMenu = vi.fn(() => Promise.resolve())
+    vi.stubGlobal('navigator', { ...navigator, share: shareMenu })
+    const user = userEvent.setup()
+    render(<RequestForm config={configFor()} />)
+    expect(screen.getByRole('link', { name: 'Mira dónde encontrarlo' })).toHaveAttribute(
+      'href',
+      '#donde-esta-el-xml',
+    )
+    const whatsapp = screen.getByRole('link', { name: /^escríbenos por WhatsApp/ })
+    expect(whatsapp).toHaveTextContent('escríbenos por WhatsApp al +51 954 180 802')
+    expect(whatsapp).toHaveAttribute('href', whatsappUrl(supplierGreeting('SEA')))
+    expect(whatsapp).toHaveAttribute('target', '_blank')
+    const share = screen.getByRole('link', { name: 'Envíate este enlace' })
+    expect(share.getAttribute('href')).toContain(
+      'mailto:?subject=Adelanta%20tus%20facturas%20a%20SEA',
+    )
+
+    await user.click(share)
+    expect(shareMenu).toHaveBeenCalledWith({
+      title: 'Adelanta tus facturas a SEA',
+      text: 'Abre este enlace en tu computadora para subir los XML de tus facturas:',
+      url: 'https://factoring.example.pe/sea',
+    })
+  })
+})
+```
+
+`apps/landing/src/islands/request-form/steps/InvoicesStep.test.tsx`:
+```tsx
+import type { IntakeLimits } from '@anticipate/shared/api'
+import type { PublicPayer } from '@anticipate/shared/payer'
+import { buildInvoiceXml, type TestXmlOptions } from '@anticipate/shared/testing'
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { readXmlBytes } from '../../../lib/intake/read-intake-file'
+import type { FileReading } from '../../../lib/intake/types'
+import type { IslandConfig } from '../../../lib/island-config'
+import { intakeStore, useIntake } from '../../../lib/store/intake-store'
+import InvoicesStep, { type InvoicesStepProps } from './InvoicesStep'
+
+const MiB = 1024 * 1024
+const SEA: PublicPayer = {
+  slug: 'sea',
+  ruc: '20131312955',
+  legalName: 'SERVICIOS ENERGETICOS AMBIENTALES S.R.L. - SEA S.R.L.',
+  shortName: 'SEA',
+  advancePercent: 85,
+  minTermDays: 15,
+  maxInvoices: 10,
+  allowedCurrencies: ['PEN', 'USD'],
+  accentColor: '#0E7C86',
+  logoUrl: null,
+  texts: {},
+}
+const LIMITS: IntakeLimits = {
+  maxFiles: 20,
+  maxXmlBytes: MiB,
+  maxPdfBytes: 10 * MiB,
+  maxBodyBytes: 95_000_000,
+}
+const CONFIG: IslandConfig = {
+  payer: SEA,
+  intakeLimits: LIMITS,
+  legal: {
+    termsVersion: '2026-09',
+    termsUrl: 'https://anticipate.pe/terminos',
+    privacyVersion: '2026-09',
+    privacyUrl: 'https://anticipate.pe/privacidad',
+  },
+  apiBaseUrl: '',
+  turnstileSiteKey: '1x00000000000000000000AA',
+  siteUrl: 'https://factoring.example.pe',
+  pageUrl: 'https://factoring.example.pe/sea',
+}
+
+const encoder = new TextEncoder()
+
+const reading = (seriesNumber: string, net: string): FileReading => {
+  const options: TestXmlOptions = {
+    seriesNumber,
+    total: net,
+    netPendingAmount: net,
+    detraction: null,
+    installments: [{ id: 'Cuota001', amount: net, dueDate: '2026-11-30' }],
+  }
+  return readXmlBytes(
+    `${seriesNumber}.xml`,
+    encoder.encode(buildInvoiceXml(options)),
+    LIMITS.maxXmlBytes,
+  )
+}
+
+const xmlFile = (seriesNumber: string, net: string): File => {
+  const options: TestXmlOptions = {
+    seriesNumber,
+    total: net,
+    netPendingAmount: net,
+    detraction: null,
+    installments: [{ id: 'Cuota001', amount: net, dueDate: '2026-11-30' }],
+  }
+  return new File([buildInvoiceXml(options)], `${seriesNumber}.xml`, { type: 'text/xml' })
+}
+
+const pdfReading = (name: string): FileReading => {
+  const bytes = encoder.encode('%PDF-1.7\n%prueba\n')
+  return { kind: 'pdf', name, size: bytes.byteLength, bytes: bytes.buffer }
+}
+
+/** Lecturas que llegan al almacén por fuera del paso (la calculadora o el borrador). */
+function bring(readings: FileReading[]): void {
+  act(() => {
+    intakeStore.dispatch({ type: 'add', readings })
+  })
+}
+
+/** El paso 01 con el almacén real, como lo monta `RequestForm`. */
+function Step(props: Partial<InvoicesStepProps>) {
+  const { view, reading: busy } = useIntake()
+  return (
+    <InvoicesStep
+      config={CONFIG}
+      view={view}
+      reading={busy}
+      disabled={false}
+      cavali={null}
+      onCavaliChange={() => undefined}
+      {...props}
+    />
+  )
+}
+
+function rowWith(text: string): HTMLElement {
+  const row = screen.getAllByRole('listitem').find((item) => item.textContent?.includes(text))
+  if (row === undefined) throw new Error(`No hay una fila con «${text}».`)
+  return row
+}
+
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ['Date'] })
+  vi.setSystemTime(new Date('2026-09-26T15:00:00Z'))
+  intakeStore.configure({ payer: SEA, limits: LIMITS, today: '2026-09-26' })
+})
+
+afterEach(() => {
+  cleanup()
+  intakeStore.dispatch({ type: 'reset' })
+  vi.useRealTimers()
+})
+
+describe('InvoicesStep: lo que le pasan el envío y el borrador', () => {
+  it('muestra en su fila los problemas de la API, y los de un PDF en la fila de su factura', () => {
+    bring([
+      reading('F001-00001234', '12450.00'),
+      pdfReading('F001-00001234.pdf'),
+      reading('F001-00001240', '8300.00'),
+    ])
+    const [first, pdf] = intakeStore.getSnapshot().entries
+    const { rerender } = render(<Step />)
+    const region = within(rowWith('F001-00001234')).getByRole('status')
+    expect(region).toBeEmptyDOMElement()
+
+    const taken = 'F001-00001234 ya está en otra solicitud en curso.'
+    const broken =
+      'El PDF F001-00001234.pdf está dañado. El PDF es opcional: quítalo o reemplázalo.'
+    rerender(
+      <Step
+        apiProblems={
+          new Map([
+            [first?.id ?? '', [taken]],
+            [pdf?.id ?? '', [broken]],
+          ])
+        }
+      />,
+    )
+    expect(within(rowWith('F001-00001234')).getByRole('status')).toBe(region)
+    expect(region).toHaveTextContent(taken)
+    expect(region).toHaveTextContent(broken)
+    expect(within(rowWith('F001-00001240')).getByRole('status')).toBeEmptyDOMElement()
+
+    rerender(<Step apiProblems={new Map()} />)
+    expect(region).toBeEmptyDOMElement()
+  })
+
+  it('las facturas que relee el borrador no cuentan como traídas de la calculadora', () => {
+    bring([reading('F001-00001234', '12450.00'), reading('F001-00001240', '8300.00')])
+    const restored = new Set(intakeStore.getSnapshot().entries.map((entry) => entry.id))
+    render(<Step restoredIds={restored} />)
+    expect(screen.queryByText(/^Trajimos/)).not.toBeInTheDocument()
+
+    bring([reading('F001-00001250', '5000.00')])
+    expect(
+      screen.getByText('Trajimos tu factura de la calculadora. Puedes agregar más, hasta 10.'),
+    ).toBeInTheDocument()
+  })
+
+  it('después de vaciar el almacén, lo que agregó el paso ya no cuenta como suyo', async () => {
+    const user = userEvent.setup()
+    render(<Step />)
+    await user.upload(
+      screen.getByLabelText('Elegir archivos'),
+      xmlFile('F001-00001234', '12450.00'),
+    )
+    await waitFor(() => expect(screen.getAllByRole('listitem')).toHaveLength(1))
+    expect(screen.queryByText(/^Trajimos/)).not.toBeInTheDocument()
+
+    // "Enviar otra solicitud" y "Empezar de nuevo" vacían el almacén: los id vuelven a empezar.
+    act(() => {
+      intakeStore.dispatch({ type: 'reset' })
+    })
+    bring([reading('F001-00001240', '8300.00')])
+    expect(intakeStore.getSnapshot().entries.map((entry) => entry.id)).toEqual(['f1'])
+    expect(
+      screen.getByText('Trajimos tu factura de la calculadora. Puedes agregar más, hasta 10.'),
+    ).toBeInTheDocument()
+  })
+})
+```
+
+Run: `ASTRO_TELEMETRY_DISABLED=1 pnpm --filter @anticipate/landing exec vitest run src/islands/request-form/RequestForm.test.tsx src/islands/request-form/steps/InvoicesStep.test.tsx`
+Expected: FAIL, 2 archivos: `Error: Failed to resolve import "./RequestForm" from "src/islands/request-form/RequestForm.test.tsx". Does the file exist?` y `Error: Failed to resolve import "./InvoicesStep" from "src/islands/request-form/steps/InvoicesStep.test.tsx". Does the file exist?`
+
+- [ ] **Step 13: Implementar las filas, los avisos, el paso 01, la columna izquierda, las condiciones vivas y la isla**
+
+`apps/landing/src/islands/request-form/invoices/InvoiceRow.tsx`:
+```tsx
+import { useId } from 'react'
+import styles from './Invoices.module.css'
+import { CloseIcon, ErrorIcon } from './icons'
+import { type IntakeRow, NOT_SENT_NOTE } from './list-model'
+
+/** `id` de la fila de una entrada: el foco vuelve aquí después de "Deshacer". */
+export function entryDomId(entryId: string): string {
+  return `archivo-${entryId}`
+}
+
+export type InvoiceRowProps = {
+  row: IntakeRow
+  /** Lo que la API objetó de esta fila al enviar (un 422); vacío o ausente si nada. */
+  apiProblems?: readonly string[] | undefined
+  onRemove: (id: string, label: string) => void
+  onAddPdf: (id: string, xmlName: string) => void
+  onReplace: (id: string, accept: 'xml' | 'pdf') => void
+  onAssign: (pdfId: string, invoiceId: string) => void
+}
+
+/**
+ * Lo que la API objetó de la fila, con el estilo de error de los campos (tablero 5 de Estados). La
+ * región `role="status"` está siempre, vacía si no hay nada: así el lector de pantalla anuncia los
+ * problemas cuando llegan, sin interrumpir el aviso del envío.
+ */
+function ApiProblems({ texts }: { texts: readonly string[] }) {
+  return (
+    <div className={styles.apiProblems} role="status">
+      {texts.map((text) => (
+        <p key={text} className={styles.apiProblem}>
+          <ErrorIcon />
+          <span>{text}</span>
+        </p>
+      ))}
+    </div>
+  )
+}
+
+/**
+ * Una fila de la lista del paso 01: la tarjeta "Lista" de `Main.dc.html` y `MobileForm.dc.html`, la
+ * tarjeta atenuada del tablero 1 de Estados, o las de archivos con problemas del tablero 2. Ninguna
+ * bloquea la solicitud: lo que no viaja lo dice y se puede quitar.
+ */
+export default function InvoiceRow({
+  row,
+  apiProblems = [],
+  onRemove,
+  onAddPdf,
+  onReplace,
+  onAssign,
+}: InvoiceRowProps) {
+  const selectId = useId()
+  const domId = entryDomId(row.id)
+  const flagged = apiProblems.length > 0
+  const problems = <ApiProblems texts={apiProblems} />
+
+  switch (row.kind) {
+    case 'invoice':
+      return (
+        <li id={domId} tabIndex={-1} className={styles.card} data-api-problem={flagged}>
+          <div className={styles.cardHead}>
+            <span className={styles.number}>{row.label}</span>
+            <span className={styles.cardTags}>
+              <span className={styles.readyBadge}>Lista</span>
+              {row.installments !== '' && (
+                <span className={styles.installments}>{row.installments}</span>
+              )}
+            </span>
+          </div>
+          <button
+            type="button"
+            className={styles.removeIcon}
+            aria-label={`Quitar factura ${row.label}`}
+            onClick={() => onRemove(row.id, row.label)}
+          >
+            <CloseIcon />
+          </button>
+          <span className={styles.checks}>{row.checks}</span>
+          <span className={`${styles.fact} ${styles.factNet}`}>
+            <span className={styles.factLabel}>Neto pendiente</span>
+            <span className={styles.factValue}>{row.net ?? '—'}</span>
+          </span>
+          <span className={`${styles.fact} ${styles.factDue}`}>
+            <span className={styles.factLabel}>Vence</span>
+            <span className={styles.factValue}>{row.due ?? '—'}</span>
+          </span>
+          <div className={styles.cardFooter}>
+            <span className={`${styles.fact} ${styles.factFiles}`}>
+              <span className={styles.factLabel}>Archivos</span>
+              <span className={styles.filesValue} data-complete={row.hasPdf}>
+                {row.files}
+              </span>
+            </span>
+            {row.canAddPdf && (
+              <button
+                type="button"
+                className={styles.pdfButton}
+                aria-label={`Agregar PDF (opcional) a ${row.label}`}
+                onClick={() => onAddPdf(row.id, row.xmlName)}
+              >
+                Agregar PDF (opcional)
+              </button>
+            )}
+          </div>
+          {problems}
+        </li>
+      )
+    case 'excluded':
+      return (
+        <li id={domId} tabIndex={-1} className={styles.offCard} data-api-problem={flagged}>
+          <div className={styles.offTop}>
+            <span className={styles.offTitle}>
+              <span className={styles.offNumber} data-struck={row.struck}>
+                {row.label}
+              </span>
+              <span className={styles.offBadge}>{row.badge}</span>
+            </span>
+            {row.net !== null && (
+              <span className={styles.offNet} data-struck={row.struck}>
+                {row.net}
+              </span>
+            )}
+          </div>
+          {row.reasons.map((reason) => (
+            <p key={reason} className={styles.offReason}>
+              {reason}
+            </p>
+          ))}
+          <div className={styles.offBottom}>
+            <span className={styles.offNote}>{NOT_SENT_NOTE}</span>
+            <button
+              type="button"
+              className={styles.textButton}
+              aria-label={`Quitar ${row.label} de la lista`}
+              onClick={() => onRemove(row.id, row.label)}
+            >
+              Quitar
+            </button>
+          </div>
+          {problems}
+        </li>
+      )
+    case 'unreadable':
+      return (
+        <li id={domId} tabIndex={-1} className={styles.errorCard} data-api-problem={flagged}>
+          <span className={styles.fileTitle}>
+            <span className={styles.fileName}>{row.label}</span>
+            <span className={styles.errorBadge}>No se pudo leer</span>
+          </span>
+          <p className={styles.errorText}>{row.text}</p>
+          <div className={styles.actions}>
+            <button
+              type="button"
+              className={styles.primaryButton}
+              aria-label={`Reemplazar archivo ${row.label}`}
+              onClick={() => onReplace(row.id, row.replaceWith)}
+            >
+              Reemplazar archivo
+            </button>
+            <button
+              type="button"
+              className={styles.textButton}
+              aria-label={`Quitar ${row.label}`}
+              onClick={() => onRemove(row.id, row.label)}
+            >
+              Quitar
+            </button>
+          </div>
+          {problems}
+        </li>
+      )
+    case 'loose-pdf':
+      return (
+        <li id={domId} tabIndex={-1} className={styles.warnCard} data-api-problem={flagged}>
+          <span className={styles.fileTitle}>
+            <span className={styles.fileName}>{row.label}</span>
+            <span className={styles.warnBadge}>¿De qué factura es?</span>
+          </span>
+          <p className={styles.warnText}>{row.text}</p>
+          <div className={styles.assign}>
+            {row.invoices.length > 0 && (
+              <>
+                <label className="sr-only" htmlFor={selectId}>
+                  ¿De qué factura es {row.label}?
+                </label>
+                <select
+                  id={selectId}
+                  className={styles.select}
+                  value=""
+                  onChange={(event) => {
+                    const invoiceId = event.currentTarget.value
+                    if (invoiceId !== '') onAssign(row.id, invoiceId)
+                  }}
+                >
+                  <option value="">Elige la factura</option>
+                  {row.invoices.map((invoice) => (
+                    <option key={invoice.id} value={invoice.id}>
+                      {invoice.label}
+                    </option>
+                  ))}
+                </select>
+              </>
+            )}
+            <button
+              type="button"
+              className={styles.textButton}
+              aria-label={`Quitar ${row.label}`}
+              onClick={() => onRemove(row.id, row.label)}
+            >
+              Quitar
+            </button>
+          </div>
+          {problems}
+        </li>
+      )
+    case 'heavy-pdf':
+      return (
+        <li id={domId} tabIndex={-1} className={styles.heavyCard} data-api-problem={flagged}>
+          <span className={styles.heavyTitle}>{row.title}</span>
+          <p className={styles.heavyText}>{row.text}</p>
+          <button
+            type="button"
+            className={styles.textButton}
+            aria-label={`Quitar ${row.label}`}
+            onClick={() => onRemove(row.id, row.label)}
+          >
+            Quitar
+          </button>
+          {problems}
+        </li>
+      )
+  }
+}
+```
+
+`apps/landing/src/islands/request-form/invoices/GroupChoice.tsx`:
+```tsx
+import styles from './Invoices.module.css'
+import type { GroupChoiceModel } from './list-model'
+
+/**
+ * "Subiste facturas en soles y en dólares" (tablero 2 de Estados): un botón por grupo con su total,
+ * `aria-pressed` en el elegido. Elegir otro grupo cambia lo que se envía, el total y el máximo.
+ */
+export default function GroupChoice({
+  model,
+  onChoose,
+}: {
+  model: GroupChoiceModel
+  onChoose: (key: string) => void
+}) {
+  return (
+    <div className={styles.groups} role="status">
+      <p className={styles.groupsTitle}>{model.title}</p>
+      <p className={styles.groupsBody}>{model.body}</p>
+      <div className={styles.groupOptions}>
+        {model.options.map((option) => (
+          <button
+            key={option.key}
+            type="button"
+            className={styles.groupOption}
+            aria-pressed={option.chosen}
+            onClick={() => onChoose(option.key)}
+          >
+            <span className={styles.groupLabel}>{option.label}</span>{' '}
+            <span className={styles.groupTotal}>{option.total}</span>
+            {option.issuer !== null && (
+              <>
+                {' '}
+                <span className={styles.groupIssuer}>{option.issuer}</span>
+              </>
+            )}
+          </button>
+        ))}
+      </div>
+    </div>
+  )
+}
+```
+
+`apps/landing/src/islands/request-form/invoices/UndoToast.tsx`:
+```tsx
+import type { Ref } from 'react'
+import styles from './Invoices.module.css'
+
+/**
+ * Región `role="status"` del aviso "Quitaste F001-… · Deshacer" (tablero 3 de Estados). Está siempre
+ * en la página, vacía y oculta cuando no hay aviso: así el lector de pantalla anuncia el cambio.
+ */
+export default function UndoToast({
+  text,
+  onUndo,
+  undoRef,
+}: {
+  text: string | null
+  onUndo: () => void
+  undoRef: Ref<HTMLButtonElement>
+}) {
+  return (
+    <div className={text === null ? 'sr-only' : styles.toast} role="status">
+      {text !== null && (
+        <>
+          <span>{text}</span>
+          <button ref={undoRef} type="button" className={styles.undoButton} onClick={onUndo}>
+            Deshacer
+          </button>
+        </>
+      )}
+    </div>
+  )
+}
+```
+
+`apps/landing/src/islands/request-form/steps/Step.module.css`:
+```css
+/*
+ * Un paso del formulario: fieldset con su legend como primera línea (Main.dc.html y
+ * MobileForm.dc.html). La legend flota para ser un elemento más de la columna flex. Lo usan los tres
+ * pasos (las Tareas 9 y 10).
+ */
+.step {
+  min-width: 0;
+  margin: 0;
+  border: 0;
+  padding: 36px 40px 32px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.step + .step {
+  border-top: 1.5px solid var(--line);
+}
+
+/* Antes de hidratar: los controles se ven deshabilitados. */
+.step:disabled :is(label, button, select, input, a) {
+  opacity: 0.55;
+  cursor: progress;
+}
+
+.legend {
+  float: left;
+  width: 100%;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px 16px;
+}
+
+.legendTitle {
+  font-size: 24px;
+  font-weight: 900;
+}
+
+.legendHint {
+  font-size: 14px;
+  color: var(--muted);
+}
+
+@media (max-width: 767px) {
+  .step {
+    padding: 24px 18px;
+    gap: 16px;
+  }
+
+  .legend {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+  }
+
+  .legendTitle {
+    font-size: 21px;
+  }
+
+  .legendHint {
+    font-size: 13px;
+  }
+}
+```
+
+`apps/landing/src/islands/request-form/steps/InvoicesStep.tsx`:
+```tsx
+import type { CavaliRegistration } from '@anticipate/shared/advance-request'
+import { ANTICIPATE_COMPANY, supplierGreeting, whatsappUrl } from '@anticipate/shared/company'
+import { LIMA_TIME_ZONE, todayIn } from '@anticipate/shared/dates'
+import {
+  type ChangeEvent,
+  type DragEvent,
+  type MouseEvent,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+} from 'react'
+import type { IntakeView } from '../../../lib/intake/intake-state'
+import { problemText } from '../../../lib/intake/problem-text'
+import type { IslandConfig } from '../../../lib/island-config'
+import { intakeStore } from '../../../lib/store/intake-store'
+import { shareLink } from '../../calculator/calculator-text'
+import CavaliField from '../invoices/CavaliField'
+import GroupChoice from '../invoices/GroupChoice'
+import InvoiceRow, { entryDomId } from '../invoices/InvoiceRow'
+import styles from '../invoices/Invoices.module.css'
+import { ChatIcon, CheckIcon, DropIcon, PlusIcon, UploadIcon } from '../invoices/icons'
+import {
+  broughtCount,
+  calculatorNoticeText,
+  dropCountText,
+  type EntryProblems,
+  groupChoice,
+  intakeRows,
+  issuerLine,
+  legendHint,
+  legendTitle,
+  limitsHint,
+  netNote,
+  overflowNotice,
+  problemsByRow,
+  READING_TEXT,
+  readySummary,
+  removedText,
+  weightNotice,
+} from '../invoices/list-model'
+import UndoToast from '../invoices/UndoToast'
+import stepStyles from './Step.module.css'
+
+/**
+ * Lo que acepta el selector del paso 01: la extensión y el tipo (los selectores de Android filtran
+ * por tipo). Es el único campo de archivos que acepta .zip.
+ */
+export const FILES_ACCEPT =
+  '.xml,.pdf,.zip,text/xml,application/xml,application/pdf,application/zip'
+const XML_ACCEPT = '.xml,text/xml,application/xml'
+const PDF_ACCEPT = '.pdf,application/pdf'
+
+/** Cuánto dura el aviso "Quitaste … · Deshacer" (tablero 3 de Estados). */
+export const UNDO_WINDOW_MS = 8000
+
+type SecondaryTarget = { kind: 'pdf'; xmlName: string } | { kind: 'replace'; id: string }
+type FocusTarget = { kind: 'undo' } | { kind: 'files' } | { kind: 'row'; id: string }
+
+export type InvoicesStepProps = {
+  config: IslandConfig
+  view: IntakeView | null
+  reading: boolean
+  /** Hasta que la isla hidrata, el paso se ve y está deshabilitado. */
+  disabled: boolean
+  cavali: CavaliRegistration | null
+  onCavaliChange: (value: CavaliRegistration) => void
+  /** Error de Cavali (lo llena la validación de la Tarea 10). */
+  cavaliError?: string | undefined
+  /** Problemas que la API devolvió al enviar, por `id` de entrada (los llena la Tarea 11). */
+  apiProblems?: EntryProblems | undefined
+  /** Entradas que releyó el borrador (Tarea 12): no cuentan como traídas de la calculadora. */
+  restoredIds?: ReadonlySet<string> | undefined
+}
+
+/** Nombre sin la extensión, respetando mayúsculas: `F001-123.xml` → `F001-123`. */
+const stemOf = (name: string): string => {
+  const dot = name.lastIndexOf('.')
+  return dot > 0 ? name.slice(0, dot) : name
+}
+
+const hasFiles = (event: DragEvent<HTMLElement>): boolean =>
+  Array.from(event.dataTransfer.types).includes('Files')
+
+/**
+ * Paso 01 del formulario (`fieldset#paso-facturas`): la lista de facturas y archivos del almacén
+ * compartido con la calculadora, agregar (selector, arrastrar y soltar), quitar con "Deshacer",
+ * agregar o asignar el PDF, reemplazar un archivo, la elección de grupo, los avisos de tope y de peso,
+ * el emisor leído de los XML y Cavali. Nada de lo que no califica bloquea: se marca y no se envía.
+ */
+export default function InvoicesStep({
+  config,
+  view,
+  reading,
+  disabled,
+  cavali,
+  onCavaliChange,
+  cavaliError,
+  apiProblems,
+  restoredIds,
+}: InvoicesStepProps) {
+  const { payer, intakeLimits } = config
+  const id = useId()
+  const filesId = `${id}-archivos`
+  const chooseId = `${id}-elegir`
+  const addId = `${id}-agregar`
+  const hintId = `${id}-topes`
+  const fileInput = useRef<HTMLInputElement>(null)
+  const secondaryInput = useRef<HTMLInputElement>(null)
+  const undoButton = useRef<HTMLButtonElement>(null)
+  const secondaryTarget = useRef<SecondaryTarget | null>(null)
+  const dragDepth = useRef(0)
+  const [ownIds, setOwnIds] = useState<ReadonlySet<string>>(() => new Set())
+  const [removed, setRemoved] = useState<{ id: string; label: string } | null>(null)
+  const [focusTarget, setFocusTarget] = useState<FocusTarget | null>(null)
+  const [dragCount, setDragCount] = useState<number | null>(null)
+
+  useEffect(() => {
+    if (removed === null) return
+    const timer = setTimeout(() => {
+      const hadFocus = undoButton.current !== null && undoButton.current === document.activeElement
+      setRemoved(null)
+      if (hadFocus) setFocusTarget({ kind: 'files' })
+    }, UNDO_WINDOW_MS)
+    return () => clearTimeout(timer)
+  }, [removed])
+
+  useEffect(() => {
+    if (focusTarget === null) return
+    const target =
+      focusTarget.kind === 'undo'
+        ? undoButton.current
+        : focusTarget.kind === 'files'
+          ? fileInput.current
+          : document.getElementById(entryDomId(focusTarget.id))
+    target?.focus()
+    setFocusTarget(null)
+  }, [focusTarget])
+
+  // Con la lista vacía y nada que deshacer, el almacén puede haberse vaciado ("Enviar otra
+  // solicitud", "Empezar de nuevo") y sus `id` vuelven a empezar: se olvida qué agregó el paso.
+  const listEmpty = view !== null && view.entries.length === 0
+  useEffect(() => {
+    if (listEmpty && removed === null) {
+      setOwnIds((current) => (current.size === 0 ? current : new Set()))
+    }
+  }, [listEmpty, removed])
+
+  // Un archivo soltado fuera del paso 01 no se abre en la pestaña (se perdería lo avanzado).
+  useEffect(() => {
+    const keepPage = (event: globalThis.DragEvent) => {
+      if (event.dataTransfer?.types.includes('Files')) event.preventDefault()
+    }
+    window.addEventListener('dragover', keepPage)
+    window.addEventListener('drop', keepPage)
+    return () => {
+      window.removeEventListener('dragover', keepPage)
+      window.removeEventListener('drop', keepPage)
+    }
+  }, [])
+
+  const rows =
+    view === null
+      ? []
+      : intakeRows(view, {
+          payerShortName: payer.shortName,
+          maxInvoices: payer.maxInvoices,
+          today: todayIn(LIMA_TIME_ZONE, new Date()),
+        })
+  const notBrought = restoredIds === undefined ? ownIds : new Set([...ownIds, ...restoredIds])
+  const brought = view === null ? 0 : broughtCount(view, notBrought)
+  const rowProblems =
+    view === null || apiProblems === undefined ? null : problemsByRow(view, apiProblems)
+  const summary = view === null ? null : readySummary(view)
+  const groups = view === null ? null : groupChoice(view)
+  const overflow = view === null ? null : overflowNotice(view)
+  const weight = view === null ? null : weightNotice(view, intakeLimits)
+  const setProblems = view?.setProblems ?? []
+  const group = view?.chosenGroup ?? null
+  const empty = rows.length === 0
+  const showSummary = reading || (summary !== null && summary.rest !== null)
+  const showNetNote = rows.some((row) => row.kind === 'invoice' || row.kind === 'excluded')
+  const share = shareLink(payer.shortName, config.pageUrl)
+
+  /** Lee con el almacén y recuerda qué entradas agregó el propio formulario. */
+  const addOwn = (read: () => Promise<void>): void => {
+    const before = new Set(intakeStore.getSnapshot().entries.map((entry) => entry.id))
+    void read().then(() => {
+      const added = intakeStore
+        .getSnapshot()
+        .entries.filter((entry) => !before.has(entry.id))
+        .map((entry) => entry.id)
+      if (added.length > 0) setOwnIds((current) => new Set([...current, ...added]))
+    })
+  }
+
+  const onFiles = (event: ChangeEvent<HTMLInputElement>): void => {
+    const files = Array.from(event.currentTarget.files ?? [])
+    event.currentTarget.value = ''
+    if (files.length > 0) addOwn(() => intakeStore.readAndAdd(files))
+  }
+
+  const openSecondary = (target: SecondaryTarget, accept: string): void => {
+    const input = secondaryInput.current
+    if (input === null) return
+    secondaryTarget.current = target
+    input.accept = accept
+    input.click()
+  }
+
+  const onSecondaryFile = (event: ChangeEvent<HTMLInputElement>): void => {
+    const [file] = Array.from(event.currentTarget.files ?? [])
+    event.currentTarget.value = ''
+    const target = secondaryTarget.current
+    secondaryTarget.current = null
+    if (file === undefined || target === null) return
+    if (target.kind === 'replace') {
+      addOwn(() => intakeStore.readAndReplace(target.id, [file]))
+      return
+    }
+    // Con el nombre base de su XML, el PDF viaja con esa factura: la API empareja por nombre.
+    const named = new File([file], `${stemOf(target.xmlName)}.pdf`, {
+      type: file.type === '' ? 'application/pdf' : file.type,
+      lastModified: file.lastModified,
+    })
+    addOwn(() => intakeStore.readAndAdd([named]))
+  }
+
+  const remove = (entryId: string, label: string): void => {
+    intakeStore.dispatch({ type: 'remove', id: entryId })
+    setRemoved({ id: entryId, label })
+    setFocusTarget({ kind: 'undo' })
+  }
+
+  const undo = (): void => {
+    if (removed === null) return
+    intakeStore.dispatch({ type: 'undo' })
+    setFocusTarget({ kind: 'row', id: removed.id })
+    setRemoved(null)
+  }
+
+  const onDragEnter = (event: DragEvent<HTMLFieldSetElement>): void => {
+    if (!hasFiles(event)) return
+    event.preventDefault()
+    dragDepth.current += 1
+    setDragCount(event.dataTransfer.items.length)
+  }
+
+  const onDragOver = (event: DragEvent<HTMLFieldSetElement>): void => {
+    if (!hasFiles(event)) return
+    event.preventDefault()
+    event.dataTransfer.dropEffect = 'copy'
+  }
+
+  const onDragLeave = (event: DragEvent<HTMLFieldSetElement>): void => {
+    if (!hasFiles(event)) return
+    dragDepth.current = Math.max(0, dragDepth.current - 1)
+    if (dragDepth.current === 0) setDragCount(null)
+  }
+
+  const onDrop = (event: DragEvent<HTMLFieldSetElement>): void => {
+    if (!hasFiles(event)) return
+    event.preventDefault()
+    dragDepth.current = 0
+    setDragCount(null)
+    const files = Array.from(event.dataTransfer.files)
+    if (files.length > 0) addOwn(() => intakeStore.readAndAdd(files))
+  }
+
+  const onShare = (event: MouseEvent<HTMLAnchorElement>): void => {
+    if (typeof navigator.share !== 'function') return
+    event.preventDefault()
+    // Cancelar el menú de compartir rechaza la promesa: no es un error.
+    navigator
+      .share({ title: share.title, text: share.text, url: config.pageUrl })
+      .catch(() => undefined)
+  }
+
+  return (
+    <fieldset
+      id="paso-facturas"
+      className={stepStyles.step}
+      disabled={disabled}
+      onDragEnter={onDragEnter}
+      onDragOver={onDragOver}
+      onDragLeave={onDragLeave}
+      onDrop={onDrop}
+    >
+      <legend className={stepStyles.legend}>
+        <span className={stepStyles.legendTitle}>{legendTitle(payer.shortName)}</span>{' '}
+        <span className={stepStyles.legendHint}>{legendHint(payer.minTermDays)}</span>
+      </legend>
+
+      {brought > 0 && (
+        <p className={styles.fromCalculator}>
+          <CheckIcon className={styles.noticeIcon} />
+          {calculatorNoticeText(brought, payer.maxInvoices)}
+        </p>
+      )}
+
+      <p role="status" className={showSummary ? styles.summary : 'sr-only'}>
+        {reading ? (
+          READING_TEXT
+        ) : summary === null ? null : (
+          <>
+            <CheckIcon className={styles.noticeIcon} />
+            <span>
+              <strong>{summary.lead}</strong>
+              {summary.rest === null ? null : ` ${summary.rest}`}
+            </span>
+          </>
+        )}
+      </p>
+
+      {groups !== null && (
+        <GroupChoice
+          model={groups}
+          onChoose={(key) => intakeStore.dispatch({ type: 'choose-group', key })}
+        />
+      )}
+      {overflow !== null && (
+        <div className={styles.warnNotice} role="status">
+          <p className={styles.warnTitle}>{overflow.title}</p>
+          <p className={styles.warnBody}>{overflow.body}</p>
+        </div>
+      )}
+      {weight !== null && (
+        <div className={styles.warnNotice} role="status">
+          <p className={styles.warnTitle}>{weight.title}</p>
+          <p className={styles.warnBody}>{weight.body}</p>
+        </div>
+      )}
+      {setProblems.length > 0 && (
+        <div className={styles.warnNotice} role="status">
+          {setProblems.map((problem) => (
+            <p key={`${problem.code}:${problem.invoice ?? ''}`} className={styles.warnBody}>
+              {problemText(problem)}
+            </p>
+          ))}
+        </div>
+      )}
+
+      <div className={styles.filesZone} data-dragging={dragCount !== null}>
+        {rows.length > 0 && (
+          <ul className={styles.list}>
+            {rows.map((row) => (
+              <InvoiceRow
+                key={row.id}
+                row={row}
+                apiProblems={rowProblems?.get(row.id)}
+                onRemove={remove}
+                onAddPdf={(_entryId, xmlName) =>
+                  openSecondary({ kind: 'pdf', xmlName }, PDF_ACCEPT)
+                }
+                onReplace={(entryId, accept) =>
+                  openSecondary(
+                    { kind: 'replace', id: entryId },
+                    accept === 'pdf' ? PDF_ACCEPT : XML_ACCEPT,
+                  )
+                }
+                onAssign={(pdfId, invoiceId) =>
+                  intakeStore.dispatch({ type: 'assign-pdf', pdfId, invoiceId })
+                }
+              />
+            ))}
+          </ul>
+        )}
+        <input
+          ref={fileInput}
+          id={filesId}
+          className={styles.fileInput}
+          type="file"
+          multiple
+          accept={FILES_ACCEPT}
+          aria-labelledby={empty ? chooseId : addId}
+          aria-describedby={empty ? hintId : undefined}
+          onChange={onFiles}
+          onFocus={() => intakeStore.prepareReader()}
+        />
+        {empty ? (
+          <label
+            htmlFor={filesId}
+            className={styles.emptyZone}
+            onPointerEnter={() => intakeStore.prepareReader()}
+          >
+            <span className={styles.emptyIcon}>
+              <UploadIcon />
+            </span>
+            <span className={styles.emptyTitle}>
+              Sube el XML de cada factura.
+              <br />
+              El PDF es opcional.
+            </span>
+            <span id={chooseId} className={styles.emptyButton}>
+              Elegir archivos
+            </span>
+            <span id={hintId} className={styles.emptyHint}>
+              {limitsHint(intakeLimits)}
+            </span>
+          </label>
+        ) : (
+          <label
+            htmlFor={filesId}
+            className={styles.addZone}
+            onPointerEnter={() => intakeStore.prepareReader()}
+          >
+            <PlusIcon />
+            <span id={addId}>Agregar otra factura</span>
+            <span className={styles.addHint}>· XML, PDF o .zip</span>
+          </label>
+        )}
+        {dragCount !== null && (
+          <div className={styles.dropOverlay} aria-hidden="true">
+            <div className={styles.dropMessage}>
+              <span className={styles.dropIcon}>
+                <DropIcon />
+              </span>
+              <span className={styles.dropTitle}>Suelta aquí tus XML, PDF o .zip</span>
+              {dragCount > 0 && (
+                <span className={styles.dropCount}>{dropCountText(dragCount)}</span>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+      <input
+        ref={secondaryInput}
+        className={styles.hiddenInput}
+        type="file"
+        accept={PDF_ACCEPT}
+        tabIndex={-1}
+        aria-hidden="true"
+        onChange={onSecondaryFile}
+      />
+
+      <div className={styles.help}>
+        <p className={styles.helpLine}>
+          <ChatIcon className={styles.helpIcon} />
+          <span>
+            ¿No encuentras el XML? <a href="#donde-esta-el-xml">Mira dónde encontrarlo</a> o{' '}
+            <a
+              className={styles.strongLink}
+              href={whatsappUrl(supplierGreeting(payer.shortName))}
+              target="_blank"
+              rel="noopener"
+            >
+              escríbenos por WhatsApp
+              <span className={styles.desktopOnly}>
+                {' '}
+                al <span className={styles.phone}>{ANTICIPATE_COMPANY.phoneDisplay}</span>
+              </span>
+            </a>
+            .
+          </span>
+        </p>
+        <p className={styles.shareLine}>
+          ¿Tus XML están en la computadora?{' '}
+          <a className={styles.strongLink} href={share.mailto} onClick={onShare}>
+            Envíate este enlace
+          </a>
+          .
+        </p>
+      </div>
+
+      {(group !== null || showNetNote) && (
+        <div className={styles.issuer}>
+          {group !== null && (
+            <p className={styles.issuerLine}>
+              <CheckIcon className={styles.noticeIcon} />
+              {issuerLine(group)}
+            </p>
+          )}
+          {showNetNote && <p className={styles.netNote}>{netNote(payer.shortName)}</p>}
+        </div>
+      )}
+
+      <CavaliField value={cavali} onChange={onCavaliChange} error={cavaliError} />
+
+      <UndoToast
+        text={removed === null ? null : removedText(removed.label)}
+        onUndo={undo}
+        undoRef={undoButton}
+      />
+    </fieldset>
+  )
+}
+```
+
+`apps/landing/src/islands/request-form/RequestAside.tsx`:
+```tsx
+import { supplierGreeting, whatsappUrl } from '@anticipate/shared/company'
+import { formatMoney } from '@anticipate/shared/money'
+import type { ReactNode } from 'react'
+import type { IntakeView } from '../../lib/intake/intake-state'
+import type { IslandConfig } from '../../lib/island-config'
+import styles from './RequestForm.module.css'
+
+export type RequestAsideProps = {
+  config: IslandConfig
+  view: IntakeView | null
+  /** Lo que va entre la bajada y el adelanto máximo: el `nav` de pasos de la Tarea 10. */
+  children?: ReactNode
+}
+
+/**
+ * Columna izquierda de la solicitud (`Main.dc.html`): antetítulo, título de la sección, bajada,
+ * adelanto máximo del grupo elegido y WhatsApp. En escritorio queda fija debajo de la cabecera; hasta
+ * 767 px sus piezas pasan a la columna del formulario (`display: contents`), como en
+ * `MobileForm.dc.html`, que no muestra el adelanto máximo ni el WhatsApp de esta columna.
+ */
+export default function RequestAside({ config, view, children }: RequestAsideProps) {
+  const group = view?.chosenGroup ?? null
+  return (
+    <div className={styles.aside}>
+      <span className={styles.eyebrow}>Solicitud</span>
+      <h2 className={styles.title}>Solicita tu adelanto</h2>
+      <p className={styles.lead}>
+        <span className={styles.desktopOnly}>
+          Empieza por tus facturas: con ellas sabemos quién las emite y cuánto puedes recibir.{' '}
+        </span>
+        Toma unos 5 minutos.
+      </p>
+      {children}
+      {group !== null && (
+        <p className={styles.maxBox}>
+          <span className={styles.maxLabel}>Adelanto máximo</span>{' '}
+          <span className={styles.maxValue}>{formatMoney(group.maxAdvance, group.currency)}</span>
+        </p>
+      )}
+      <p className={styles.help}>
+        ¿Dudas?{' '}
+        <a
+          className={styles.helpLink}
+          href={whatsappUrl(supplierGreeting(config.payer.shortName))}
+          target="_blank"
+          rel="noopener"
+        >
+          Escríbenos por WhatsApp
+        </a>
+      </p>
+    </div>
+  )
+}
+```
+
+`apps/landing/src/islands/request-form/RequestForm.module.css`:
+```css
+/*
+ * Isla del formulario dentro de section#solicitud (el fondo y los márgenes son de la sección, en
+ * [payer].astro). Desde 1024 px, las dos columnas de Main.dc.html con la izquierda fija; entre 768 y
+ * 1023 px, una columna; hasta 767 px, MobileForm.dc.html.
+ */
+.root {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 40px;
+  align-items: start;
+}
+
+.aside {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  min-width: 0;
+}
+
+.eyebrow {
+  font-size: 13px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--teal-700);
+  font-weight: 700;
+}
+
+.title {
+  margin: 0;
+  font-size: 40px;
+  line-height: 1.08;
+  letter-spacing: -0.02em;
+  font-weight: 900;
+}
+
+.lead {
+  margin: 0;
+  max-width: 640px;
+  font-size: 17px;
+  line-height: 27px;
+  color: var(--muted);
+}
+
+.maxBox {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  max-width: 420px;
+  margin: 0;
+  padding: 14px 16px;
+  background: var(--teal-700);
+  color: #ffffff;
+}
+
+.maxLabel {
+  font-size: 14px;
+  color: var(--teal-100);
+}
+
+.maxValue {
+  font-size: 20px;
+  font-weight: 900;
+}
+
+.help {
+  margin: 0;
+  font-size: 15px;
+  line-height: 23px;
+  color: var(--muted);
+}
+
+.helpLink {
+  font-weight: 700;
+}
+
+.form {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  background: #ffffff;
+  box-shadow:
+    0 30px 70px -34px rgba(7, 52, 50, 0.4),
+    0 2px 8px rgba(7, 52, 50, 0.06);
+}
+
+/* Hasta que la isla hidrata: el formulario se ve ocupado y sus pasos, deshabilitados. */
+.form[aria-busy="true"] {
+  cursor: progress;
+}
+
+@media (min-width: 1024px) {
+  .root {
+    grid-template-columns: 320px minmax(0, 1fr);
+    gap: 64px;
+  }
+
+  .aside {
+    position: sticky;
+    top: calc(var(--header-height) + 24px);
+  }
+
+  .title {
+    font-size: 48px;
+  }
+
+  .maxBox {
+    max-width: none;
+  }
+}
+
+@media (max-width: 767px) {
+  /* Las piezas de la columna izquierda pasan a esta columna: la barra de pasos de la Tarea 10 queda
+     con el formulario entero como bloque contenedor (la Tarea 13 la deja fija). */
+  .root {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .aside {
+    display: contents;
+  }
+
+  .eyebrow {
+    padding: 0 4px;
+    font-size: 12px;
+  }
+
+  .title {
+    padding: 0 4px;
+    font-size: 32px;
+    line-height: 1.1;
+  }
+
+  .lead {
+    padding: 0 4px;
+    font-size: 16px;
+    line-height: 25px;
+  }
+
+  .desktopOnly,
+  .maxBox,
+  .help {
+    display: none;
+  }
+
+  .form {
+    margin-top: 10px;
+    box-shadow:
+      0 24px 50px -30px rgba(7, 52, 50, 0.4),
+      0 2px 6px rgba(7, 52, 50, 0.06);
+  }
+}
+```
+
+`apps/landing/src/islands/request-form/use-live-config.ts`:
+```ts
+import { useEffect, useMemo, useState } from 'react'
+import {
+  fetchLiveConditions,
+  type LiveConditions,
+  withLiveConditions,
+} from '../../lib/api/live-conditions'
+import type { IslandConfig } from '../../lib/island-config'
+
+/**
+ * La configuración efectiva del formulario (D62): la del build hasta que llegan las condiciones y los
+ * topes vivos de la API, y desde ahí, esos. Los pide una sola vez al montarse, fuera del modo
+ * demostración; si la lectura falla sigue con los del build, sin avisar. El primer render usa siempre
+ * la del build, así la hidratación coincide con el HTML.
+ */
+export function useLiveConfig(config: IslandConfig): IslandConfig {
+  const [live, setLive] = useState<LiveConditions | null>(null)
+  const { apiBaseUrl } = config
+  const { slug } = config.payer
+
+  useEffect(() => {
+    const controller = new AbortController()
+    void fetchLiveConditions(apiBaseUrl, slug, { signal: controller.signal }).then((conditions) => {
+      if (conditions !== null && !controller.signal.aborted) setLive(conditions)
+    })
+    return () => controller.abort()
+  }, [apiBaseUrl, slug])
+
+  return useMemo(() => withLiveConditions(config, live), [config, live])
+}
+```
+
+`apps/landing/src/islands/request-form/RequestForm.tsx`:
+```tsx
+import { LIMA_TIME_ZONE, todayIn } from '@anticipate/shared/dates'
+import { type SubmitEvent, useEffect, useReducer } from 'react'
+import type { IslandConfig } from '../../lib/island-config'
+import { intakeStore, useIntake } from '../../lib/store/intake-store'
+import { formReducer, initialFormModel, setField } from './form-model'
+import RequestAside from './RequestAside'
+import styles from './RequestForm.module.css'
+import InvoicesStep from './steps/InvoicesStep'
+import { useHydrated } from './use-hydrated'
+import { useLiveConfig } from './use-live-config'
+
+/**
+ * Isla del formulario de solicitud (`client:idle`), dentro de `section#solicitud`: la columna
+ * izquierda y el `<form>` con sus pasos. Comparte las facturas con la calculadora por el almacén de
+ * la Tarea 8. Hasta hidratar, los pasos salen deshabilitados y el `<form>` con `aria-busy`.
+ */
+export default function RequestForm({ config: buildConfig }: { config: IslandConfig }) {
+  // D62: desde aquí `config` es la configuración efectiva, con el pagador y los topes vivos de la
+  // API si llegaron; los textos, el almacén y el `form` usan esta.
+  const config = useLiveConfig(buildConfig)
+  const { payer, intakeLimits } = config
+  const [model, dispatch] = useReducer(formReducer, initialFormModel)
+  const { view, reading } = useIntake()
+  const hydrated = useHydrated()
+
+  useEffect(() => {
+    intakeStore.configure({
+      payer,
+      limits: intakeLimits,
+      today: todayIn(LIMA_TIME_ZONE, new Date()),
+    })
+  }, [payer, intakeLimits])
+
+  // La Tarea 10 reemplaza este manejador: valida, arma el `form` y resume los errores.
+  const onSubmit = (event: SubmitEvent<HTMLFormElement>): void => {
+    event.preventDefault()
+  }
+
+  return (
+    <div className={styles.root}>
+      <RequestAside config={config} view={view} />
+      <form
+        className={styles.form}
+        noValidate
+        aria-busy={hydrated ? undefined : true}
+        onSubmit={onSubmit}
+      >
+        <InvoicesStep
+          config={config}
+          view={view}
+          reading={reading}
+          disabled={!hydrated}
+          cavali={model.cavali}
+          onCavaliChange={(value) => dispatch(setField('cavali', value))}
+        />
+      </form>
+    </div>
+  )
+}
+```
+
+Run: `ASTRO_TELEMETRY_DISABLED=1 pnpm --filter @anticipate/landing exec vitest run src/islands/request-form`
+Expected: PASS, 42 tests en 6 archivos (5 del modelo, 3 de la hidratación, 10 de las filas y los textos, 3 de Cavali, 18 de la isla y 3 del paso), sin avisos de `act(...)` ni de hidratación en la consola.
+
+- [ ] **Step 14: Montar la isla en la página del pagador**
+
+El formulario va con `client:idle` (nunca `client:visible`: su chunk podría pedirse después de un deploy y dar 404). La sección conserva su `id` y recibe el fondo y los márgenes de `Main.dc.html` (96 px arriba y abajo, la columna de 1200 px) y de `MobileForm.dc.html` (56 px y 16 px), con el paso intermedio de las demás secciones.
+
+`apps/landing/src/pages/[payer].astro`:
+```astro
+---
+import type { GetStaticPaths, InferGetStaticPropsType } from 'astro'
+import Benefits from '../components/site/Benefits.astro'
+import ClosingBand from '../components/site/ClosingBand.astro'
+import Faq from '../components/site/Faq.astro'
+import Hero from '../components/site/Hero.astro'
+import HowItWorks from '../components/site/HowItWorks.astro'
+import Requirements from '../components/site/Requirements.astro'
+import SiteFooter from '../components/site/SiteFooter.astro'
+import SiteHeader from '../components/site/SiteHeader.astro'
+import XmlGuide from '../components/site/XmlGuide.astro'
+import { landingCopy } from '../content/landing-copy'
+import Calculator from '../islands/calculator/Calculator'
+import RequestForm from '../islands/request-form/RequestForm'
+import BaseLayout from '../layouts/BaseLayout.astro'
+import { getBuildData } from '../lib/build-data/build-data.server'
+import { islandConfig } from '../lib/island-config'
+
+export const getStaticPaths = (async () => {
+  const { payers } = await getBuildData()
+  return payers.map((payer) => ({ params: { payer: payer.slug }, props: { payer } }))
+}) satisfies GetStaticPaths
+
+type Props = InferGetStaticPropsType<typeof getStaticPaths>
+
+const { payer } = Astro.props
+const data = await getBuildData()
+const config = islandConfig(payer, data)
+const copy = landingCopy(payer)
+---
+
+<BaseLayout
+  title={copy.meta.title}
+  description={copy.meta.description}
+  canonicalPath={`/${payer.slug}`}
+  payer={payer}
+>
+  <SiteHeader copy={copy} />
+  <main id="contenido">
+    <Hero copy={copy} payer={payer}>
+      <Calculator slot="calculator" client:load config={config} />
+    </Hero>
+    <Benefits copy={copy} />
+    <HowItWorks copy={copy} />
+    <Requirements copy={copy} />
+    <XmlGuide copy={copy} payer={payer} pageUrl={config.pageUrl} />
+    <section id="solicitud" class="request">
+      <RequestForm client:idle config={config} />
+    </section>
+    <Faq copy={copy} />
+    <ClosingBand copy={copy} />
+  </main>
+  <SiteFooter copy={copy} legal={data.legal} />
+</BaseLayout>
+
+<style>
+  /* Sección de la solicitud: fondo y márgenes de Main.dc.html y MobileForm.dc.html. La isla dibuja
+     las dos columnas; la confirmación de la Tarea 11 la reemplaza dentro de esta misma sección. */
+  .request {
+    padding: 56px 16px;
+    background: linear-gradient(180deg, var(--teal-100) 0%, var(--surface) 100%);
+  }
+
+  @media (min-width: 768px) {
+    .request {
+      padding: 72px max(var(--gutter), calc((100% - var(--page-max)) / 2));
+    }
+  }
+
+  @media (min-width: 1024px) {
+    .request {
+      padding-block: 96px;
+    }
+  }
+</style>
+```
+
+Run: `pnpm --filter @anticipate/landing typecheck`
+Expected: `astro check` termina con `0 errors`, `0 warnings` y `0 hints`.
+
+- [ ] **Step 15: Build con fixtures y comprobación del HTML**
+
+Run: `rm -rf apps/landing/dist && LANDING_DATA=fixtures pnpm --filter @anticipate/landing build`
+Expected: build completo con `/404.html`, `/sea.html` e `/index.html`.
+
+Run: `grep -o '<astro-island' apps/landing/dist/sea.html | wc -l; grep -o 'client="idle"' apps/landing/dist/sea.html; grep -o 'Solicita tu adelanto' apps/landing/dist/sea.html; grep -oE '<fieldset id="paso-facturas"[^>]*disabled=""' apps/landing/dist/sea.html | wc -l; grep -o 'aria-busy="true"' apps/landing/dist/sea.html; grep -o 'Sube el XML de cada factura.' apps/landing/dist/sea.html`
+Expected, una línea por comando: `2` (la calculadora y el formulario; el HTML del build es una sola línea, por eso `grep -o` y no `grep -c`); `client="idle"`; `Solicita tu adelanto`; `1` (el paso sale deshabilitado en el HTML del build); `aria-busy="true"`; `Sube el XML de cada factura.`
+
+- [ ] **Step 16: Revisión visual contra los tableros**
+
+Run: `PUBLIC_API_BASE_URL= LANDING_DATA=fixtures ASTRO_TELEMETRY_DISABLED=1 pnpm --filter @anticipate/landing exec astro dev --port 4321 --ignore-lock`, en segundo plano (`PUBLIC_API_BASE_URL` vacío: modo demostración, la isla no pide nada a la API).
+
+Generar los archivos de prueba fuera del repo, emitidos a SEA (el RUC de los fixtures) y con vencimientos contados desde hoy en Lima: dos que califican, uno con 9 días de plazo, uno en dólares, una CDR, un PDF que no se llama como ningún XML y un .zip con un XML, su PDF y metadatos de macOS.
+
+```bash
+pnpm --filter @anticipate/landing exec node --input-type=module -e "import { writeFileSync } from 'node:fs'; import { addDaysIso, LIMA_TIME_ZONE, todayIn } from '@anticipate/shared/dates'; import { buildCdrXml, buildInvoiceXml } from '@anticipate/shared/testing'; import { strToU8, zipSync } from 'fflate'; const dir = process.env.TMPDIR ?? '/tmp'; const today = todayIn(LIMA_TIME_ZONE, new Date()); const invoice = (seriesNumber, net, days, currency = 'PEN') => buildInvoiceXml({ seriesNumber, currency, recipientRuc: '20525998577', total: net, netPendingAmount: net, detraction: null, installments: [{ id: 'Cuota001', amount: net, dueDate: addDaysIso(today, days) }] }); const pdf = '%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF\n'; writeFileSync(dir + '/F001-00001234.xml', invoice('F001-00001234', '12450.00', 65)); writeFileSync(dir + '/F001-00001240.xml', invoice('F001-00001240', '8300.00', 85)); writeFileSync(dir + '/F001-00001251.xml', invoice('F001-00001251', '4100.00', 9)); writeFileSync(dir + '/F001-00001300.xml', invoice('F001-00001300', '3200.00', 60, 'USD')); writeFileSync(dir + '/factura-marzo.xml', buildCdrXml()); writeFileSync(dir + '/escaneo.pdf', pdf); writeFileSync(dir + '/facturas-septiembre.zip', zipSync({ 'facturas/F001-00001260.xml': strToU8(invoice('F001-00001260', '5000.00', 45)), 'facturas/F001-00001260.pdf': strToU8(pdf), '__MACOSX/facturas/._F001-00001260.xml': strToU8('metadatos') }))"
+```
+
+Abrir `http://localhost:4321/sea` a 1440, 1024, 768, 390 y 360 px de ancho y comparar `#solicitud` con la sección del formulario de `Main.dc.html`, con `MobileForm.dc.html` y con los tableros 1, 2, 3 y 6 de `Estados.dc.html`:
+1. Sin archivos: el área grande "Sube el XML de cada factura. El PDF es opcional." con "Elegir archivos" y los topes.
+2. Subir por la calculadora `F001-00001234.xml` y `F001-00001240.xml` y seguir con "Continuar con estas 2 facturas".
+3. En el paso 01, agregar con "+ Agregar otra factura" `F001-00001251.xml`, `F001-00001300.xml`, `factura-marzo.xml`, `escaneo.pdf` y `facturas-septiembre.zip`; elegir "1 en dólares" y volver a soles; quitar una factura y deshacer; asignar `escaneo.pdf` a `F001-00001240` con el `<select>`; "Agregar PDF (opcional)" en `F001-00001234` y "Reemplazar archivo" en `factura-marzo.xml`.
+4. Arrastrar `F001-00001234.xml` desde el explorador de archivos sobre la lista, sin soltar, y después soltarlo.
+5. Con el teclado, desde el principio de la página: Tab llega a "Saltar al formulario", Enter salta a la solicitud, Tab llega al campo de archivos (el foco se ve en la etiqueta) y Enter abre el selector; las flechas cambian la opción de Cavali.
+
+Además, con la API local corriendo (`pnpm --filter @anticipate/api dev`, en el 4001 que usa `apps/landing/.env`), volver a levantar `astro dev` sin `PUBLIC_API_BASE_URL=` y abrir `http://localhost:4321/sea` (el origen que `CORS_ORIGINS` permite por defecto): la pestaña Red muestra `GET /api/v1/payers` y `GET /api/v1/intake-limits` con 200 y la consola no muestra errores de CORS.
+
+Al terminar, detener los servidores (Ctrl+C sobre el proceso, o `kill` de su PID) y comprobar con `ss -ltnp | grep -E '4321|4001'` que no queda nada escuchando.
+
+Expected:
+- a 1440 px, dos columnas (320 px y el formulario, con 64 px entre ellas); la izquierda queda fija a 100 px del borde superior (debajo de la cabecera de 76 px) al bajar por el formulario; título de 48 px, recuadro "Adelanto máximo" con `S/ 17,637.50` y "¿Dudas? Escríbenos por WhatsApp";
+- con las dos facturas de la calculadora, el aviso "Trajimos tus 2 facturas de la calculadora. Puedes agregar más, hasta 10." y las tarjetas de `Main.dc.html`: número de 19 px, "Lista", "1 cuota", las marcas justo debajo, neto, vencimiento y archivos en tres columnas, la X de 44 px y, debajo, "Agregar PDF (opcional)"; la línea del emisor y la nota del neto pendiente;
+- `F001-00001251` atenuada y tachada con "Vence el …, en 9 días. Para adelantarla deben faltar al menos 15 días." y "No se enviará · no suma al total"; `factura-marzo.xml` en rojo con "No se pudo leer" y "Reemplazar archivo"; `escaneo.pdf` en ámbar con "¿De qué factura es?"; `F001-00001260` del .zip con `XML ✓ · PDF ✓` y nada de `__MACOSX`; el resumen del tablero 1 arriba de la lista; la elección de moneda del tablero 2 cambia el máximo de la columna izquierda;
+- "Quitaste …" aparece abajo al centro con "Deshacer" (con el foco), "Deshacer" devuelve la factura y el foco a su fila, y sin tocarlo el aviso se va a los 8 s;
+- "Agregar PDF (opcional)" y "Reemplazar archivo" abren el selector del sistema sin `.zip` entre los tipos, y la factura pasa a `XML ✓ · PDF ✓`;
+- al arrastrar, el área de la lista muestra "Suelta aquí tus XML, PDF o .zip" con la cantidad de archivos; soltar fuera del paso no abre el archivo en la pestaña;
+- entre 768 y 1023 px, una columna, con la columna izquierda arriba;
+- a 390 y 360 px, `MobileForm.dc.html`: título de 32 px, "Toma unos 5 minutos.", sin el recuadro del máximo; tarjetas con la X al lado del número, "Neto pendiente" y "Vence" en dos columnas y el pie con los archivos y "Agregar PDF (opcional)"; Cavali en tres columnas con la ayuda corta; "¿Tus XML están en la computadora? Envíate este enlace.";
+- ningún ancho tiene desplazamiento horizontal y todos los objetivos miden al menos 44×44 px (salvo los enlaces dentro de un párrafo);
+- la consola solo muestra el 404 de `/favicon.ico`, que resuelve la Tarea 14;
+- `ss` no muestra nada en el 4321 ni en el 4001.
+
+Si una medida difiere del tablero, se corrige en el CSS Module y se sigue: el Step 17 vuelve a correr los tests y el lint.
+
+- [ ] **Step 17: Verificación completa**
+
+Run: `pnpm turbo run test --filter=@anticipate/landing`
+Expected: PASS, 213 tests en 28 archivos: los 163 de las Tareas 5 a 8 y los 50 de esta. La cobertura de `src/lib/**` sigue sobre los umbrales; en el laboratorio, `src/lib/api/live-conditions.ts` dio 100 % de líneas y de ramas.
+
+Run: `pnpm turbo run typecheck --filter=@anticipate/landing`
+Expected: `0 errors`, `0 warnings` y `0 hints`.
+
+Run: `pnpm lint`
+Expected: `biome check .` sin errores ni avisos. Si solo marca formato: `pnpm lint:fix` y otra vez `pnpm lint`.
+
+Run: `grep -rnE "SEA|\b85\b|\b15\b" apps/landing/src/islands/request-form apps/landing/src/lib/api --include=*.ts --include=*.tsx --include=*.css --exclude=*.test.ts --exclude=*.test.tsx`
+Expected: ninguna línea: los datos del pagador salen de `config.payer` y los topes de `config.intakeLimits`.
+
+Run: `grep -rn 'maxlength\|maxLength\|client:visible\|data-testid' apps/landing/src/islands/request-form "apps/landing/src/pages/[payer].astro"`
+Expected: ninguna línea.
+
+Run: `LANDING_DATA=fixtures pnpm turbo run build --filter=@anticipate/landing`
+Expected: el build termina sin errores y deja `apps/landing/dist/sea.html`.
+
+Run: `pnpm verify`
+Expected: todo en verde; la landing se construye con fixtures.
+
+Run: `git status --short`
+Expected: solo los archivos de `Files` de esta tarea, más el `M .vscode/settings.json` que ya estaba, que no se agrega.
+
+- [ ] **Step 18: Commit**
+
+```bash
+git add apps/landing/src/islands/request-form apps/landing/src/lib/api/live-conditions.ts apps/landing/src/lib/api/live-conditions.test.ts "apps/landing/src/pages/[payer].astro"
+git commit -m "feat(landing): paso 01 con lista de facturas, deshacer, pdf, grupos, cavali y condiciones vivas"
+```
+
+---
+
+---
+
+### Task 10: Formulario, pasos 02 y 03 y cierre: monto que sigue al máximo, datos normalizados, resumen, consentimientos y pasos por avance
+
+**Files:**
+- Create: `apps/landing/src/islands/request-form/form-text.ts`, `apps/landing/src/islands/request-form/step-status.ts`
+- Create: `apps/landing/src/islands/request-form/steps/fields.tsx`, `apps/landing/src/islands/request-form/steps/Fields.module.css`, `apps/landing/src/islands/request-form/steps/AdvanceStep.tsx`, `apps/landing/src/islands/request-form/steps/ContactStep.tsx`
+- Create: `apps/landing/src/islands/request-form/closing/TrustCard.tsx`, `apps/landing/src/islands/request-form/closing/ErrorSummary.tsx`, `apps/landing/src/islands/request-form/closing/Closing.tsx`, `apps/landing/src/islands/request-form/closing/Closing.module.css`, `apps/landing/src/islands/request-form/closing/StepsNav.tsx`, `apps/landing/src/islands/request-form/closing/StepsNav.module.css`
+- Modify (archivo completo nuevo en esta tarea): `apps/landing/src/islands/request-form/form-model.ts` (validación, armado del `form`, rutas de los issues y ayudas del monto), `apps/landing/src/islands/request-form/RequestForm.tsx` (pasos 02 y 03, cierre, resumen de errores, pasos por avance y validación), `apps/landing/src/islands/request-form/RequestForm.module.css` (recuadro "¿Tienes dudas?" de móvil), `apps/landing/src/islands/request-form/steps/Step.module.css` (variante de los pasos 02 y 03 y su grilla), `apps/landing/src/islands/request-form/invoices/icons.tsx` (escudo y flecha)
+- Test: `apps/landing/src/islands/request-form/form-model.test.ts` (archivo completo nuevo: los 5 tests de la Tarea 9 más los de esta), `apps/landing/src/islands/request-form/form-text.test.ts`, `apps/landing/src/islands/request-form/step-status.test.ts`, `apps/landing/src/islands/request-form/closing/StepsNav.test.tsx`, `apps/landing/src/islands/request-form/RequestForm.steps.test.tsx`
+
+`RequestForm.test.tsx` de la Tarea 9 no cambia y tiene que seguir pasando. Esta tarea no agrega dependencias ni toca `src/lib`, `[payer].astro` ni `pnpm-lock.yaml`.
+
+**Interfaces:**
+- Consumes:
+  - Tarea 9 (`src/islands/request-form/`):
+    - `form-model.ts`: `type FormModel`, `type FormAction`, `initialFormModel` (congelado), `formReducer(model, action)` (`set` devuelve el mismo modelo si el valor no cambia o no es del tipo del campo) y `setField(field, value)`.
+    - `use-hydrated.ts`: `useHydrated(): boolean`.
+    - `RequestAside.tsx`: `RequestAside(props: { config: IslandConfig; view: IntakeView | null; children?: ReactNode })`; `children` va entre la bajada y el recuadro "Adelanto máximo", y hasta 767 px la columna es `display: contents`.
+    - `steps/InvoicesStep.tsx`: `InvoicesStep(props: InvoicesStepProps)` con `cavaliError?: string | undefined`; su raíz es `fieldset#paso-facturas`, y su primer `input` es el campo de archivos que acepta `.zip` (etiqueta "Elegir archivos" o "Agregar otra factura").
+    - `steps/Step.module.css`: `.step`, `.legend`, `.legendTitle` y `.legendHint` (esta tarea le agrega `.fieldsStep` y `.grid`).
+    - `invoices/CavaliField.tsx`: `CAVALI_FIELD_ID = 'cavali'` (el resumen de errores enlaza a `#cavali`).
+    - `invoices/icons.tsx`: `CheckIcon` y `ErrorIcon` (`{ size?: number; className?: string }`); esta tarea agrega tres íconos.
+    - `RequestForm.module.css`: `.root`, `.aside`, `.form` y el resto de la Tarea 9 (esta tarea agrega el recuadro de móvil).
+    - `RequestForm.tsx`: la isla con `useReducer(formReducer, initialFormModel)`, `useIntake()`, `useHydrated()`, `intakeStore.configure(...)` al montarse y el `<form noValidate aria-busy>` con `InvoicesStep`; esta tarea da el archivo completo nuevo.
+  - Tarea 8: `intakeStore.configure(ctx)` y `useIntake(): { state; view; reading }` (`src/lib/store/intake-store.ts`); `amountDigits(amount, currency)` (`src/islands/calculator/calculator-text.ts`, el monto sin símbolo: `12,450.00`).
+  - Tarea 7 (`src/lib/intake/intake-state.ts`): `type IntakeView` (`chosenGroup`, el grupo elegido o el primero, con `maxAdvance`, `currency` y `netPendingTotal`; `submission`, lo que se envía o `null`) y `type SubmissionFiles` (`company`, `currency`, `netPendingTotal`, `maxAdvance`, `invoiceNumbers`). Solo en los tests: `emptyIntake()`, `addReadings`, `viewIntake`, `readXmlBytes(name, bytes, maxXmlBytes)` (`read-intake-file.ts`) y `type FileReading`, `type IntakeContext` (`types.ts`).
+  - Tarea 5: `type IslandConfig` (`payer`, `intakeLimits`, `legal` con `termsVersion`, `termsUrl`, `privacyVersion` y `privacyUrl`, y `pageUrl`); los tokens de `src/styles/tokens.css` (`--ink`, `--muted`, `--line`, `--field`, `--surface`, `--teal`, `--teal-100`, `--teal-200`, `--teal-600`, `--teal-700`, `--teal-800`, `--err` y `--err-bg`); la clase global `.sr-only` y el `:focus-visible` de `global.css`; Vitest con jsdom, jest-dom, Testing Library y `user-event`.
+  - Tarea 2: `parseAmountInput(text)`, `formatMoney(amount, currency)` y `CURRENCY_SYMBOLS` (`/money`); `normalizeDniInput`, `normalizeMobileInput` y `formatMobile` (`/identity`); `cleanPasted` y `normalizeEmailInput` (`/text`); `CONTACT_TIME_SLOT_PHRASES` (`/advance-request`); `ANTICIPATE_COMPANY`, `whatsappUrl(text?)` y `supplierGreeting(payerShortName)` (`/company`).
+  - Ya en shared: `advanceRequestFormSchema`, `type AdvanceRequestForm`, `FORM_MESSAGES`, `CONTACT_TIME_SLOTS`, `CONTACT_TIME_SLOT_LABELS` y `type ContactTimeSlot` (`/advance-request`); `MESSAGES_ES` (`/errors`, con `INVALID_AMOUNT`); `type Amount`, `type Currency` y `compareAmounts` (`/money`). Solo en los tests: `buildInvoiceXml`, `DEFAULT_TEST_XML` y `type TestXmlOptions` (`/testing`), `type PublicPayer` (`/payer`), `type IntakeLimits` (`/api`), `type PayerConditions` (`/intake`) y `type IsoDate` (`/dates`).
+- Produces:
+  - `src/islands/request-form/form-model.ts`, con las firmas de la sección 8 del contrato tal cual y lo que esta tarea agrega:
+    ```ts
+    // Contrato, sección 8:
+    export type FormFieldName = 'cavali' | 'amount' | 'purpose' | 'fullName' | 'dni' | 'mobile' | 'email' | 'isLegalRepresentative' | 'jobTitle' | 'contactTimeSlot' | 'acceptTerms' | 'acceptPrivacy'
+    export type FieldErrors = Partial<Record<FormFieldName, string>>
+    export type SourceInfo = { utm?: Record<string, string>; referrer?: string }
+    export function buildAdvanceRequestForm(model: FormModel, submission: SubmissionFiles, config: IslandConfig, source: SourceInfo): { ok: true; form: AdvanceRequestForm } | { ok: false; errors: FieldErrors }
+    export function fieldForIssuePath(path: readonly PropertyKey[]): FormFieldName | null
+    // Agregadas por esta tarea:
+    export type AmountLimit = { maxAdvance: Amount; currency: Currency }
+    export type TextKey = 'amountText' | 'fullName' | 'dniText' | 'mobileText' | 'emailText' | 'jobTitle'
+    export type NormalizedKey = 'amountText' | 'dniText' | 'mobileText' | 'emailText'
+    export type ChoiceKey = 'cavali' | 'purpose' | 'isLegalRepresentative' | 'contactTimeSlot' | 'acceptTerms' | 'acceptPrivacy'
+    export const FORM_FIELDS: readonly FormFieldName[]   // en el orden del formulario
+    export const FIELD_IDS: Readonly<Record<FormFieldName, string>>   // cavali, monto, motivo, nombre, dni, celular, correo, representante, cargo, horario, terminos, privacidad
+    export const MODEL_FIELDS: Readonly<Record<keyof FormModel, FormFieldName>>
+    export const FIELD_ERROR_TEXTS: { readonly amountEmpty: string; readonly dniEmpty: string; readonly mobileEmpty: string; readonly emailEmpty: string; readonly emailWithoutAt: string; readonly cavali: string; readonly contactTimeSlot: string; readonly terms: string; readonly privacy: string }
+    export function dniLengthText(digits: number): string   // 'El DNI debe tener 8 dígitos. Tiene 7.'
+    export function amountOverMaxText(limit: AmountLimit): string   // 'El monto supera el adelanto máximo de S/ 17,637.50.'
+    export function isBlank(text: string): boolean
+    export function amountError(amountText: string, limit: AmountLimit | null): string | null
+    export function formFieldErrors(model: FormModel, limit: AmountLimit | null): FieldErrors
+    export function updateFieldErrors(current: FieldErrors, computed: FieldErrors, fields: readonly FormFieldName[], mode: 'show' | 'refresh'): FieldErrors
+    export function normalizeFieldText(key: TextKey, text: string, currency: Currency): string
+    export function pastedFieldValue(key: NormalizedKey, text: string, currency: Currency): string | null
+    export function amountAfterMaxChange(amountText: string, previousMax: Amount | null, next: AmountLimit | null): string | null
+    ```
+    Comportamiento: `buildAdvanceRequestForm` arma el `form` con `advanceRequestFormSchema.safeParse` sobre el modelo ya normalizado (`parseAmountInput`, `normalizeDniInput`, `normalizeMobileInput`, `normalizeEmailInput`), con `company` del `SubmissionFiles`, `payerSlug` de `config.payer.slug`, las versiones de `config.legal`, `purpose` omitido si está vacío, `jobTitle` omitido si la persona es representante (o no respondió) y `source` omitido si no trae nada; además revisa el monto contra `submission.maxAdvance`. `ok: false` trae un error por campo, con los textos del diseño donde los hay y el de shared como respaldo; si el esquema falla solo en datos que la persona no ve (`company.*`, `payerSlug`, versiones, `source`), `errors` viene vacío. `formFieldErrors` valida lo mismo sin `SubmissionFiles` (para salir de un campo, contar lo que falta y enviar sin facturas): ignora esos datos y compara el monto solo si recibe `limit`. `updateFieldErrors` devuelve el mismo objeto si nada cambia.
+  - `src/islands/request-form/step-status.ts`, con las firmas del contrato y una función para móvil:
+    ```ts
+    export type StepState = 'done' | 'current' | 'todo'
+    export type StepStatus = { id: 'paso-facturas' | 'paso-adelanto' | 'paso-datos'; number: '01' | '02' | '03'; label: string; shortLabel: string; state: StepState; text: string; missing: number }
+    export function stepStatuses(model: FormModel, view: IntakeView | null, currency: Currency | null): StepStatus[]
+    // Agregada por esta tarea: el texto corto del móvil ('2 facturas', 'Listo', 'Faltan 2', 'Falta 1 dato' o 'Pendiente')
+    export function stepShortText(step: StepStatus, invoiceCount: number): string
+    ```
+  - `src/islands/request-form/form-text.ts` (puro):
+    ```ts
+    export const PURPOSE_OPTIONS: readonly string[]   // las 7 opciones del diseño
+    export const AMOUNT_HELP_WITHOUT_INVOICES: string
+    export function amountHelpText(limit: AmountLimit): string   // 'Máximo S/ 17,637.50. Puedes pedir menos.'
+    export function invoiceCountText(count: number): string   // '1 factura' o '{n} facturas'
+    export const FIELD_SUMMARY_LABELS: Readonly<Record<FormFieldName, string>>
+    export type ErrorSummaryItem = { key: string; label: string; href: string }
+    export const INVOICES_SUMMARY_ITEM: ErrorSummaryItem   // 'Tus facturas' → #paso-facturas
+    export function errorSummaryItems(errors: FieldErrors, invoicesMissing: boolean): ErrorSummaryItem[]
+    export const UNEXPLAINED_ERROR_TEXT: string
+    export function errorSummaryTitle(count: number): string   // 'Te falta completar 1 dato:' o 'Te falta completar {n} datos:'
+    export type SendSummary = { amount: string | null; invoices: string | null; mobile: string | null; slot: string; email: string | null }
+    export const SEND_SUMMARY_FALLBACKS: { readonly amount: string; readonly invoices: string; readonly mobile: string; readonly slot: string; readonly email: string }
+    export function sendSummary(model: FormModel, view: IntakeView | null): SendSummary
+    export const NOTICE_TOGGLE_TEXTS: { readonly closed: string; readonly open: string }
+    export function privacyLead(): string
+    export function privacyDetailText(): string   // termina en "escribe a"; el correo va aparte, como enlace
+    export const PROMISE_TEXT: string
+    export const TURNSTILE_TEXT: string
+    ```
+  - `src/islands/request-form/steps/fields.tsx`:
+    ```ts
+    export type FieldControls = { model: FormModel; errors: FieldErrors; onText: (key: TextKey, value: string) => void; onLeave: (key: TextKey) => void; onPaste: (key: NormalizedKey, event: ClipboardEvent<HTMLInputElement>) => void; onChoose: <K extends ChoiceKey>(key: K, value: FormModel[K]) => void }
+    export function describedBy(helpId: string | null, errorId: string, error: string | undefined): string | undefined
+    export function FieldError(props: { id: string; message: string | undefined })
+    export type TextFieldProps = { id: string; label: ReactNode; value: string; error: string | undefined; help?: ReactNode | undefined; onChange: (value: string) => void; onBlur: () => void; onPaste?: ((event: ClipboardEvent<HTMLInputElement>) => void) | undefined; type?: 'text' | 'email' | 'tel' | undefined; inputMode?: 'text' | 'numeric' | 'decimal' | 'tel' | 'email' | undefined; autoComplete: string; placeholder?: string | undefined; affix?: { text: string; kind: 'amount' | 'phone' } | undefined; wide?: boolean | undefined }
+    export function TextField(props: TextFieldProps)
+    export type ChoiceOption<T extends string> = { value: T; label: string }
+    export type ChoiceGroupProps<T extends string> = { id: string; name: string; legend: string; variant: 'representative' | 'slot'; options: readonly ChoiceOption<T>[]; value: T | null; onChange: (value: T) => void; error: string | undefined; note?: ReactNode | undefined; children?: ReactNode | undefined }
+    export function ChoiceGroup<T extends string>(props: ChoiceGroupProps<T>)
+    ```
+  - Pasos y cierre:
+    ```ts
+    // steps/AdvanceStep.tsx: raíz fieldset#paso-adelanto, legend «02 · Tu adelanto»
+    export type AdvanceStepProps = { controls: FieldControls; disabled: boolean; limit: AmountLimit | null; currency: Currency }
+    export default function AdvanceStep(props: AdvanceStepProps)
+    // steps/ContactStep.tsx: raíz fieldset#paso-datos, legend «03 · Tus datos»
+    export type ContactStepProps = { controls: FieldControls; disabled: boolean; payerShortName: string }
+    export default function ContactStep(props: ContactStepProps)
+    // closing/TrustCard.tsx
+    export default function TrustCard(props: { payerShortName: string })
+    // closing/ErrorSummary.tsx: role="alert", tabIndex={-1}
+    export default function ErrorSummary(props: { items: readonly ErrorSummaryItem[]; summaryRef: Ref<HTMLDivElement> })
+    // closing/Closing.tsx: el cierre, un solo bloque (div)
+    export const PRIVACY_DETAIL_ID = 'aviso-datos'
+    export type ClosingProps = { config: IslandConfig; view: IntakeView | null; controls: FieldControls; disabled: boolean }
+    export default function Closing(props: ClosingProps)
+    // closing/StepsNav.tsx
+    export type StepsNavProps = { steps: StepStatus[]; activeId?: StepStatus['id'] | null | undefined; invoiceCount?: number | undefined }
+    export default function StepsNav(props: StepsNavProps)
+    // invoices/icons.tsx, agregados: ShieldIcon, ShieldCheckIcon y ArrowIcon ({ size?: number; className?: string })
+    ```
+    `StepsNav` lleva las props del mini-contrato (`steps` y `activeId`: `aria-current="step"` en `activeId` si viene y, si no, en el paso `current`) más `invoiceCount`, opcional, para el texto corto del paso 01 en móvil ("2 facturas"). El nombre accesible de cada enlace empieza con "Paso 0X:" (oculto a la vista) y, hasta 767 px, sigue con el nombre corto: el del paso 03 incluye `Datos`.
+  - `src/islands/request-form/RequestForm.tsx` queda así para las Tareas 11, 12 y 13 (nombres locales, no interfaces): `const [model, dispatch] = useReducer(formReducer, initialFormModel)`, `const { view, reading } = useIntake()`, `const hydrated = useHydrated()`, `const [fieldErrors, setFieldErrors] = useState<FieldErrors>({})` (el setter de `useState`, estable), `const [source] = useState<SourceInfo>({})` y un `onSubmit` con `const files = view?.submission ?? null`, que sin `files` abre el resumen con las facturas y los datos que falten y no sigue, y con `files` llama a `const result = buildAdvanceRequestForm(model, files, config, source)`: con `!result.ok` abre el resumen; con `ok`, `setFieldErrors({})`, `setSummary(null)` y el comentario `// La Tarea 11 envía aquí: submission.send(result.form, files)`. Ninguna variable local se llama `submission`, `formRef`, `draft` ni `sendAnother`. El JSX: `<div className={styles.root}>` con `<RequestAside config={config} view={view}><StepsNav steps={steps} invoiceCount={…} /></RequestAside>`, el `<form>` y, después del `<form>`, el recuadro "¿Tienes dudas?" (solo hasta 767 px). Hijos directos del `<form>`, en este orden: `{showSummary && <ErrorSummary … />}`, `<InvoicesStep … />` (`fieldset#paso-facturas`), `<AdvanceStep … />` (`fieldset#paso-adelanto`), `<ContactStep … />` (`fieldset#paso-datos`) y `<Closing … />` (un `div`, con el botón «Enviar solicitud» `type="submit"` al final). La Tarea 11 envuelve los tres `fieldset` en `<LockedSteps>` y pone `<SubmissionPanel>` después de `<Closing>`; la Tarea 12 pone `<DraftNotice>` como primer hijo; la Tarea 13 le pasa `activeId` a `StepsNav`.
+  - Lo que el E2E de la Tarea 15 busca en esta parte: `#paso-adelanto` con `getByLabel('Monto que quieres adelantar')`, que sale con el máximo del grupo y lo sigue al cambiar de grupo, y el texto `Máximo {formatMoney(max, currency)}. Puedes pedir menos.`; en `#paso-datos`, los campos `Nombre completo`, `DNI` (etiqueta exacta), `Celular` y `Correo electrónico`, y los grupos `¿Eres representante legal de la empresa?` (`Sí`, `No`) y `¿Cuándo prefieres que te llamemos?` (`CONTACT_TIME_SLOT_LABELS`); `#paso-datos legend`; las casillas `Acepto los Términos y Condiciones…` y `Autorizo el tratamiento de mis datos personales…`; el botón `Enviar solicitud`; con DNI de 7 dígitos, correo sin @ y los Términos sin marcar, un `role="alert"` enfocado con `Te falta completar 3 datos:` y exactamente 3 enlaces, y `aria-invalid="true"` en el DNI y el correo; lo pegado en monto, celular, DNI y correo llega canónico al `form`; el `nav` "Pasos de la solicitud" con un enlace cuyo nombre incluye `Datos`.
+
+**Decisiones de esta tarea:**
+- **El monto sigue al máximo mientras la persona no lo cambie.** `amountAfterMaxChange` (pura) decide: si el grupo o las facturas cambian el máximo y el monto está vacío o vale el máximo anterior, pasa al nuevo (`amountDigits`); si ya no hay grupo, un monto que seguía al máximo queda vacío (así, al volver a subir facturas, sigue al nuevo); un monto escrito por la persona se respeta. `RequestForm` guarda el último máximo que vio en un estado y lo ajusta durante el render (el patrón de React para ajustar estado cuando cambia un dato, sin un efecto ni un pintado de más). Con un borrador de la Tarea 12 funciona igual: el monto restaurado llega antes que las facturas y, como el máximo anterior era `null`, se respeta; si era el máximo, sigue valiéndolo, y al cambiar de grupo lo sigue.
+- **La regla del monto.** `validateRequestedAmount` de shared necesita un `ValidationResult` con las facturas válidas, que el `SubmissionFiles` no trae; se aplica su misma regla con las piezas de shared que ella usa: `parseAmountInput` (que ya descarta cero, negativos, letras y más de dos decimales, y toda salida la acepta `amountSchema`) y `compareAmounts` contra `maxAdvance`. Sin grupo no se compara: el resumen pide las facturas.
+- **Validación.** Al salir de un campo de texto se normaliza (monto con `amountDigits`, DNI en sus 8 dígitos, celular con `formatMobile`, correo en minúsculas) y se muestra su error; un campo vacío que no tenía error no se marca al salir (recorrerlo con Tab no llena la página de rojo). Al elegir una opción o marcar una casilla solo se actualiza un error que ya se mostraba (lo quita); con «Sí» en representante se quita también el del cargo. Al enviar se validan todos. Los errores van con `aria-invalid="true"` y `aria-describedby` (ayuda y error); en los grupos de radios, `aria-invalid` va en cada radio y el `fieldset` suma el error a su `aria-describedby`, como Cavali en la Tarea 9.
+- **Pegar.** Monto, DNI, celular y correo pasan por los normalizadores de shared al pegar si lo pegado es un valor completo (un monto que `parseAmountInput` entiende, un DNI o un celular válidos, un correo con @) y el campo está vacío o todo seleccionado; si no, el navegador pega tal cual y el campo se normaliza al salir. El nombre y el cargo no se normalizan (NFKC cambiaría lo que escribió la persona): el esquema los recorta.
+- **Resumen de errores.** Al enviar con errores aparece arriba del paso 01, con `role="alert"`, `tabIndex={-1}` y el foco. Sus enlaces siguen el orden del formulario y llevan al `id` de cada campo (`#dni`, `#correo`, `#terminos`, como el tablero 5); al pulsar uno, el foco pasa al campo (en un grupo, a su primer radio; en "Tus facturas", al campo de archivos). Se actualiza al corregir un campo y se cierra solo cuando no queda nada; también se cierra si otro cambia los errores (la respuesta de la API de la Tarea 11 o «Empezar de nuevo» de la Tarea 12 llaman a `setFieldErrors`): el resumen recuerda el objeto de errores con que se abrió. Sin facturas para enviar (`view.submission` en `null`: no hay facturas listas, o los archivos no entran), el primer enlace es "Tus facturas" (`#paso-facturas`) y cuenta como un dato más.
+- **Pasos por avance (`step-status.ts`).** El paso 01 cuenta dos datos: las facturas para enviar (`view.submission`) y Cavali. El 02, uno: un monto válido dentro del máximo del grupo (el motivo no cuenta; sin grupo, falta). El 03 cuenta nombre, DNI, celular, correo, representante, el cargo si la persona no es representante, y el horario. Un paso sin datos que falten queda hecho aunque uno anterior no lo esté; el primero con datos que faltan es el actual y los demás, pendientes. Los textos son los de `formSteps` de `Main.dc.html`; los de móvil ("2 facturas", "Listo", "Faltan 2", "Pendiente"), los de `MobileForm.dc.html` y del marco 3 de `MobileExtras.dc.html`. En `StepsNav`, el ✓ marca los pasos hechos y el resalte (borde o barra) marca `aria-current`, que la Tarea 13 moverá al paso visible.
+- **Ids fijos.** Los campos llevan `id` fijos (`monto`, `motivo`, `nombre`, `dni`, `celular`, `correo`, `representante`, `cargo`, `horario`, `terminos`, `privacidad`, más `cavali` de la Tarea 9 y `aviso-datos`) y no `useId`: el resumen enlaza a ellos y hay un solo formulario por página.
+- **Hidratación.** Los `fieldset` de los pasos 02 y 03, las casillas, el botón del aviso por capas y «Enviar solicitud» salen con `disabled` hasta hidratar; los consentimientos no están dentro de un paso, así que se deshabilitan uno por uno.
+- **Aviso por capas.** El detalle está siempre en el HTML con `hidden` cuando está cerrado, así `aria-controls="aviso-datos"` apunta siempre a un elemento que existe.
+- **Móvil.** Hasta 767 px, como `MobileForm.dc.html`: los pasos 02 y 03 en una columna, representante en dos columnas, horario en una opción por fila, la ficha de confianza sin su columna de enlaces (con el escudo junto al título), el botón a todo el ancho con "Protegido por Cloudflare Turnstile" debajo, y el recuadro "¿Tienes dudas?" (WhatsApp y soporte) después del formulario, dentro de la isla porque la isla ocupa toda la sección. Entre 768 y 1023 px, los campos siguen en dos columnas y la barra de pasos es la de escritorio, arriba del formulario.
+- **Objetivos de 44 px.** Casillas de 20 px (22 en móvil) dentro de una etiqueta de al menos 44 px de alto que las marca con un clic en cualquier parte. Los enlaces de la ficha de confianza miden 44 px de alto cada uno, así que la ficha de escritorio es más alta que en el tablero. "Cambiar", los enlaces del resumen y "Ver cómo cuidamos tus datos" siguen en línea, dentro de su frase, con un pseudo-elemento que amplía su área de toque a 44 px de alto sin mover el texto. "Términos y Condiciones" y "Política de Privacidad", dentro de la etiqueta de su casilla, quedan como enlaces en línea (la excepción de WCAG 2.5.8) para no quitarle clics a la etiqueta.
+- **Bordes de error de 2 px sin mover el texto**: 1,5 px más medio píxel de `box-shadow` por dentro, como la opción elegida de la Tarea 9. En las casillas, un contorno rojo que cede su lugar al foco.
+- **Textos que el diseño no trae** (los fija este plan):
+  - Errores: "Escribe el monto que quieres adelantar.", "Escribe tu DNI.", "Escribe tu celular.", "Escribe tu correo electrónico.", "Indica si tus facturas ya están registradas en Cavali.", "Elige cuándo prefieres que te llamemos." y "Autoriza el tratamiento de tus datos personales para continuar."; los demás son del tablero 5 ("El DNI debe tener 8 dígitos. Tiene {n}.", "Revisa el correo: le falta la @.", "Acepta los Términos y Condiciones para continuar."), del tablero 4 ("El monto supera el adelanto máximo de {max}.") o de shared ("Escribe tu nombre completo.", "El celular debe tener 9 dígitos y empezar con 9.", "El correo no es válido.", "Indica si eres representante legal de la empresa.", "Indica tu cargo en la empresa.", "El cargo debe tener al menos 2 caracteres." y `MESSAGES_ES.INVALID_AMOUNT`).
+  - Resumen: "Te falta completar 1 dato:" (singular), los nombres de los enlaces que el tablero 5 no muestra ("Tus facturas", "Cavali", "Monto", "Motivo", "Nombre", "Celular", "Representante legal", "Cargo", "Horario" y "Datos personales"; "DNI", "Correo" y "Términos y Condiciones" son del tablero) y "No pudimos preparar tu solicitud. Recarga la página y vuelve a intentarlo." si el esquema falla sin ningún campo que la persona pueda corregir.
+  - "Sube tus facturas en el paso 01 y calculamos tu máximo." como ayuda del monto sin grupo.
+  - "Vas a enviar" con datos que faltan: "el monto que elijas", "tus facturas", "celular que nos dejes" y "tu correo" ("en el horario que elijas" es del diseño). Los enlaces "Cambiar" suman, solo para lectores de pantalla, "el monto" y "tus datos".
+  - "Paso 0X:" oculto al comienzo de cada enlace de la barra de pasos.
+- **Texto del diseño que choca con el formulario**: el aviso por capas dice "Todos los campos son obligatorios salvo el PDF.", pero el motivo es opcional. Se copia tal cual y queda con el pendiente 3 de la cabecera (motivo del financiamiento) para legal.
+
+Antes de empezar: la Tarea 9 está hecha y con su commit. `pnpm turbo run build --filter=@anticipate/shared` (la landing lee el `dist` de shared).
+
+- [ ] **Step 1: Escribir los tests del armado del `form` y de la validación**
+
+El archivo completo reemplaza al de la Tarea 9: conserva sus 5 tests del reducer y agrega los de esta tarea. Con `SubmissionFiles` y `IslandConfig` armados en el propio test (las ayudas de `src/lib/submit/testing.ts` son de la Tarea 11). El nombre `'el form lleva monto, celular y DNI canónicos'` es el del Review Focus 6.
+
+`apps/landing/src/islands/request-form/form-model.test.ts`:
+```ts
+import type { IntakeLimits } from '@anticipate/shared/api'
+import type { PublicPayer } from '@anticipate/shared/payer'
+import { DEFAULT_TEST_XML } from '@anticipate/shared/testing'
+import { describe, expect, it } from 'vitest'
+import type { SubmissionFiles } from '../../lib/intake/intake-state'
+import type { IslandConfig } from '../../lib/island-config'
+import {
+  type AmountLimit,
+  amountAfterMaxChange,
+  buildAdvanceRequestForm,
+  type FieldErrors,
+  type FormFieldName,
+  type FormModel,
+  fieldForIssuePath,
+  formFieldErrors,
+  formReducer,
+  initialFormModel,
+  normalizeFieldText,
+  pastedFieldValue,
+  setField,
+  updateFieldErrors,
+} from './form-model'
+
+const MiB = 1024 * 1024
+const SEA: PublicPayer = {
+  slug: 'sea',
+  ruc: '20131312955',
+  legalName: 'SERVICIOS ENERGETICOS AMBIENTALES S.R.L. - SEA S.R.L.',
+  shortName: 'SEA',
+  advancePercent: 85,
+  minTermDays: 15,
+  maxInvoices: 10,
+  allowedCurrencies: ['PEN', 'USD'],
+  accentColor: '#0E7C86',
+  logoUrl: null,
+  texts: {},
+}
+const LIMITS: IntakeLimits = {
+  maxFiles: 20,
+  maxXmlBytes: MiB,
+  maxPdfBytes: 10 * MiB,
+  maxBodyBytes: 95_000_000,
+}
+const CONFIG: IslandConfig = {
+  payer: SEA,
+  intakeLimits: LIMITS,
+  legal: {
+    termsVersion: '2026-09',
+    termsUrl: 'https://anticipate.pe/terminos',
+    privacyVersion: '2026-09',
+    privacyUrl: 'https://anticipate.pe/privacidad',
+  },
+  apiBaseUrl: '',
+  turnstileSiteKey: '1x00000000000000000000AA',
+  siteUrl: 'https://factoring.example.pe',
+  pageUrl: 'https://factoring.example.pe/sea',
+}
+
+/** Lo que se envía: dos facturas en soles del emisor de los XML de prueba. */
+const FILES: SubmissionFiles = {
+  xml: [
+    { name: 'F001-00001234.xml', bytes: new ArrayBuffer(8) },
+    { name: 'F001-00001240.xml', bytes: new ArrayBuffer(8) },
+  ],
+  pdf: [],
+  company: { ruc: DEFAULT_TEST_XML.issuerRuc, legalName: DEFAULT_TEST_XML.issuerName },
+  currency: 'PEN',
+  netPendingTotal: '20750.00',
+  maxAdvance: '17637.50',
+  invoiceNumbers: ['F001-00001234', 'F001-00001240'],
+}
+
+const LIMIT_PEN: AmountLimit = { maxAdvance: '17637.50', currency: 'PEN' }
+const LIMIT_USD: AmountLimit = { maxAdvance: '2720.00', currency: 'USD' }
+
+/** Un formulario completo y válido, como queda después de salir de cada campo. */
+const COMPLETE: FormModel = {
+  cavali: 'UNKNOWN',
+  amountText: '17,637.50',
+  purpose: '',
+  fullName: 'Carla Quispe Mamani',
+  dniText: '45678912',
+  mobileText: '987 654 321',
+  emailText: 'carla@empresa.pe',
+  isLegalRepresentative: true,
+  jobTitle: '',
+  contactTimeSlot: 'MORNING',
+  acceptTerms: true,
+  acceptPrivacy: true,
+}
+
+function formOf(result: ReturnType<typeof buildAdvanceRequestForm>) {
+  if (!result.ok) throw new Error(`El form no se armó: ${JSON.stringify(result.errors)}`)
+  return result.form
+}
+
+describe('formReducer', () => {
+  it('el modelo inicial tiene los textos vacíos, los consentimientos sin marcar y las elecciones en null', () => {
+    expect(initialFormModel).toEqual({
+      cavali: null,
+      amountText: '',
+      purpose: '',
+      fullName: '',
+      dniText: '',
+      mobileText: '',
+      emailText: '',
+      isLegalRepresentative: null,
+      jobTitle: '',
+      contactTimeSlot: null,
+      acceptTerms: false,
+      acceptPrivacy: false,
+    })
+    expect(Object.isFrozen(initialFormModel)).toBe(true)
+  })
+
+  it('set cambia solo ese campo y devuelve un modelo nuevo', () => {
+    const next = formReducer(initialFormModel, setField('cavali', 'UNKNOWN'))
+    expect(next).not.toBe(initialFormModel)
+    expect(next).toEqual({ ...initialFormModel, cavali: 'UNKNOWN' })
+    expect(formReducer(next, setField('isLegalRepresentative', false))).toEqual({
+      ...next,
+      isLegalRepresentative: false,
+    })
+    expect(formReducer(next, setField('cavali', null)).cavali).toBeNull()
+  })
+
+  it('set con el mismo valor devuelve el mismo modelo', () => {
+    const next = formReducer(initialFormModel, setField('fullName', 'Carla Quispe'))
+    expect(formReducer(next, setField('fullName', 'Carla Quispe'))).toBe(next)
+  })
+
+  it('set ignora un valor que no es del tipo del campo', () => {
+    expect(formReducer(initialFormModel, { type: 'set', field: 'cavali', value: 'QUIZAS' })).toBe(
+      initialFormModel,
+    )
+    expect(formReducer(initialFormModel, { type: 'set', field: 'amountText', value: true })).toBe(
+      initialFormModel,
+    )
+    expect(formReducer(initialFormModel, { type: 'set', field: 'acceptTerms', value: null })).toBe(
+      initialFormModel,
+    )
+    expect(
+      formReducer(initialFormModel, { type: 'set', field: 'contactTimeSlot', value: 'NIGHT' }),
+    ).toBe(initialFormModel)
+    expect(
+      formReducer(initialFormModel, { type: 'set', field: 'isLegalRepresentative', value: 'Sí' }),
+    ).toBe(initialFormModel)
+  })
+
+  it('reset vuelve al modelo inicial y restore pone el modelo recibido', () => {
+    const saved: FormModel = {
+      ...initialFormModel,
+      cavali: 'YES',
+      fullName: 'Carla Quispe',
+      contactTimeSlot: 'ANY',
+    }
+    expect(formReducer(saved, { type: 'reset' })).toBe(initialFormModel)
+    expect(formReducer(initialFormModel, { type: 'restore', model: saved })).toBe(saved)
+  })
+})
+
+describe('buildAdvanceRequestForm', () => {
+  it('el form lleva monto, celular y DNI canónicos', () => {
+    const form = formOf(
+      buildAdvanceRequestForm(
+        {
+          ...COMPLETE,
+          amountText: 'S/ 5,000.50',
+          // Así llegan copiados de un chat de WhatsApp: con marcas de dirección (U+202A y U+202C).
+          mobileText: '‪+51 987 654 321‬',
+          dniText: '45.678.912',
+          emailText: ' CARLA@EMPRESA.PE ',
+          fullName: '  Carla Quispe Mamani ',
+          jobTitle: 'Gerente',
+        },
+        FILES,
+        CONFIG,
+        {},
+      ),
+    )
+    expect(form).toEqual({
+      payerSlug: 'sea',
+      contact: {
+        fullName: 'Carla Quispe Mamani',
+        dni: '45678912',
+        mobile: '987654321',
+        email: 'carla@empresa.pe',
+        isLegalRepresentative: true,
+        contactTimeSlot: 'MORNING',
+      },
+      company: { ruc: '20100070970', legalName: 'PROVEEDOR EJEMPLO S.A.C.' },
+      financing: { requestedAmount: '5000.50' },
+      cavaliRegistration: 'UNKNOWN',
+      consents: {
+        terms: true,
+        personalData: true,
+        termsVersion: '2026-09',
+        privacyVersion: '2026-09',
+      },
+    })
+    // Omitidos, no en undefined: el JSON que viaja no los lleva.
+    expect(form.contact).not.toHaveProperty('jobTitle')
+    expect(form.financing).not.toHaveProperty('purpose')
+    expect(form).not.toHaveProperty('source')
+  })
+
+  it('sin ser representante lleva el cargo, y lleva el motivo y el origen de la visita', () => {
+    const source = { utm: { utm_source: 'google' }, referrer: 'https://www.google.com/' }
+    const form = formOf(
+      buildAdvanceRequestForm(
+        {
+          ...COMPLETE,
+          isLegalRepresentative: false,
+          jobTitle: ' Jefe de finanzas ',
+          purpose: 'Capital de trabajo',
+        },
+        FILES,
+        CONFIG,
+        source,
+      ),
+    )
+    expect(form.contact).toMatchObject({
+      isLegalRepresentative: false,
+      jobTitle: 'Jefe de finanzas',
+    })
+    expect(form.financing).toEqual({ requestedAmount: '17637.50', purpose: 'Capital de trabajo' })
+    expect(form.source).toEqual(source)
+  })
+
+  it('con datos inválidos devuelve un error por campo con los textos del diseño', () => {
+    expect(
+      buildAdvanceRequestForm(
+        { ...COMPLETE, dniText: '4567123', emailText: 'carla.empresa.pe', acceptTerms: false },
+        FILES,
+        CONFIG,
+        {},
+      ),
+    ).toEqual({
+      ok: false,
+      errors: {
+        dni: 'El DNI debe tener 8 dígitos. Tiene 7.',
+        email: 'Revisa el correo: le falta la @.',
+        acceptTerms: 'Acepta los Términos y Condiciones para continuar.',
+      },
+    })
+  })
+
+  it('el monto no puede pasar el máximo del grupo ni ser cero', () => {
+    expect(
+      buildAdvanceRequestForm({ ...COMPLETE, amountText: '20,000.00' }, FILES, CONFIG, {}),
+    ).toEqual({
+      ok: false,
+      errors: { amount: 'El monto supera el adelanto máximo de S/ 17,637.50.' },
+    })
+    expect(buildAdvanceRequestForm({ ...COMPLETE, amountText: '0' }, FILES, CONFIG, {})).toEqual({
+      ok: false,
+      errors: { amount: 'El monto debe ser un número mayor que cero con dos decimales.' },
+    })
+  })
+})
+
+describe('formFieldErrors', () => {
+  it('un formulario vacío marca cada dato que falta, sin el motivo ni el cargo', () => {
+    expect(formFieldErrors(initialFormModel, null)).toEqual({
+      cavali: 'Indica si tus facturas ya están registradas en Cavali.',
+      amount: 'Escribe el monto que quieres adelantar.',
+      fullName: 'Escribe tu nombre completo.',
+      dni: 'Escribe tu DNI.',
+      mobile: 'Escribe tu celular.',
+      email: 'Escribe tu correo electrónico.',
+      isLegalRepresentative: 'Indica si eres representante legal de la empresa.',
+      contactTimeSlot: 'Elige cuándo prefieres que te llamemos.',
+      acceptTerms: 'Acepta los Términos y Condiciones para continuar.',
+      acceptPrivacy: 'Autoriza el tratamiento de tus datos personales para continuar.',
+    })
+  })
+
+  it('sin ser representante pide el cargo, y uno muy corto usa el mensaje de shared', () => {
+    expect(formFieldErrors({ ...COMPLETE, isLegalRepresentative: false }, null)).toEqual({
+      jobTitle: 'Indica tu cargo en la empresa.',
+    })
+    expect(
+      formFieldErrors({ ...COMPLETE, isLegalRepresentative: false, jobTitle: 'X' }, null),
+    ).toEqual({ jobTitle: 'El cargo debe tener al menos 2 caracteres.' })
+  })
+
+  it('un DNI, un celular o un correo incompletos dicen qué les falta', () => {
+    expect(
+      formFieldErrors(
+        { ...COMPLETE, dniText: '123456789', mobileText: '98765', emailText: 'carla@' },
+        null,
+      ),
+    ).toEqual({
+      dni: 'El DNI debe tener 8 dígitos. Tiene 9.',
+      mobile: 'El celular debe tener 9 dígitos y empezar con 9.',
+      email: 'El correo no es válido.',
+    })
+  })
+
+  it('compara el monto con el máximo solo si hay un grupo', () => {
+    const big: FormModel = { ...COMPLETE, amountText: '900,000.00' }
+    expect(formFieldErrors(big, null)).toEqual({})
+    expect(formFieldErrors(big, LIMIT_PEN)).toEqual({
+      amount: 'El monto supera el adelanto máximo de S/ 17,637.50.',
+    })
+  })
+})
+
+describe('fieldForIssuePath', () => {
+  it('lleva la ruta de un issue de Zod o de una violación de la API a su campo', () => {
+    const cases: [readonly PropertyKey[], FormFieldName][] = [
+      [['contact', 'fullName'], 'fullName'],
+      [['contact', 'dni'], 'dni'],
+      [['contact', 'mobile'], 'mobile'],
+      [['contact', 'email'], 'email'],
+      [['contact', 'isLegalRepresentative'], 'isLegalRepresentative'],
+      [['contact', 'jobTitle'], 'jobTitle'],
+      [['contact', 'contactTimeSlot'], 'contactTimeSlot'],
+      [['financing', 'requestedAmount'], 'amount'],
+      [['financing', 'purpose'], 'purpose'],
+      [['cavaliRegistration'], 'cavali'],
+      [['consents', 'terms'], 'acceptTerms'],
+      [['consents', 'personalData'], 'acceptPrivacy'],
+      // Como la arma la Tarea 11 con `violation.field.split('.')`.
+      ['contact.dni'.split('.'), 'dni'],
+    ]
+    for (const [path, field] of cases) {
+      expect(fieldForIssuePath(path), path.join('.')).toBe(field)
+    }
+  })
+
+  it('devuelve null para lo que la persona no escribe', () => {
+    const paths: (readonly PropertyKey[])[] = [
+      [],
+      ['company', 'ruc'],
+      ['company', 'legalName'],
+      ['source', 'utm', 'utm_source'],
+      ['source', 'referrer'],
+      ['payerSlug'],
+      ['consents', 'termsVersion'],
+      ['consents', 'privacyVersion'],
+      ['contact'],
+      ['contact', 0],
+      [0],
+      ['constructor'],
+      ['contact', 'constructor'],
+    ]
+    for (const path of paths) {
+      expect(fieldForIssuePath(path), path.map(String).join('.')).toBeNull()
+    }
+  })
+})
+
+describe('amountAfterMaxChange', () => {
+  it('pasa al máximo nuevo si el monto está vacío o vale el máximo anterior', () => {
+    expect(amountAfterMaxChange('', null, LIMIT_PEN)).toBe('17,637.50')
+    expect(amountAfterMaxChange('17,637.50', '17637.50', LIMIT_USD)).toBe('2,720.00')
+    expect(amountAfterMaxChange('S/ 17637.5', '17637.50', LIMIT_USD)).toBe('2,720.00')
+    expect(amountAfterMaxChange('17,637.50', '17637.50', LIMIT_PEN)).toBeNull()
+  })
+
+  it('respeta un monto que la persona cambió, también el de un borrador restaurado', () => {
+    expect(amountAfterMaxChange('10,000.00', '17637.50', LIMIT_USD)).toBeNull()
+    // El borrador trae su monto antes que las facturas: el máximo anterior todavía es null.
+    expect(amountAfterMaxChange('12,000.00', null, LIMIT_PEN)).toBeNull()
+    expect(amountAfterMaxChange('17,637.50', null, LIMIT_PEN)).toBeNull()
+  })
+
+  it('si ya no hay grupo, vacía el monto que seguía al máximo', () => {
+    expect(amountAfterMaxChange('17,637.50', '17637.50', null)).toBe('')
+    expect(amountAfterMaxChange('10,000.00', '17637.50', null)).toBeNull()
+    expect(amountAfterMaxChange('', null, null)).toBeNull()
+  })
+})
+
+describe('normalizeFieldText y pastedFieldValue', () => {
+  it('al salir del campo deja monto, DNI, celular y correo normalizados, y lo que no entiende tal cual', () => {
+    expect(normalizeFieldText('amountText', 'S/ 12450', 'PEN')).toBe('12,450.00')
+    expect(normalizeFieldText('amountText', '12.450,5', 'USD')).toBe('12,450.50')
+    expect(normalizeFieldText('amountText', 'doce mil', 'PEN')).toBe('doce mil')
+    expect(normalizeFieldText('dniText', '45.678.912', 'PEN')).toBe('45678912')
+    expect(normalizeFieldText('dniText', '4567123', 'PEN')).toBe('4567123')
+    expect(normalizeFieldText('mobileText', '+51 987654321', 'PEN')).toBe('987 654 321')
+    expect(normalizeFieldText('emailText', ' CARLA@Empresa.PE ', 'PEN')).toBe('carla@empresa.pe')
+    expect(normalizeFieldText('fullName', '  Carla  ', 'PEN')).toBe('  Carla  ')
+  })
+
+  it('al pegar solo reemplaza con un valor completo', () => {
+    expect(pastedFieldValue('amountText', 'S/ 5,000.50', 'PEN')).toBe('5,000.50')
+    expect(pastedFieldValue('amountText', 'S/', 'PEN')).toBeNull()
+    expect(pastedFieldValue('dniText', '12345678-9', 'PEN')).toBe('12345678')
+    expect(pastedFieldValue('dniText', '1234', 'PEN')).toBeNull()
+    expect(pastedFieldValue('mobileText', '‪+51 987 654 321‬', 'PEN')).toBe('987 654 321')
+    expect(pastedFieldValue('mobileText', '987', 'PEN')).toBeNull()
+    expect(pastedFieldValue('emailText', ' Carla@Empresa.pe ', 'PEN')).toBe('carla@empresa.pe')
+    expect(pastedFieldValue('emailText', 'carla', 'PEN')).toBeNull()
+  })
+})
+
+describe('updateFieldErrors', () => {
+  const current: FieldErrors = { dni: 'El DNI debe tener 8 dígitos. Tiene 7.' }
+  const computed: FieldErrors = {
+    dni: 'El DNI debe tener 8 dígitos. Tiene 6.',
+    email: 'Revisa el correo: le falta la @.',
+  }
+
+  it('show agrega o quita el error del campo; refresh solo cambia los que ya se muestran', () => {
+    expect(updateFieldErrors(current, computed, ['email'], 'show')).toEqual({
+      dni: 'El DNI debe tener 8 dígitos. Tiene 7.',
+      email: 'Revisa el correo: le falta la @.',
+    })
+    expect(updateFieldErrors(current, {}, ['dni'], 'show')).toEqual({})
+    expect(updateFieldErrors(current, computed, ['dni'], 'refresh')).toEqual({
+      dni: 'El DNI debe tener 8 dígitos. Tiene 6.',
+    })
+  })
+
+  it('devuelve el mismo objeto si nada cambia', () => {
+    expect(updateFieldErrors(current, computed, ['email'], 'refresh')).toBe(current)
+    expect(updateFieldErrors(current, current, ['dni'], 'show')).toBe(current)
+  })
+})
+```
+
+- [ ] **Step 2: Correr el test y ver que falla**
+
+Run: `ASTRO_TELEMETRY_DISABLED=1 pnpm --filter @anticipate/landing exec vitest run src/islands/request-form/form-model.test.ts`
+Expected: FAIL: 17 failed y 5 passed. Pasan los 5 tests de `formReducer`; los nuevos fallan con `TypeError: buildAdvanceRequestForm is not a function` (y lo mismo con `formFieldErrors`, `fieldForIssuePath`, `amountAfterMaxChange`, `normalizeFieldText`, `pastedFieldValue` y `updateFieldErrors`): el módulo todavía no las exporta.
+
+- [ ] **Step 3: Implementar la validación y el armado del `form`**
+
+El archivo completo reemplaza al de la Tarea 9: el modelo y el reducer quedan igual, y se agrega lo de esta tarea debajo.
+
+`apps/landing/src/islands/request-form/form-model.ts`:
+```ts
+import {
+  type AdvanceRequestForm,
+  advanceRequestFormSchema,
+  CAVALI_REGISTRATION,
+  type CavaliRegistration,
+  CONTACT_TIME_SLOTS,
+  type ContactTimeSlot,
+  FORM_MESSAGES,
+} from '@anticipate/shared/advance-request'
+import { MESSAGES_ES } from '@anticipate/shared/errors'
+import { formatMobile, normalizeDniInput, normalizeMobileInput } from '@anticipate/shared/identity'
+import {
+  type Amount,
+  type Currency,
+  compareAmounts,
+  formatMoney,
+  parseAmountInput,
+} from '@anticipate/shared/money'
+import { cleanPasted, normalizeEmailInput } from '@anticipate/shared/text'
+import type { SubmissionFiles } from '../../lib/intake/intake-state'
+import type { IslandConfig } from '../../lib/island-config'
+import { amountDigits } from '../calculator/calculator-text'
+
+/**
+ * Lo que la persona escribe y elige en el formulario, tal cual. Los textos van sin normalizar (se
+ * normalizan al salir del campo y al armar el `form`), las elecciones quedan en `null` hasta que se
+ * marcan y los consentimientos empiezan sin marcar (el borrador nunca los guarda).
+ */
+export type FormModel = {
+  cavali: CavaliRegistration | null
+  amountText: string
+  purpose: string
+  fullName: string
+  dniText: string
+  mobileText: string
+  emailText: string
+  isLegalRepresentative: boolean | null
+  jobTitle: string
+  contactTimeSlot: ContactTimeSlot | null
+  acceptTerms: boolean
+  acceptPrivacy: boolean
+}
+
+export type FormAction =
+  | { type: 'set'; field: keyof FormModel; value: FormModel[keyof FormModel] }
+  | { type: 'reset' }
+  | { type: 'restore'; model: FormModel }
+
+export const initialFormModel: FormModel = Object.freeze({
+  cavali: null,
+  amountText: '',
+  purpose: '',
+  fullName: '',
+  dniText: '',
+  mobileText: '',
+  emailText: '',
+  isLegalRepresentative: null,
+  jobTitle: '',
+  contactTimeSlot: null,
+  acceptTerms: false,
+  acceptPrivacy: false,
+})
+
+const isText = (value: unknown): value is string => typeof value === 'string'
+const isFlag = (value: unknown): value is boolean => typeof value === 'boolean'
+const isAnswer = (value: unknown): value is boolean | null =>
+  value === null || typeof value === 'boolean'
+const isOptionOf =
+  <T extends string>(options: readonly T[]) =>
+  (value: unknown): value is T | null =>
+    value === null || (typeof value === 'string' && (options as readonly string[]).includes(value))
+
+/** Qué valor admite cada campo: `set` ignora uno que no le corresponde. */
+const FIELD_GUARDS: { readonly [K in keyof FormModel]: (value: unknown) => value is FormModel[K] } =
+  {
+    cavali: isOptionOf(CAVALI_REGISTRATION),
+    amountText: isText,
+    purpose: isText,
+    fullName: isText,
+    dniText: isText,
+    mobileText: isText,
+    emailText: isText,
+    isLegalRepresentative: isAnswer,
+    jobTitle: isText,
+    contactTimeSlot: isOptionOf(CONTACT_TIME_SLOTS),
+    acceptTerms: isFlag,
+    acceptPrivacy: isFlag,
+  }
+
+/** La acción `set` de un campo, con el tipo de ese campo: `dispatch(setField('cavali', 'YES'))`. */
+export function setField<K extends keyof FormModel>(field: K, value: FormModel[K]): FormAction {
+  return { type: 'set', field, value }
+}
+
+/**
+ * Reducer del formulario. `set` cambia un campo y devuelve el mismo modelo si el valor no cambia o
+ * si no es del tipo del campo (un texto donde va una elección, o una opción que no existe); `reset`
+ * vuelve al modelo inicial y `restore` pone un modelo completo (el borrador de la Tarea 12).
+ */
+export function formReducer(model: FormModel, action: FormAction): FormModel {
+  switch (action.type) {
+    case 'set': {
+      const { field, value } = action
+      if (!FIELD_GUARDS[field](value) || Object.is(model[field], value)) return model
+      return { ...model, [field]: value }
+    }
+    case 'reset':
+      return initialFormModel
+    case 'restore':
+      return action.model
+  }
+}
+
+/** Cada dato que la persona completa y que puede tener un error propio. */
+export type FormFieldName =
+  | 'cavali'
+  | 'amount'
+  | 'purpose'
+  | 'fullName'
+  | 'dni'
+  | 'mobile'
+  | 'email'
+  | 'isLegalRepresentative'
+  | 'jobTitle'
+  | 'contactTimeSlot'
+  | 'acceptTerms'
+  | 'acceptPrivacy'
+
+export type FieldErrors = Partial<Record<FormFieldName, string>>
+
+/** Origen de la visita (UTM y referrer ya saneados por la Tarea 11). */
+export type SourceInfo = { utm?: Record<string, string>; referrer?: string }
+
+/** El adelanto máximo del grupo elegido, con su moneda. */
+export type AmountLimit = { maxAdvance: Amount; currency: Currency }
+
+/** Campos de texto del modelo, y los que se normalizan al pegar y al salir. */
+export type TextKey =
+  | 'amountText'
+  | 'fullName'
+  | 'dniText'
+  | 'mobileText'
+  | 'emailText'
+  | 'jobTitle'
+export type NormalizedKey = 'amountText' | 'dniText' | 'mobileText' | 'emailText'
+/** Campos que se eligen: radios, casillas y el motivo. */
+export type ChoiceKey =
+  | 'cavali'
+  | 'purpose'
+  | 'isLegalRepresentative'
+  | 'contactTimeSlot'
+  | 'acceptTerms'
+  | 'acceptPrivacy'
+
+/** Los datos en el orden del formulario: el resumen de errores los lista así. */
+export const FORM_FIELDS: readonly FormFieldName[] = [
+  'cavali',
+  'amount',
+  'purpose',
+  'fullName',
+  'dni',
+  'mobile',
+  'email',
+  'isLegalRepresentative',
+  'jobTitle',
+  'contactTimeSlot',
+  'acceptTerms',
+  'acceptPrivacy',
+]
+
+/**
+ * `id` del control de cada dato (el `fieldset` en un grupo de radios): el resumen de errores enlaza
+ * aquí. `cavali` es el `CAVALI_FIELD_ID` de la Tarea 9.
+ */
+export const FIELD_IDS: Readonly<Record<FormFieldName, string>> = {
+  cavali: 'cavali',
+  amount: 'monto',
+  purpose: 'motivo',
+  fullName: 'nombre',
+  dni: 'dni',
+  mobile: 'celular',
+  email: 'correo',
+  isLegalRepresentative: 'representante',
+  jobTitle: 'cargo',
+  contactTimeSlot: 'horario',
+  acceptTerms: 'terminos',
+  acceptPrivacy: 'privacidad',
+}
+
+/** El dato de cada campo del modelo. */
+export const MODEL_FIELDS: Readonly<Record<keyof FormModel, FormFieldName>> = {
+  cavali: 'cavali',
+  amountText: 'amount',
+  purpose: 'purpose',
+  fullName: 'fullName',
+  dniText: 'dni',
+  mobileText: 'mobile',
+  emailText: 'email',
+  isLegalRepresentative: 'isLegalRepresentative',
+  jobTitle: 'jobTitle',
+  contactTimeSlot: 'contactTimeSlot',
+  acceptTerms: 'acceptTerms',
+  acceptPrivacy: 'acceptPrivacy',
+}
+
+/**
+ * Textos de error del tablero 5 de Estados y los que fija el plan. Donde no hay uno, el mensaje es el
+ * del esquema de shared.
+ */
+export const FIELD_ERROR_TEXTS: {
+  readonly amountEmpty: string
+  readonly dniEmpty: string
+  readonly mobileEmpty: string
+  readonly emailEmpty: string
+  readonly emailWithoutAt: string
+  readonly cavali: string
+  readonly contactTimeSlot: string
+  readonly terms: string
+  readonly privacy: string
+} = {
+  amountEmpty: 'Escribe el monto que quieres adelantar.',
+  dniEmpty: 'Escribe tu DNI.',
+  mobileEmpty: 'Escribe tu celular.',
+  emailEmpty: 'Escribe tu correo electrónico.',
+  emailWithoutAt: 'Revisa el correo: le falta la @.',
+  cavali: 'Indica si tus facturas ya están registradas en Cavali.',
+  contactTimeSlot: 'Elige cuándo prefieres que te llamemos.',
+  terms: 'Acepta los Términos y Condiciones para continuar.',
+  privacy: 'Autoriza el tratamiento de tus datos personales para continuar.',
+}
+
+/** "El DNI debe tener 8 dígitos. Tiene 7." (tablero 5). */
+export function dniLengthText(digits: number): string {
+  return `El DNI debe tener 8 dígitos. Tiene ${digits}.`
+}
+
+/** "El monto supera el adelanto máximo de S/ 17,637.50." (tablero 4). */
+export function amountOverMaxText(limit: AmountLimit): string {
+  return `El monto supera el adelanto máximo de ${formatMoney(limit.maxAdvance, limit.currency)}.`
+}
+
+/** Si un texto no tiene nada escrito, aparte de espacios y caracteres invisibles. */
+export function isBlank(text: string): boolean {
+  return cleanPasted(text) === ''
+}
+
+/**
+ * Error del monto, o `null`. Es la regla de `validateRequestedAmount` de shared, con las piezas que
+ * ella usa: `parseAmountInput` ya descarta cero, negativos, letras y más de dos decimales, y el monto
+ * no puede pasar el máximo del grupo. Sin grupo (`limit` en `null`) no se compara.
+ */
+export function amountError(amountText: string, limit: AmountLimit | null): string | null {
+  if (isBlank(amountText)) return FIELD_ERROR_TEXTS.amountEmpty
+  const amount = parseAmountInput(amountText)
+  if (amount === null) return MESSAGES_ES.INVALID_AMOUNT
+  if (limit !== null && compareAmounts(amount, limit.maxAdvance) > 0) {
+    return amountOverMaxText(limit)
+  }
+  return null
+}
+
+/** Ruta de un issue de Zod, o de una violación de la API partida en `.`, al dato que la corrige. */
+const ISSUE_FIELDS: ReadonlyMap<string, FormFieldName> = new Map<string, FormFieldName>([
+  ['cavaliRegistration', 'cavali'],
+  ['contact.fullName', 'fullName'],
+  ['contact.dni', 'dni'],
+  ['contact.mobile', 'mobile'],
+  ['contact.email', 'email'],
+  ['contact.isLegalRepresentative', 'isLegalRepresentative'],
+  ['contact.jobTitle', 'jobTitle'],
+  ['contact.contactTimeSlot', 'contactTimeSlot'],
+  ['financing.requestedAmount', 'amount'],
+  ['financing.purpose', 'purpose'],
+  ['consents.terms', 'acceptTerms'],
+  ['consents.personalData', 'acceptPrivacy'],
+])
+
+/**
+ * El dato de una ruta (`['contact', 'dni']` → `'dni'`), o `null` si no es algo que la persona
+ * escribe: `company.*`, `source.*`, `payerSlug` y las versiones legales salen del build y de los XML.
+ */
+export function fieldForIssuePath(path: readonly PropertyKey[]): FormFieldName | null {
+  const [first, second] = path
+  if (typeof first !== 'string') return null
+  const single = ISSUE_FIELDS.get(first)
+  if (single !== undefined) return single
+  return typeof second === 'string' ? (ISSUE_FIELDS.get(`${first}.${second}`) ?? null) : null
+}
+
+/** Lo que el `form` toma del build, de los XML y de la visita, fuera del modelo. */
+type FormParts = {
+  payerSlug: string
+  company: { ruc: string; legalName: string }
+  termsVersion: string
+  privacyVersion: string
+  source: SourceInfo
+}
+
+/**
+ * Para validar sin `SubmissionFiles`: lo que no escribe la persona va vacío o de relleno, y sus
+ * issues no se asignan a ningún campo (`fieldForIssuePath` da `null`).
+ */
+const PLACEHOLDER_PARTS: FormParts = {
+  payerSlug: 'pagador',
+  company: { ruc: '', legalName: '' },
+  termsVersion: '-',
+  privacyVersion: '-',
+  source: {},
+}
+
+/** El `form` sin validar, con monto, DNI, celular y correo normalizados. */
+function candidateForm(model: FormModel, parts: FormParts) {
+  const purpose = model.purpose.trim()
+  const hasSource = parts.source.utm !== undefined || parts.source.referrer !== undefined
+  const needsJobTitle = model.isLegalRepresentative === false && model.jobTitle.trim() !== ''
+  return {
+    payerSlug: parts.payerSlug,
+    contact: {
+      fullName: model.fullName,
+      dni: normalizeDniInput(model.dniText) ?? model.dniText,
+      mobile: normalizeMobileInput(model.mobileText) ?? model.mobileText,
+      email: normalizeEmailInput(model.emailText),
+      isLegalRepresentative: model.isLegalRepresentative,
+      ...(needsJobTitle ? { jobTitle: model.jobTitle } : {}),
+      contactTimeSlot: model.contactTimeSlot,
+    },
+    company: parts.company,
+    financing: {
+      requestedAmount: parseAmountInput(model.amountText) ?? model.amountText,
+      ...(purpose === '' ? {} : { purpose }),
+    },
+    cavaliRegistration: model.cavali,
+    consents: {
+      terms: model.acceptTerms,
+      personalData: model.acceptPrivacy,
+      termsVersion: parts.termsVersion,
+      privacyVersion: parts.privacyVersion,
+    },
+    ...(hasSource ? { source: parts.source } : {}),
+  }
+}
+
+/** El primer mensaje de cada campo con issues. */
+function errorsFromIssues(
+  issues: readonly { readonly path: readonly PropertyKey[]; readonly message: string }[],
+): FieldErrors {
+  const errors: FieldErrors = {}
+  for (const issue of issues) {
+    const field = fieldForIssuePath(issue.path)
+    if (field !== null && errors[field] === undefined) errors[field] = issue.message
+  }
+  return errors
+}
+
+/** "El DNI debe tener 8 dígitos. Tiene 7." cuando se puede contar; si no, el de shared. */
+function dniMessage(dniText: string, fallback: string): string {
+  if (isBlank(dniText)) return FIELD_ERROR_TEXTS.dniEmpty
+  const digits = cleanPasted(dniText).replace(/\D/g, '').length
+  return digits === 0 || digits === 8 ? fallback : dniLengthText(digits)
+}
+
+/** "Revisa el correo: le falta la @." cuando no la tiene; si no, el de shared. */
+function emailMessage(emailText: string, fallback: string): string {
+  const email = normalizeEmailInput(emailText)
+  if (email === '') return FIELD_ERROR_TEXTS.emailEmpty
+  return email.includes('@') ? fallback : FIELD_ERROR_TEXTS.emailWithoutAt
+}
+
+/** El texto de error que se muestra en un campo, a partir del mensaje del esquema (si hay). */
+function fieldMessage(
+  field: FormFieldName,
+  schemaMessage: string | undefined,
+  model: FormModel,
+  limit: AmountLimit | null,
+): string | undefined {
+  if (field === 'amount') return amountError(model.amountText, limit) ?? undefined
+  if (field === 'jobTitle') {
+    // El cargo solo se pide a quien respondió que no es representante legal.
+    if (model.isLegalRepresentative !== false) return undefined
+    return model.jobTitle.trim() === '' ? FORM_MESSAGES.jobTitleRequired : schemaMessage
+  }
+  if (schemaMessage === undefined) return undefined
+  switch (field) {
+    case 'dni':
+      return dniMessage(model.dniText, schemaMessage)
+    case 'mobile':
+      return isBlank(model.mobileText) ? FIELD_ERROR_TEXTS.mobileEmpty : schemaMessage
+    case 'email':
+      return emailMessage(model.emailText, schemaMessage)
+    case 'cavali':
+      return FIELD_ERROR_TEXTS.cavali
+    case 'contactTimeSlot':
+      return FIELD_ERROR_TEXTS.contactTimeSlot
+    case 'acceptTerms':
+      return FIELD_ERROR_TEXTS.terms
+    case 'acceptPrivacy':
+      return FIELD_ERROR_TEXTS.privacy
+    default:
+      return schemaMessage
+  }
+}
+
+/** Valida con `advanceRequestFormSchema` y arma los errores por campo con los textos del diseño. */
+function validate(
+  model: FormModel,
+  parts: FormParts,
+  limit: AmountLimit | null,
+): { errors: FieldErrors; form: AdvanceRequestForm | null } {
+  const result = advanceRequestFormSchema.safeParse(candidateForm(model, parts))
+  const schemaErrors: FieldErrors = result.success ? {} : errorsFromIssues(result.error.issues)
+  const errors: FieldErrors = {}
+  for (const field of FORM_FIELDS) {
+    const message = fieldMessage(field, schemaErrors[field], model, limit)
+    if (message !== undefined) errors[field] = message
+  }
+  return { errors, form: result.success ? result.data : null }
+}
+
+/**
+ * Errores de lo que la persona completa, sin `SubmissionFiles`: al salir de un campo, para contar lo
+ * que falta en cada paso y al enviar sin facturas. El monto se compara con `limit` si hay grupo.
+ */
+export function formFieldErrors(model: FormModel, limit: AmountLimit | null): FieldErrors {
+  return validate(model, PLACEHOLDER_PARTS, limit).errors
+}
+
+/**
+ * El `form` de `POST /api/v1/advance-requests`: el modelo normalizado y validado con
+ * `advanceRequestFormSchema`, con la empresa del grupo elegido, el pagador y las versiones legales
+ * del build, y el origen de la visita si lo hay. El monto no puede pasar el máximo del grupo.
+ */
+export function buildAdvanceRequestForm(
+  model: FormModel,
+  submission: SubmissionFiles,
+  config: IslandConfig,
+  source: SourceInfo,
+): { ok: true; form: AdvanceRequestForm } | { ok: false; errors: FieldErrors } {
+  const { errors, form } = validate(
+    model,
+    {
+      payerSlug: config.payer.slug,
+      company: submission.company,
+      termsVersion: config.legal.termsVersion,
+      privacyVersion: config.legal.privacyVersion,
+      source,
+    },
+    { maxAdvance: submission.maxAdvance, currency: submission.currency },
+  )
+  if (form === null || Object.keys(errors).length > 0) return { ok: false, errors }
+  return { ok: true, form }
+}
+
+/**
+ * Errores después de validar `fields`: con `show` se muestra o se quita el error de esos campos; con
+ * `refresh`, solo se actualiza (o se quita) el que ya se mostraba. Devuelve el mismo objeto si nada
+ * cambia: el resumen de errores reconoce así sus propios errores.
+ */
+export function updateFieldErrors(
+  current: FieldErrors,
+  computed: FieldErrors,
+  fields: readonly FormFieldName[],
+  mode: 'show' | 'refresh',
+): FieldErrors {
+  const next: FieldErrors = {}
+  let changed = false
+  for (const field of FORM_FIELDS) {
+    const before = current[field]
+    const after = !fields.includes(field)
+      ? before
+      : mode === 'show' || before !== undefined
+        ? computed[field]
+        : undefined
+    if (after !== before) changed = true
+    if (after !== undefined) next[field] = after
+  }
+  return changed ? next : current
+}
+
+/**
+ * Lo que queda en un campo al salir: el monto sin símbolo (`12,450.00`), el DNI en sus 8 dígitos, el
+ * celular como `987 654 321` y el correo en minúsculas. Lo que no se entiende queda tal cual, para
+ * que la persona lo corrija; el nombre y el cargo no se tocan.
+ */
+export function normalizeFieldText(key: TextKey, text: string, currency: Currency): string {
+  switch (key) {
+    case 'amountText': {
+      const amount = parseAmountInput(text)
+      return amount === null ? text : amountDigits(amount, currency)
+    }
+    case 'dniText':
+      return normalizeDniInput(text) ?? text
+    case 'mobileText': {
+      const mobile = normalizeMobileInput(text)
+      return mobile === null ? text : formatMobile(mobile)
+    }
+    case 'emailText':
+      return normalizeEmailInput(text)
+    default:
+      return text
+  }
+}
+
+/**
+ * Lo que queda en el campo al pegar, si lo pegado es un valor completo (un monto, un DNI o un celular
+ * válidos, un correo con @); `null` si no, y el navegador pega tal cual.
+ */
+export function pastedFieldValue(
+  key: NormalizedKey,
+  text: string,
+  currency: Currency,
+): string | null {
+  switch (key) {
+    case 'amountText': {
+      const amount = parseAmountInput(text)
+      return amount === null ? null : amountDigits(amount, currency)
+    }
+    case 'dniText':
+      return normalizeDniInput(text)
+    case 'mobileText': {
+      const mobile = normalizeMobileInput(text)
+      return mobile === null ? null : formatMobile(mobile)
+    }
+    case 'emailText': {
+      const email = normalizeEmailInput(text)
+      return email.includes('@') ? email : null
+    }
+  }
+}
+
+/**
+ * El monto cuando cambia el máximo del grupo (otro grupo, otras facturas): si estaba vacío o valía el
+ * máximo anterior, pasa al nuevo; si ya no hay grupo, queda vacío. Un monto que la persona escribió se
+ * respeta. `null` si el monto no cambia.
+ */
+export function amountAfterMaxChange(
+  amountText: string,
+  previousMax: Amount | null,
+  next: AmountLimit | null,
+): string | null {
+  const nextMax = next?.maxAdvance ?? null
+  if (previousMax === nextMax) return null
+  const current = parseAmountInput(amountText)
+  const following =
+    isBlank(amountText) ||
+    (previousMax !== null && current !== null && compareAmounts(current, previousMax) === 0)
+  if (!following) return null
+  const text = next === null ? '' : amountDigits(next.maxAdvance, next.currency)
+  return text === amountText ? null : text
+}
+```
+
+Run: `ASTRO_TELEMETRY_DISABLED=1 pnpm --filter @anticipate/landing exec vitest run src/islands/request-form/form-model.test.ts`
+Expected: PASS, 22 tests.
+
+- [ ] **Step 4: Escribir los tests de los textos del formulario y de los pasos por avance**
+
+Con lecturas reales de `buildInvoiceXml` y las funciones puras de la Tarea 7, como `list-model.test.ts` de la Tarea 9. El contexto fija hoy en el 26/09/2026, así que no hace falta falsear el reloj.
+
+`apps/landing/src/islands/request-form/form-text.test.ts`:
+```ts
+import type { IntakeLimits } from '@anticipate/shared/api'
+import type { IsoDate } from '@anticipate/shared/dates'
+import type { PayerConditions } from '@anticipate/shared/intake'
+import { buildInvoiceXml, type TestXmlOptions } from '@anticipate/shared/testing'
+import { describe, expect, it } from 'vitest'
+import {
+  addReadings,
+  emptyIntake,
+  type IntakeView,
+  viewIntake,
+} from '../../lib/intake/intake-state'
+import { readXmlBytes } from '../../lib/intake/read-intake-file'
+import type { FileReading, IntakeContext } from '../../lib/intake/types'
+import { type FormModel, initialFormModel } from './form-model'
+import {
+  amountHelpText,
+  errorSummaryItems,
+  errorSummaryTitle,
+  invoiceCountText,
+  privacyDetailText,
+  privacyLead,
+  sendSummary,
+} from './form-text'
+
+const MiB = 1024 * 1024
+const PAYER: PayerConditions = {
+  slug: 'sea',
+  ruc: '20131312955',
+  shortName: 'SEA',
+  advancePercent: 85,
+  minTermDays: 15,
+  maxInvoices: 10,
+  allowedCurrencies: ['PEN', 'USD'],
+}
+const LIMITS: IntakeLimits = {
+  maxFiles: 20,
+  maxXmlBytes: MiB,
+  maxPdfBytes: 10 * MiB,
+  maxBodyBytes: 95_000_000,
+}
+const CTX: IntakeContext = { payer: PAYER, limits: LIMITS, today: '2026-09-26' as IsoDate }
+const encoder = new TextEncoder()
+
+const xml = (name: string, options: TestXmlOptions): FileReading =>
+  readXmlBytes(name, encoder.encode(buildInvoiceXml(options)), LIMITS.maxXmlBytes)
+
+const credit = (seriesNumber: string, net: string, dueDate: string): TestXmlOptions => ({
+  seriesNumber,
+  total: net,
+  netPendingAmount: net,
+  detraction: null,
+  installments: [{ id: 'Cuota001', amount: net, dueDate }],
+})
+
+/** Dos facturas en soles que califican: neto S/ 20,750.00 y máximo S/ 17,637.50. */
+const twoInvoices = (): IntakeView =>
+  viewIntake(
+    addReadings(
+      emptyIntake(),
+      [
+        xml('F001-00001234.xml', credit('F001-00001234', '12450.00', '2026-11-30')),
+        xml('F001-00001240.xml', credit('F001-00001240', '8300.00', '2026-12-20')),
+      ],
+      CTX,
+    ),
+    CTX,
+  )
+
+describe('resumen de errores', () => {
+  it('lista los datos que faltan en el orden del formulario, con el enlace a su campo', () => {
+    expect(
+      errorSummaryItems(
+        {
+          acceptTerms: 'Acepta los Términos y Condiciones para continuar.',
+          email: 'Revisa el correo: le falta la @.',
+          dni: 'El DNI debe tener 8 dígitos. Tiene 7.',
+        },
+        false,
+      ),
+    ).toEqual([
+      { key: 'dni', label: 'DNI', href: '#dni' },
+      { key: 'email', label: 'Correo', href: '#correo' },
+      { key: 'acceptTerms', label: 'Términos y Condiciones', href: '#terminos' },
+    ])
+  })
+
+  it('sin facturas para enviar, el primer enlace lleva al paso 01', () => {
+    expect(
+      errorSummaryItems({ cavali: 'Indica si tus facturas ya están registradas en Cavali.' }, true),
+    ).toEqual([
+      { key: 'invoices', label: 'Tus facturas', href: '#paso-facturas' },
+      { key: 'cavali', label: 'Cavali', href: '#cavali' },
+    ])
+  })
+
+  it('el título cuenta los datos, en singular o en plural', () => {
+    expect(errorSummaryTitle(1)).toBe('Te falta completar 1 dato:')
+    expect(errorSummaryTitle(3)).toBe('Te falta completar 3 datos:')
+    expect(errorSummaryTitle(0)).toBe(
+      'No pudimos preparar tu solicitud. Recarga la página y vuelve a intentarlo.',
+    )
+  })
+})
+
+describe('Vas a enviar', () => {
+  it('resume el monto, las facturas, el celular, el horario y el correo', () => {
+    const model: FormModel = {
+      ...initialFormModel,
+      amountText: '17,637.50',
+      mobileText: '987654321',
+      emailText: ' Carla@Empresa.pe ',
+      contactTimeSlot: 'MORNING',
+    }
+    expect(sendSummary(model, twoInvoices())).toEqual({
+      amount: 'S/ 17,637.50',
+      invoices: '2 facturas',
+      mobile: '987 654 321',
+      slot: 'por la mañana (9 a 13 h)',
+      email: 'carla@empresa.pe',
+    })
+  })
+
+  it('lo que todavía no está completo queda en null, y el horario dice «en el horario que elijas»', () => {
+    expect(sendSummary(initialFormModel, null)).toEqual({
+      amount: null,
+      invoices: null,
+      mobile: null,
+      slot: 'en el horario que elijas',
+      email: null,
+    })
+    expect(
+      sendSummary({ ...initialFormModel, mobileText: '98765', emailText: 'carla' }, twoInvoices()),
+    ).toMatchObject({ amount: null, invoices: '2 facturas', mobile: null, email: null })
+  })
+})
+
+describe('textos del paso 02 y del cierre', () => {
+  it('la ayuda del monto dice el máximo del grupo, en su moneda', () => {
+    expect(amountHelpText({ maxAdvance: '17637.50', currency: 'PEN' })).toBe(
+      'Máximo S/ 17,637.50. Puedes pedir menos.',
+    )
+    expect(amountHelpText({ maxAdvance: '2720.00', currency: 'USD' })).toBe(
+      'Máximo US$ 2,720.00. Puedes pedir menos.',
+    )
+    expect(invoiceCountText(1)).toBe('1 factura')
+    expect(invoiceCountText(4)).toBe('4 facturas')
+  })
+
+  it('el aviso por capas lleva los datos de Anticipate de shared', () => {
+    expect(privacyLead()).toBe(
+      'Anticipate S.A.C. usa tus datos y tus facturas solo para evaluar tu solicitud y contactarte.',
+    )
+    const detail = privacyDetailText()
+    expect(
+      detail.startsWith(
+        'Responsable: Anticipate S.A.C., RUC 20606387912, Av. Velasco Astete 833, Of. 102, San Borja, Lima.',
+      ),
+    ).toBe(true)
+    expect(detail).toContain('Todos los campos son obligatorios salvo el PDF.')
+    expect(detail.endsWith('Para acceder a tus datos, corregirlos o eliminarlos, escribe a')).toBe(
+      true,
+    )
+  })
+})
+```
+
+`apps/landing/src/islands/request-form/step-status.test.ts`:
+```ts
+import type { IntakeLimits } from '@anticipate/shared/api'
+import type { IsoDate } from '@anticipate/shared/dates'
+import type { PayerConditions } from '@anticipate/shared/intake'
+import { buildInvoiceXml, type TestXmlOptions } from '@anticipate/shared/testing'
+import { describe, expect, it } from 'vitest'
+import {
+  addReadings,
+  emptyIntake,
+  type IntakeView,
+  viewIntake,
+} from '../../lib/intake/intake-state'
+import { readXmlBytes } from '../../lib/intake/read-intake-file'
+import type { FileReading, IntakeContext } from '../../lib/intake/types'
+import { type FormModel, initialFormModel } from './form-model'
+import { stepShortText, stepStatuses } from './step-status'
+
+const MiB = 1024 * 1024
+const PAYER: PayerConditions = {
+  slug: 'sea',
+  ruc: '20131312955',
+  shortName: 'SEA',
+  advancePercent: 85,
+  minTermDays: 15,
+  maxInvoices: 10,
+  allowedCurrencies: ['PEN', 'USD'],
+}
+const LIMITS: IntakeLimits = {
+  maxFiles: 20,
+  maxXmlBytes: MiB,
+  maxPdfBytes: 10 * MiB,
+  maxBodyBytes: 95_000_000,
+}
+const CTX: IntakeContext = { payer: PAYER, limits: LIMITS, today: '2026-09-26' as IsoDate }
+const encoder = new TextEncoder()
+
+const xml = (name: string, options: TestXmlOptions): FileReading =>
+  readXmlBytes(name, encoder.encode(buildInvoiceXml(options)), LIMITS.maxXmlBytes)
+
+const credit = (
+  seriesNumber: string,
+  net: string,
+  dueDate: string,
+  extra: TestXmlOptions = {},
+): TestXmlOptions => ({
+  seriesNumber,
+  total: net,
+  netPendingAmount: net,
+  detraction: null,
+  installments: [{ id: 'Cuota001', amount: net, dueDate }],
+  ...extra,
+})
+
+const viewOf = (readings: FileReading[]): IntakeView =>
+  viewIntake(addReadings(emptyIntake(), readings, CTX), CTX)
+
+/** Dos facturas en soles que califican: neto S/ 20,750.00 y máximo S/ 17,637.50. */
+const twoInvoices = (): IntakeView =>
+  viewOf([
+    xml('F001-00001234.xml', credit('F001-00001234', '12450.00', '2026-11-30')),
+    xml('F001-00001240.xml', credit('F001-00001240', '8300.00', '2026-12-20')),
+  ])
+
+/** El paso 03 completo, con la persona como representante legal. */
+const WITH_CONTACT: FormModel = {
+  ...initialFormModel,
+  fullName: 'Carla Quispe Mamani',
+  dniText: '45678912',
+  mobileText: '987 654 321',
+  emailText: 'carla@empresa.pe',
+  isLegalRepresentative: true,
+  contactTimeSlot: 'ANY',
+}
+
+describe('stepStatuses', () => {
+  it('sin facturas, el paso 01 es el actual y le faltan las facturas y Cavali', () => {
+    expect(stepStatuses(initialFormModel, null, null)).toEqual([
+      {
+        id: 'paso-facturas',
+        number: '01',
+        label: 'Tus facturas',
+        shortLabel: 'Facturas',
+        state: 'current',
+        text: 'Faltan 2 datos',
+        missing: 2,
+      },
+      {
+        id: 'paso-adelanto',
+        number: '02',
+        label: 'Tu adelanto',
+        shortLabel: 'Adelanto',
+        state: 'todo',
+        text: 'Pendiente',
+        missing: 1,
+      },
+      {
+        id: 'paso-datos',
+        number: '03',
+        label: 'Tus datos',
+        shortLabel: 'Datos',
+        state: 'todo',
+        text: 'Pendiente',
+        missing: 6,
+      },
+    ])
+  })
+
+  it('con facturas, Cavali y el monto, los pasos 01 y 02 quedan hechos con sus totales', () => {
+    const steps = stepStatuses(
+      { ...initialFormModel, cavali: 'YES', amountText: '17,637.50' },
+      twoInvoices(),
+      'PEN',
+    )
+    expect(steps.map(({ state, text, missing }) => ({ state, text, missing }))).toEqual([
+      { state: 'done', text: '✓ 2 facturas · S/ 20,750.00', missing: 0 },
+      { state: 'done', text: '✓ S/ 17,637.50', missing: 0 },
+      { state: 'current', text: 'Faltan 6 datos', missing: 6 },
+    ])
+  })
+
+  it('el paso 02 no cuenta el motivo, y le falta el monto si pasa el máximo o no hay grupo', () => {
+    const view = twoInvoices()
+    expect(
+      stepStatuses({ ...initialFormModel, cavali: 'YES', amountText: '20,000.00' }, view, 'PEN')[1],
+    ).toMatchObject({ state: 'current', text: 'Falta 1 dato', missing: 1 })
+    expect(
+      stepStatuses({ ...initialFormModel, cavali: 'YES', amountText: '9,000.00' }, view, 'PEN')[1],
+    ).toMatchObject({ state: 'done', text: '✓ S/ 9,000.00', missing: 0 })
+    expect(
+      stepStatuses({ ...initialFormModel, amountText: '9,000.00' }, null, null)[1],
+    ).toMatchObject({ state: 'todo', text: 'Pendiente', missing: 1 })
+  })
+
+  it('el paso 03 cuenta nombre, DNI, celular, correo, representante, cargo y horario', () => {
+    const view = twoInvoices()
+    const ready: FormModel = { ...WITH_CONTACT, cavali: 'YES', amountText: '17,637.50' }
+    expect(stepStatuses(ready, view, 'PEN')[2]).toMatchObject({
+      state: 'done',
+      text: '✓ Completo',
+      missing: 0,
+    })
+    expect(stepStatuses({ ...ready, isLegalRepresentative: false }, view, 'PEN')[2]).toMatchObject({
+      state: 'current',
+      text: 'Falta 1 dato',
+      missing: 1,
+    })
+    expect(
+      stepStatuses(
+        { ...ready, isLegalRepresentative: false, jobTitle: 'Jefe de finanzas' },
+        view,
+        'PEN',
+      )[2],
+    ).toMatchObject({ state: 'done' })
+    expect(
+      stepStatuses({ ...ready, dniText: '4567123', emailText: 'carla' }, view, 'PEN')[2],
+    ).toMatchObject({ state: 'current', text: 'Faltan 2 datos', missing: 2 })
+    expect(
+      stepStatuses({ ...ready, purpose: 'Otro' }, view, 'PEN').every(
+        (step) => step.state === 'done',
+      ),
+    ).toBe(true)
+  })
+
+  it('un paso sin datos que falten queda hecho aunque uno anterior no lo esté', () => {
+    const steps = stepStatuses({ ...WITH_CONTACT, cavali: 'YES' }, null, null)
+    expect(steps.map((step) => [step.state, step.text])).toEqual([
+      ['current', 'Falta 1 dato'],
+      ['todo', 'Pendiente'],
+      ['done', '✓ Completo'],
+    ])
+  })
+
+  it('con una factura en dólares, los totales van en singular y en dólares', () => {
+    const view = viewOf([
+      xml(
+        'F001-00001300.xml',
+        credit('F001-00001300', '3200.00', '2026-11-30', { currency: 'USD' }),
+      ),
+    ])
+    const steps = stepStatuses(
+      { ...initialFormModel, cavali: 'NO', amountText: '2,720.00' },
+      view,
+      'USD',
+    )
+    expect(steps[0]?.text).toBe('✓ 1 factura · US$ 3,200.00')
+    expect(steps[1]?.text).toBe('✓ US$ 2,720.00')
+  })
+})
+
+describe('stepShortText', () => {
+  it('da los textos cortos de la barra de pasos de móvil', () => {
+    const done = stepStatuses(
+      { ...initialFormModel, cavali: 'YES', amountText: '17,637.50' },
+      twoInvoices(),
+      'PEN',
+    )
+    expect(done.map((step) => stepShortText(step, 2))).toEqual(['2 facturas', 'Listo', 'Faltan 6'])
+    expect(done.map((step) => stepShortText(step, 1))[0]).toBe('1 factura')
+    const empty = stepStatuses(initialFormModel, null, null)
+    expect(empty.map((step) => stepShortText(step, 0))).toEqual([
+      'Faltan 2',
+      'Pendiente',
+      'Pendiente',
+    ])
+    const oneMissing = stepStatuses({ ...WITH_CONTACT, cavali: 'YES' }, null, null)
+    expect(oneMissing.map((step) => stepShortText(step, 0))).toEqual([
+      'Falta 1 dato',
+      'Pendiente',
+      'Listo',
+    ])
+  })
+})
+```
+
+- [ ] **Step 5: Correr los tests y ver que fallan**
+
+Run: `ASTRO_TELEMETRY_DISABLED=1 pnpm --filter @anticipate/landing exec vitest run src/islands/request-form/form-text.test.ts src/islands/request-form/step-status.test.ts`
+Expected: FAIL: `Error: Failed to resolve import "./form-text" from "src/islands/request-form/form-text.test.ts". Does the file exist?` y lo mismo con `"./step-status"`.
+
+- [ ] **Step 6: Implementar los textos y los pasos por avance**
+
+`apps/landing/src/islands/request-form/form-text.ts`:
+```ts
+import { CONTACT_TIME_SLOT_PHRASES } from '@anticipate/shared/advance-request'
+import { ANTICIPATE_COMPANY } from '@anticipate/shared/company'
+import { formatMobile, normalizeMobileInput } from '@anticipate/shared/identity'
+import { formatMoney, parseAmountInput } from '@anticipate/shared/money'
+import { normalizeEmailInput } from '@anticipate/shared/text'
+import type { IntakeView } from '../../lib/intake/intake-state'
+import {
+  type AmountLimit,
+  FIELD_IDS,
+  type FieldErrors,
+  FORM_FIELDS,
+  type FormFieldName,
+  type FormModel,
+  formFieldErrors,
+} from './form-model'
+
+/** Opciones de "¿Para qué usarás el dinero?" (`motivos` de `Main.dc.html`). */
+export const PURPOSE_OPTIONS: readonly string[] = [
+  'Capital de trabajo',
+  'Compra de insumos o materiales',
+  'Pago de planilla',
+  'Pago a proveedores',
+  'Pago de impuestos',
+  'Compra de maquinaria o equipos',
+  'Otro',
+]
+
+/** Ayuda del monto sin grupo: todavía no hay un máximo que mostrar. */
+export const AMOUNT_HELP_WITHOUT_INVOICES =
+  'Sube tus facturas en el paso 01 y calculamos tu máximo.'
+
+/** "Máximo S/ 17,637.50. Puedes pedir menos." */
+export function amountHelpText(limit: AmountLimit): string {
+  return `Máximo ${formatMoney(limit.maxAdvance, limit.currency)}. Puedes pedir menos.`
+}
+
+/** "1 factura" o "2 facturas". */
+export function invoiceCountText(count: number): string {
+  return count === 1 ? '1 factura' : `${count} facturas`
+}
+
+/** Nombre de cada dato en el resumen de errores ("DNI · Correo · Términos y Condiciones"). */
+export const FIELD_SUMMARY_LABELS: Readonly<Record<FormFieldName, string>> = {
+  cavali: 'Cavali',
+  amount: 'Monto',
+  purpose: 'Motivo',
+  fullName: 'Nombre',
+  dni: 'DNI',
+  mobile: 'Celular',
+  email: 'Correo',
+  isLegalRepresentative: 'Representante legal',
+  jobTitle: 'Cargo',
+  contactTimeSlot: 'Horario',
+  acceptTerms: 'Términos y Condiciones',
+  acceptPrivacy: 'Datos personales',
+}
+
+/** Un enlace del resumen de errores. */
+export type ErrorSummaryItem = { key: string; label: string; href: string }
+
+/** Sin facturas para enviar: no hay un `FormFieldName` para eso, el enlace va al paso 01. */
+export const INVOICES_SUMMARY_ITEM: ErrorSummaryItem = {
+  key: 'invoices',
+  label: 'Tus facturas',
+  href: '#paso-facturas',
+}
+
+/** Los enlaces del resumen, en el orden del formulario; primero las facturas si faltan. */
+export function errorSummaryItems(
+  errors: FieldErrors,
+  invoicesMissing: boolean,
+): ErrorSummaryItem[] {
+  const items = FORM_FIELDS.filter((field) => errors[field] !== undefined).map((field) => ({
+    key: field,
+    label: FIELD_SUMMARY_LABELS[field],
+    href: `#${FIELD_IDS[field]}`,
+  }))
+  return invoicesMissing ? [INVOICES_SUMMARY_ITEM, ...items] : items
+}
+
+/** Si el esquema falla sin ningún dato que la persona pueda corregir (un defecto de la landing). */
+export const UNEXPLAINED_ERROR_TEXT =
+  'No pudimos preparar tu solicitud. Recarga la página y vuelve a intentarlo.'
+
+/** "Te falta completar 3 datos:" (tablero 5 de Estados) o "Te falta completar 1 dato:". */
+export function errorSummaryTitle(count: number): string {
+  if (count === 0) return UNEXPLAINED_ERROR_TEXT
+  return count === 1 ? 'Te falta completar 1 dato:' : `Te falta completar ${count} datos:`
+}
+
+/** Lo que muestra "Vas a enviar"; `null` es lo que todavía no está completo. */
+export type SendSummary = {
+  amount: string | null
+  invoices: string | null
+  mobile: string | null
+  slot: string
+  email: string | null
+}
+
+/** Lo que dice "Vas a enviar" en lugar de un dato que falta. */
+export const SEND_SUMMARY_FALLBACKS: {
+  readonly amount: string
+  readonly invoices: string
+  readonly mobile: string
+  readonly slot: string
+  readonly email: string
+} = {
+  amount: 'el monto que elijas',
+  invoices: 'tus facturas',
+  mobile: 'celular que nos dejes',
+  slot: 'en el horario que elijas',
+  email: 'tu correo',
+}
+
+/**
+ * "Solicitas S/ 17,637.50 por 2 facturas a {shortName}. Te llamaremos al 987 654 321 por la
+ * mañana (9 a 13 h) y te escribiremos a carla@empresa.pe.", con el celular formateado y la frase
+ * del horario de shared.
+ */
+export function sendSummary(model: FormModel, view: IntakeView | null): SendSummary {
+  const group = view?.chosenGroup ?? null
+  const amount = parseAmountInput(model.amountText)
+  const mobile = normalizeMobileInput(model.mobileText)
+  const count = view?.submission?.invoiceNumbers.length ?? 0
+  const emailValid = formFieldErrors(model, null).email === undefined
+  return {
+    amount: amount === null || group === null ? null : formatMoney(amount, group.currency),
+    invoices: count === 0 ? null : invoiceCountText(count),
+    mobile: mobile === null ? null : formatMobile(mobile),
+    slot:
+      model.contactTimeSlot === null
+        ? SEND_SUMMARY_FALLBACKS.slot
+        : CONTACT_TIME_SLOT_PHRASES[model.contactTimeSlot],
+    email: emailValid ? normalizeEmailInput(model.emailText) : null,
+  }
+}
+
+/** El botón del aviso por capas (`noticeLabel` de `Main.dc.html`). */
+export const NOTICE_TOGGLE_TEXTS: { readonly closed: string; readonly open: string } = {
+  closed: 'Ver cómo cuidamos tus datos',
+  open: 'Ocultar detalle',
+}
+
+/** Primera capa del aviso de privacidad. */
+export function privacyLead(): string {
+  return `${ANTICIPATE_COMPANY.legalName} usa tus datos y tus facturas solo para evaluar tu solicitud y contactarte.`
+}
+
+/** Segunda capa, hasta "escribe a": el correo de privacidad va después, como enlace. */
+export function privacyDetailText(): string {
+  const { legalName, ruc, address } = ANTICIPATE_COMPANY
+  return [
+    `Responsable: ${legalName}, RUC ${ruc}, ${address}.`,
+    'Usamos tus datos y tus facturas para evaluar tu solicitud y contactarte.',
+    'Los ve el equipo de Anticipate y nuestros proveedores de nube y correo, que pueden estar fuera del Perú.',
+    'Si no concretamos una operación, guardamos tus datos hasta 12 meses; si la concretamos, mientras dure nuestra relación y el tiempo que exijan las normas tributarias, comerciales y de prevención de lavado de activos.',
+    'Todos los campos son obligatorios salvo el PDF.',
+    'Para acceder a tus datos, corregirlos o eliminarlos, escribe a',
+  ].join(' ')
+}
+
+export const PROMISE_TEXT =
+  'Enviar no te obliga a nada: primero te mandamos la propuesta con el monto y la tasa, y tú decides si firmas. Te respondemos en menos de 24 horas hábiles.'
+
+export const TURNSTILE_TEXT = 'Protegido por Cloudflare Turnstile'
+```
+
+`apps/landing/src/islands/request-form/step-status.ts`:
+```ts
+import { type Currency, formatMoney, parseAmountInput } from '@anticipate/shared/money'
+import type { IntakeView } from '../../lib/intake/intake-state'
+import { type FormFieldName, type FormModel, formFieldErrors } from './form-model'
+import { invoiceCountText } from './form-text'
+
+export type StepState = 'done' | 'current' | 'todo'
+
+export type StepStatus = {
+  id: 'paso-facturas' | 'paso-adelanto' | 'paso-datos'
+  number: '01' | '02' | '03'
+  label: string
+  shortLabel: string
+  state: StepState
+  text: string
+  missing: number
+}
+
+/** Los datos que cuenta el paso 03 (el cargo solo tiene error si la persona no es representante). */
+const CONTACT_FIELDS: readonly FormFieldName[] = [
+  'fullName',
+  'dni',
+  'mobile',
+  'email',
+  'isLegalRepresentative',
+  'jobTitle',
+  'contactTimeSlot',
+]
+
+type StepProgress = Pick<StepStatus, 'id' | 'number' | 'label' | 'shortLabel' | 'missing'> & {
+  doneText: string
+}
+
+/** "Falta 1 dato" o "Faltan {n} datos". */
+function missingText(missing: number): string {
+  return missing === 1 ? 'Falta 1 dato' : `Faltan ${missing} datos`
+}
+
+/**
+ * Estado de cada paso (`formSteps` de `Main.dc.html`). Cuenta los datos que faltan: en el 01, las
+ * facturas para enviar y Cavali; en el 02, un monto válido dentro del máximo del grupo (el motivo no
+ * cuenta); en el 03, nombre, DNI, celular, correo, representante, cargo si hace falta y horario. Un
+ * paso sin datos que falten está hecho; el primero con datos que faltan es el actual; el resto,
+ * pendiente. Los montos van en `currency` (la del grupo elegido).
+ */
+export function stepStatuses(
+  model: FormModel,
+  view: IntakeView | null,
+  currency: Currency | null,
+): StepStatus[] {
+  const group = view?.chosenGroup ?? null
+  const files = view?.submission ?? null
+  const errors = formFieldErrors(
+    model,
+    group === null ? null : { maxAdvance: group.maxAdvance, currency: group.currency },
+  )
+  const amount = parseAmountInput(model.amountText)
+  const amountDone =
+    group !== null && amount !== null && errors.amount === undefined
+      ? `✓ ${formatMoney(amount, currency ?? group.currency)}`
+      : null
+  const progress: StepProgress[] = [
+    {
+      id: 'paso-facturas',
+      number: '01',
+      label: 'Tus facturas',
+      shortLabel: 'Facturas',
+      missing: (files === null ? 1 : 0) + (errors.cavali === undefined ? 0 : 1),
+      doneText:
+        files === null
+          ? ''
+          : `✓ ${invoiceCountText(files.invoiceNumbers.length)} · ${formatMoney(files.netPendingTotal, currency ?? files.currency)}`,
+    },
+    {
+      id: 'paso-adelanto',
+      number: '02',
+      label: 'Tu adelanto',
+      shortLabel: 'Adelanto',
+      missing: amountDone === null ? 1 : 0,
+      doneText: amountDone ?? '',
+    },
+    {
+      id: 'paso-datos',
+      number: '03',
+      label: 'Tus datos',
+      shortLabel: 'Datos',
+      missing: CONTACT_FIELDS.filter((field) => errors[field] !== undefined).length,
+      doneText: '✓ Completo',
+    },
+  ]
+  const currentId = progress.find((step) => step.missing > 0)?.id ?? null
+  return progress.map(({ doneText, ...step }) => {
+    const state: StepState =
+      step.missing === 0 ? 'done' : step.id === currentId ? 'current' : 'todo'
+    const text =
+      state === 'done' ? doneText : state === 'current' ? missingText(step.missing) : 'Pendiente'
+    return { ...step, state, text }
+  })
+}
+
+/**
+ * Texto corto de la barra de pasos de móvil (`MobileForm.dc.html` y marco 3 de
+ * `MobileExtras.dc.html`): "2 facturas" o "Listo" si el paso está hecho, "Falta 1 dato" o
+ * "Faltan {n}" si es el actual, y "Pendiente".
+ */
+export function stepShortText(step: StepStatus, invoiceCount: number): string {
+  if (step.state === 'todo') return 'Pendiente'
+  if (step.state === 'current') {
+    return step.missing === 1 ? 'Falta 1 dato' : `Faltan ${step.missing}`
+  }
+  return step.id === 'paso-facturas' && invoiceCount > 0 ? invoiceCountText(invoiceCount) : 'Listo'
+}
+```
+
+Run: `ASTRO_TELEMETRY_DISABLED=1 pnpm --filter @anticipate/landing exec vitest run src/islands/request-form/form-text.test.ts src/islands/request-form/step-status.test.ts`
+Expected: PASS, 7 tests en `form-text.test.ts` y 7 en `step-status.test.ts`.
+
+- [ ] **Step 7: Escribir el test de la barra de pasos**
+
+En jsdom no se aplican las hojas de estilo: el nombre accesible de cada enlace incluye a la vez el texto de escritorio y el de móvil, así que el test busca partes del nombre.
+
+`apps/landing/src/islands/request-form/closing/StepsNav.test.tsx`:
+```tsx
+import { cleanup, render, screen, within } from '@testing-library/react'
+import { afterEach, describe, expect, it } from 'vitest'
+import { initialFormModel } from '../form-model'
+import { type StepStatus, stepStatuses } from '../step-status'
+import StepsNav from './StepsNav'
+
+const STEPS: StepStatus[] = [
+  {
+    id: 'paso-facturas',
+    number: '01',
+    label: 'Tus facturas',
+    shortLabel: 'Facturas',
+    state: 'done',
+    text: '✓ 2 facturas · S/ 20,750.00',
+    missing: 0,
+  },
+  {
+    id: 'paso-adelanto',
+    number: '02',
+    label: 'Tu adelanto',
+    shortLabel: 'Adelanto',
+    state: 'done',
+    text: '✓ S/ 17,637.50',
+    missing: 0,
+  },
+  {
+    id: 'paso-datos',
+    number: '03',
+    label: 'Tus datos',
+    shortLabel: 'Datos',
+    state: 'current',
+    text: 'Faltan 2 datos',
+    missing: 2,
+  },
+]
+
+const links = () =>
+  within(screen.getByRole('navigation', { name: 'Pasos de la solicitud' })).getAllByRole('link')
+
+afterEach(() => {
+  cleanup()
+})
+
+describe('StepsNav', () => {
+  it('un enlace por paso, con el ✓ o su número, su texto y aria-current en el paso actual', () => {
+    render(<StepsNav steps={STEPS} invoiceCount={2} />)
+    const [invoices, advance, contact] = links()
+    expect(links().map((link) => link.getAttribute('href'))).toEqual([
+      '#paso-facturas',
+      '#paso-adelanto',
+      '#paso-datos',
+    ])
+    expect(invoices).toHaveTextContent('Paso 01:')
+    expect(invoices).toHaveTextContent('Tus facturas')
+    expect(invoices).toHaveTextContent('✓ 2 facturas · S/ 20,750.00')
+    expect(invoices).not.toHaveAttribute('aria-current')
+    expect(advance).toHaveTextContent('✓ S/ 17,637.50')
+    expect(contact).toHaveTextContent('03')
+    expect(contact).toHaveTextContent('Faltan 2 datos')
+    expect(contact).toHaveAttribute('aria-current', 'step')
+    expect(contact).toHaveAttribute('data-state', 'current')
+  })
+
+  it('con activeId, aria-current va en el paso visible', () => {
+    const { rerender } = render(<StepsNav steps={STEPS} activeId="paso-adelanto" />)
+    expect(links()[1]).toHaveAttribute('aria-current', 'step')
+    expect(links()[2]).not.toHaveAttribute('aria-current')
+    rerender(<StepsNav steps={STEPS} activeId={null} />)
+    expect(links()[2]).toHaveAttribute('aria-current', 'step')
+  })
+
+  it('el enlace del paso 03 se llama con «Datos» y lleva los textos cortos de móvil', () => {
+    render(<StepsNav steps={STEPS} invoiceCount={2} />)
+    const contact = screen.getByRole('link', { name: /Datos/ })
+    expect(contact).toHaveAttribute('href', '#paso-datos')
+    expect(contact).toHaveTextContent('Faltan 2')
+    expect(links()[0]).toHaveTextContent('2 facturas')
+    expect(links()[1]).toHaveTextContent('Listo')
+  })
+
+  it('sin pasos completos no hay ✓ y los que siguen dicen Pendiente', () => {
+    render(<StepsNav steps={stepStatuses(initialFormModel, null, null)} />)
+    const nav = screen.getByRole('navigation', { name: 'Pasos de la solicitud' })
+    expect(nav).not.toHaveTextContent('✓')
+    expect(links()[0]).toHaveTextContent('Faltan 2 datos')
+    expect(links()[0]).toHaveAttribute('aria-current', 'step')
+    expect(links()[1]).toHaveTextContent('Pendiente')
+    expect(links()[2]).toHaveTextContent('Pendiente')
+  })
+})
+```
+
+Run: `ASTRO_TELEMETRY_DISABLED=1 pnpm --filter @anticipate/landing exec vitest run src/islands/request-form/closing/StepsNav.test.tsx`
+Expected: FAIL: `Error: Failed to resolve import "./StepsNav" from "src/islands/request-form/closing/StepsNav.test.tsx". Does the file exist?`
+
+- [ ] **Step 8: Implementar los íconos nuevos y la barra de pasos**
+
+El archivo completo de íconos reemplaza al de la Tarea 9: agrega el escudo (ficha de confianza y Turnstile) y la flecha del botón.
+
+`apps/landing/src/islands/request-form/invoices/icons.tsx`:
+```tsx
+import type { ReactNode } from 'react'
+
+type IconProps = { size?: number | undefined; className?: string | undefined }
+
+/** Íconos de trazo del diseño: decorativos, fuera del árbol de accesibilidad. */
+function Svg({
+  size,
+  strokeWidth,
+  className,
+  children,
+}: {
+  size: number
+  strokeWidth: number
+  className: string | undefined
+  children: ReactNode
+}) {
+  return (
+    <svg
+      aria-hidden="true"
+      focusable="false"
+      className={className}
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={strokeWidth}
+      strokeLinecap="square"
+    >
+      {children}
+    </svg>
+  )
+}
+
+export function CheckIcon({ size = 16, className }: IconProps) {
+  return (
+    <Svg size={size} strokeWidth={3} className={className}>
+      <path d="M20 6 9 17l-5-5" />
+    </Svg>
+  )
+}
+
+export function CloseIcon({ size = 18, className }: IconProps) {
+  return (
+    <Svg size={size} strokeWidth={2} className={className}>
+      <path d="M6 6l12 12" />
+      <path d="M18 6 6 18" />
+    </Svg>
+  )
+}
+
+export function PlusIcon({ size = 18, className }: IconProps) {
+  return (
+    <Svg size={size} strokeWidth={2.5} className={className}>
+      <path d="M12 5v14" />
+      <path d="M5 12h14" />
+    </Svg>
+  )
+}
+
+export function UploadIcon({ size = 24, className }: IconProps) {
+  return (
+    <Svg size={size} strokeWidth={2.2} className={className}>
+      <path d="M12 15V3" />
+      <path d="m7 8 5-5 5 5" />
+      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+    </Svg>
+  )
+}
+
+export function DropIcon({ size = 26, className }: IconProps) {
+  return (
+    <Svg size={size} strokeWidth={2.2} className={className}>
+      <path d="M12 3v12" />
+      <path d="m7 10 5 5 5-5" />
+      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+    </Svg>
+  )
+}
+
+export function ChatIcon({ size = 18, className }: IconProps) {
+  return (
+    <Svg size={size} strokeWidth={2} className={className}>
+      <path d="M4 5h16v11H9l-5 4z" />
+      <path d="M8 9h8" />
+      <path d="M8 12h5" />
+    </Svg>
+  )
+}
+
+export function ErrorIcon({ size = 16, className }: IconProps) {
+  return (
+    <Svg size={size} strokeWidth={2.4} className={className}>
+      <path d="M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18z" />
+      <path d="M12 8v5" />
+      <path d="M12 16h.01" />
+    </Svg>
+  )
+}
+
+/** Escudo de "Protegido por Cloudflare Turnstile". */
+export function ShieldIcon({ size = 16, className }: IconProps) {
+  return (
+    <Svg size={size} strokeWidth={2} className={className}>
+      <path d="M12 3 4 6v6c0 5 3.5 8 8 9 4.5-1 8-4 8-9V6z" />
+    </Svg>
+  )
+}
+
+/** Escudo con ✓ de la ficha de confianza del paso 03. */
+export function ShieldCheckIcon({ size = 22, className }: IconProps) {
+  return (
+    <Svg size={size} strokeWidth={2} className={className}>
+      <path d="M12 3 4 6v6c0 5 3.5 8 8 9 4.5-1 8-4 8-9V6z" />
+      <path d="m8.5 12 2.5 2.5 4.5-4.5" />
+    </Svg>
+  )
+}
+
+/** Flecha del botón «Enviar solicitud». */
+export function ArrowIcon({ size = 20, className }: IconProps) {
+  return (
+    <Svg size={size} strokeWidth={2.5} className={className}>
+      <path d="M5 12h14" />
+      <path d="m13 6 6 6-6 6" />
+    </Svg>
+  )
+}
+```
+
+`apps/landing/src/islands/request-form/closing/StepsNav.tsx`:
+```tsx
+import { type StepStatus, stepShortText } from '../step-status'
+import styles from './StepsNav.module.css'
+
+export type StepsNavProps = {
+  steps: StepStatus[]
+  /** El paso que se ve en pantalla (Tarea 13); sin él, `aria-current` va en el paso actual. */
+  activeId?: StepStatus['id'] | null | undefined
+  /** Facturas que se envían: el texto corto del paso 01 en móvil ("2 facturas"). */
+  invoiceCount?: number | undefined
+}
+
+/**
+ * "Pasos de la solicitud": en escritorio, la lista vertical de la columna izquierda de
+ * `Main.dc.html` (✓ o número, nombre y estado); hasta 767 px, las tres columnas con barra de
+ * `MobileForm.dc.html` y los textos cortos. El ✓ marca los pasos hechos; el resalte, `aria-current`.
+ */
+export default function StepsNav({ steps, activeId = null, invoiceCount = 0 }: StepsNavProps) {
+  const currentId = activeId ?? steps.find((step) => step.state === 'current')?.id ?? null
+  return (
+    <nav className={styles.nav} aria-label="Pasos de la solicitud">
+      <ol className={styles.list}>
+        {steps.map((step) => (
+          <li key={step.id} className={styles.item}>
+            <a
+              className={styles.link}
+              href={`#${step.id}`}
+              aria-current={step.id === currentId ? 'step' : undefined}
+              data-state={step.state}
+            >
+              <span className={styles.bar} aria-hidden="true" />
+              <span className="sr-only">Paso {step.number}: </span>
+              <span className={styles.mark} aria-hidden="true">
+                {step.state === 'done' ? '✓' : step.number}
+              </span>
+              <span className={styles.body}>
+                <span className={styles.label}>{step.label}</span>
+                <span className={styles.shortLabel}>{step.shortLabel}</span>
+                <span className={styles.text}>{step.text}</span>
+                <span className={styles.shortText}>{stepShortText(step, invoiceCount)}</span>
+              </span>
+            </a>
+          </li>
+        ))}
+      </ol>
+    </nav>
+  )
+}
+```
+
+`apps/landing/src/islands/request-form/closing/StepsNav.module.css`:
+```css
+/*
+ * Barra de pasos: lista vertical de la columna izquierda en escritorio (Main.dc.html) y tres columnas
+ * con barra de color hasta 767 px (MobileForm.dc.html y marco 3 de MobileExtras.dc.html). La Tarea 13
+ * la deja fija en móvil.
+ */
+.nav {
+  margin-top: 8px;
+}
+
+.list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  border-left: 2px solid var(--teal-200);
+}
+
+.item {
+  min-width: 0;
+}
+
+.link {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-height: 48px;
+  margin-left: -2px;
+  padding: 0 0 0 18px;
+  border-left: 2px solid transparent;
+  color: var(--ink);
+  text-decoration: none;
+}
+
+.link[data-state="todo"] {
+  color: var(--muted);
+}
+
+.link[aria-current="step"] {
+  border-left-color: var(--teal-600);
+}
+
+.mark {
+  width: 26px;
+  height: 26px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.link[data-state="done"] .mark {
+  background: var(--teal-700);
+  color: #ffffff;
+}
+
+.link[data-state="current"] .mark {
+  background: var(--teal-100);
+  color: var(--teal-800);
+}
+
+.body {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 6px 0;
+}
+
+.label {
+  font-size: 16px;
+  font-weight: 500;
+}
+
+.link[data-state="done"] .label {
+  font-weight: 600;
+}
+
+.link[aria-current="step"] .label {
+  font-weight: 800;
+}
+
+.text,
+.shortText {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.bar,
+.shortLabel,
+.shortText {
+  display: none;
+}
+
+.link[data-state="current"] .text,
+.link[data-state="current"] .shortText {
+  color: var(--ink);
+}
+
+.link[data-state="done"] .text,
+.link[data-state="done"] .shortText {
+  color: var(--teal-700);
+}
+
+.link:hover .label {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+@media (max-width: 767px) {
+  .nav {
+    margin-top: 4px;
+    padding: 0 4px;
+  }
+
+  .list {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 4px;
+    border-left: 0;
+  }
+
+  /* Barra de 4 px, "✓ Facturas" o "03 Datos" y el estado corto, en una columna. */
+  .link {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-areas:
+      "bar bar"
+      "mark label"
+      "text text";
+    align-items: start;
+    column-gap: 4px;
+    row-gap: 4px;
+    min-height: 44px;
+    margin: 0;
+    padding: 0 0 4px;
+    border-left: 0;
+    font-size: 13px;
+    font-weight: 500;
+  }
+
+  .link[data-state="done"] {
+    font-weight: 600;
+  }
+
+  .link[aria-current="step"] {
+    font-weight: 800;
+  }
+
+  .bar {
+    display: block;
+    grid-area: bar;
+    height: 4px;
+    background: var(--teal-200);
+  }
+
+  .link[data-state="done"] .bar {
+    background: var(--teal-700);
+  }
+
+  .link[aria-current="step"] .bar {
+    background: var(--teal-600);
+  }
+
+  .link .mark,
+  .link[data-state] .mark {
+    grid-area: mark;
+    width: auto;
+    height: auto;
+    display: inline;
+    background: none;
+    color: inherit;
+    font-size: 13px;
+    font-weight: inherit;
+  }
+
+  .body {
+    display: contents;
+  }
+
+  .label,
+  .text {
+    display: none;
+  }
+
+  .shortLabel {
+    display: inline;
+    grid-area: label;
+    min-width: 0;
+  }
+
+  .shortText {
+    display: block;
+    grid-area: text;
+    font-size: 12px;
+  }
+
+  .link:hover .label {
+    text-decoration: none;
+  }
+}
+```
+
+Run: `ASTRO_TELEMETRY_DISABLED=1 pnpm --filter @anticipate/landing exec vitest run src/islands/request-form/closing/StepsNav.test.tsx`
+Expected: PASS, 4 tests.
+
+- [ ] **Step 9: Escribir el test de los pasos 02 y 03 y del cierre en la isla**
+
+Testing Library con `user-event` y el almacén real, como `RequestForm.test.tsx` de la Tarea 9 (que no cambia): `bring` agrega lecturas al almacén por fuera del formulario, como la calculadora. El test de los datos inválidos repite el del E2E de la Tarea 15 (`invoice-problems.spec.ts`): DNI de 7 dígitos, correo sin @ y los Términos sin marcar dan exactamente 3 enlaces.
+
+`apps/landing/src/islands/request-form/RequestForm.steps.test.tsx`:
+```tsx
+import type { IntakeLimits } from '@anticipate/shared/api'
+import { supplierGreeting, whatsappUrl } from '@anticipate/shared/company'
+import type { PublicPayer } from '@anticipate/shared/payer'
+import { buildInvoiceXml, type TestXmlOptions } from '@anticipate/shared/testing'
+import { act, cleanup, render, screen, within } from '@testing-library/react'
+import userEvent, { type UserEvent } from '@testing-library/user-event'
+import { hydrateRoot } from 'react-dom/client'
+import { renderToString } from 'react-dom/server'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { readXmlBytes } from '../../lib/intake/read-intake-file'
+import type { FileReading } from '../../lib/intake/types'
+import type { IslandConfig } from '../../lib/island-config'
+import { intakeStore } from '../../lib/store/intake-store'
+import RequestForm from './RequestForm'
+
+const MiB = 1024 * 1024
+const SEA: PublicPayer = {
+  slug: 'sea',
+  ruc: '20131312955',
+  legalName: 'SERVICIOS ENERGETICOS AMBIENTALES S.R.L. - SEA S.R.L.',
+  shortName: 'SEA',
+  advancePercent: 85,
+  minTermDays: 15,
+  maxInvoices: 10,
+  allowedCurrencies: ['PEN', 'USD'],
+  accentColor: '#0E7C86',
+  logoUrl: null,
+  texts: {},
+}
+const LIMITS: IntakeLimits = {
+  maxFiles: 20,
+  maxXmlBytes: MiB,
+  maxPdfBytes: 10 * MiB,
+  maxBodyBytes: 95_000_000,
+}
+
+const configFor = (): IslandConfig => ({
+  payer: SEA,
+  intakeLimits: LIMITS,
+  legal: {
+    termsVersion: '2026-09',
+    termsUrl: 'https://anticipate.pe/terminos',
+    privacyVersion: '2026-09',
+    privacyUrl: 'https://anticipate.pe/privacidad',
+  },
+  apiBaseUrl: '',
+  turnstileSiteKey: '1x00000000000000000000AA',
+  siteUrl: 'https://factoring.example.pe',
+  pageUrl: 'https://factoring.example.pe/sea',
+})
+
+const encoder = new TextEncoder()
+
+/** Una factura al crédito en soles (o en otra moneda con `extra`), con una cuota. */
+const credit = (seriesNumber: string, net: string, extra: TestXmlOptions = {}): TestXmlOptions => ({
+  seriesNumber,
+  total: net,
+  netPendingAmount: net,
+  detraction: null,
+  installments: [{ id: 'Cuota001', amount: net, dueDate: '2026-11-30' }],
+  ...extra,
+})
+
+/** Un XML ya leído, como lo deja el lector en el almacén. */
+const reading = (name: string, options: TestXmlOptions): FileReading =>
+  readXmlBytes(name, encoder.encode(buildInvoiceXml(options)), LIMITS.maxXmlBytes)
+
+/** Facturas que llegan al almacén por fuera del formulario, como las de la calculadora. */
+function bring(readings: FileReading[]): void {
+  act(() => {
+    intakeStore.dispatch({ type: 'add', readings })
+  })
+}
+
+/** Dos facturas en soles: neto S/ 20,750.00 y máximo S/ 17,637.50. */
+const twoInvoices = (): FileReading[] => [
+  reading('F001-00001234.xml', credit('F001-00001234', '12450.00')),
+  reading('F001-00001240.xml', credit('F001-00001240', '8300.00')),
+]
+
+const CAVALI = '¿Tus facturas ya están registradas en Cavali?'
+const REPRESENTATIVE = '¿Eres representante legal de la empresa?'
+const SLOT = '¿Cuándo prefieres que te llamemos?'
+
+const groupNamed = (name: string) => screen.getByRole('group', { name })
+const advance = () => groupNamed('02 · Tu adelanto')
+const contact = () => groupNamed('03 · Tus datos')
+const amount = () => within(advance()).getByLabelText('Monto que quieres adelantar')
+const field = (label: string) => within(contact()).getByLabelText(label)
+const submitButton = () => screen.getByRole('button', { name: 'Enviar solicitud' })
+
+/** Completa Cavali, el paso 03 y los consentimientos; el monto queda en el máximo del grupo. */
+async function fillForm(
+  user: UserEvent,
+  overrides: { dni?: string; email?: string; terms?: boolean } = {},
+): Promise<void> {
+  await user.click(within(groupNamed(CAVALI)).getByRole('radio', { name: 'Sí' }))
+  await user.type(field('Nombre completo'), 'Carla Quispe Mamani')
+  await user.type(field('DNI'), overrides.dni ?? '45678912')
+  await user.type(field('Celular'), '987654321')
+  await user.type(field('Correo electrónico'), overrides.email ?? 'carla@empresa.pe')
+  await user.click(within(groupNamed(REPRESENTATIVE)).getByRole('radio', { name: 'Sí' }))
+  await user.click(within(groupNamed(SLOT)).getByRole('radio', { name: 'Cualquier horario' }))
+  if (overrides.terms !== false) {
+    await user.click(screen.getByRole('checkbox', { name: /^Acepto los Términos/ }))
+  }
+  await user.click(screen.getByRole('checkbox', { name: /^Autorizo el tratamiento/ }))
+}
+
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ['Date'] })
+  // 26/09/2026 a las 10:00 en Lima.
+  vi.setSystemTime(new Date('2026-09-26T15:00:00Z'))
+})
+
+afterEach(() => {
+  cleanup()
+  intakeStore.dispatch({ type: 'reset' })
+  vi.useRealTimers()
+})
+
+describe('RequestForm: paso 02', () => {
+  it('el monto sale con el máximo del grupo y lo sigue al cambiar de grupo mientras no se cambie', async () => {
+    const user = userEvent.setup()
+    render(<RequestForm config={configFor()} />)
+    expect(amount()).toHaveValue('')
+    expect(advance()).toHaveTextContent('Sube tus facturas en el paso 01 y calculamos tu máximo.')
+
+    bring([
+      reading('F001-00001234.xml', credit('F001-00001234', '20750.00')),
+      reading('F001-00001300.xml', credit('F001-00001300', '3200.00', { currency: 'USD' })),
+    ])
+    expect(amount()).toHaveValue('17,637.50')
+    expect(advance()).toHaveTextContent('Máximo S/ 17,637.50. Puedes pedir menos.')
+    expect(within(advance()).getByText('S/')).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: /^1 en dólares/ }))
+    expect(amount()).toHaveValue('2,720.00')
+    expect(advance()).toHaveTextContent('Máximo US$ 2,720.00. Puedes pedir menos.')
+    expect(within(advance()).getByText('US$')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: /^1 en soles/ }))
+    expect(amount()).toHaveValue('17,637.50')
+
+    // Un monto escrito por la persona se respeta al cambiar de grupo.
+    await user.clear(amount())
+    await user.type(amount(), '10000')
+    await user.tab()
+    expect(amount()).toHaveValue('10,000.00')
+    await user.click(screen.getByRole('button', { name: /^1 en dólares/ }))
+    expect(amount()).toHaveValue('10,000.00')
+  })
+
+  it('pegar un monto con S/ lo deja canónico, y uno mayor al máximo muestra el error del diseño', async () => {
+    const user = userEvent.setup()
+    render(<RequestForm config={configFor()} />)
+    bring(twoInvoices())
+
+    await user.clear(amount())
+    await user.paste('S/ 5,000.50')
+    expect(amount()).toHaveValue('5,000.50')
+
+    await user.clear(amount())
+    await user.type(amount(), '20000')
+    await user.tab()
+    expect(amount()).toHaveValue('20,000.00')
+    expect(amount()).toHaveAttribute('aria-invalid', 'true')
+    expect(amount()).toHaveAccessibleDescription(
+      'Máximo S/ 17,637.50. Puedes pedir menos. El monto supera el adelanto máximo de S/ 17,637.50.',
+    )
+  })
+
+  it('cada campo lleva su autocomplete y su inputmode, sin maxlength, y el motivo sus 7 opciones', () => {
+    render(<RequestForm config={configFor()} />)
+    expect(amount()).toHaveAttribute('inputmode', 'decimal')
+    expect(amount()).toHaveAttribute('autocomplete', 'off')
+    expect(field('Nombre completo')).toHaveAttribute('autocomplete', 'name')
+    expect(field('DNI')).toHaveAttribute('inputmode', 'numeric')
+    expect(field('DNI')).toHaveAttribute('autocomplete', 'off')
+    expect(field('Celular')).toHaveAttribute('type', 'tel')
+    expect(field('Celular')).toHaveAttribute('inputmode', 'tel')
+    expect(field('Celular')).toHaveAttribute('autocomplete', 'tel-national')
+    expect(field('Correo electrónico')).toHaveAttribute('type', 'email')
+    expect(field('Correo electrónico')).toHaveAttribute('inputmode', 'email')
+    expect(field('Correo electrónico')).toHaveAttribute('autocomplete', 'email')
+    expect(document.querySelector('[maxlength]')).toBeNull()
+
+    const purpose = within(advance()).getByLabelText('¿Para qué usarás el dinero? (opcional)')
+    expect(
+      within(purpose)
+        .getAllByRole('option')
+        .map((option) => option.textContent),
+    ).toEqual([
+      'Selecciona una opción',
+      'Capital de trabajo',
+      'Compra de insumos o materiales',
+      'Pago de planilla',
+      'Pago a proveedores',
+      'Pago de impuestos',
+      'Compra de maquinaria o equipos',
+      'Otro',
+    ])
+  })
+})
+
+describe('RequestForm: paso 03', () => {
+  it('al salir de cada campo el DNI, el celular y el correo quedan normalizados', async () => {
+    const user = userEvent.setup()
+    render(<RequestForm config={configFor()} />)
+    await user.type(field('DNI'), '45.678.912')
+    await user.type(field('Celular'), '+51 987654321')
+    await user.type(field('Correo electrónico'), 'Carla@Empresa.PE')
+    await user.tab()
+    expect(field('DNI')).toHaveValue('45678912')
+    expect(field('Celular')).toHaveValue('987 654 321')
+    expect(field('Correo electrónico')).toHaveValue('carla@empresa.pe')
+    expect(document.querySelector('[aria-invalid="true"]')).toBeNull()
+  })
+
+  it('al salir de un campo con error muestra el texto del diseño y lo quita al corregirlo', async () => {
+    const user = userEvent.setup()
+    render(<RequestForm config={configFor()} />)
+    // Recorrer un campo vacío no lo marca.
+    await user.click(field('Nombre completo'))
+    await user.tab()
+    expect(field('Nombre completo')).not.toHaveAttribute('aria-invalid')
+
+    await user.type(field('DNI'), '4567123')
+    await user.tab()
+    expect(field('DNI')).toHaveAttribute('aria-invalid', 'true')
+    expect(field('DNI')).toHaveAccessibleDescription(
+      '8 dígitos. Lo usamos para verificar tu identidad y evaluar tu solicitud. El DNI debe tener 8 dígitos. Tiene 7.',
+    )
+    await user.type(field('DNI'), '8')
+    await user.tab()
+    expect(field('DNI')).not.toHaveAttribute('aria-invalid')
+    expect(screen.queryByText('El DNI debe tener 8 dígitos. Tiene 7.')).not.toBeInTheDocument()
+
+    await user.type(field('Correo electrónico'), 'carla.empresa.pe')
+    await user.tab()
+    expect(field('Correo electrónico')).toHaveAttribute('aria-invalid', 'true')
+    expect(screen.getByText('Revisa el correo: le falta la @.')).toBeInTheDocument()
+  })
+
+  it('con «No» pide el cargo y avisa que se necesitará al representante legal', async () => {
+    const user = userEvent.setup()
+    render(<RequestForm config={configFor()} />)
+    const representative = groupNamed(REPRESENTATIVE)
+    expect(within(contact()).queryByLabelText('Tu cargo en la empresa')).not.toBeInTheDocument()
+
+    await user.click(within(representative).getByRole('radio', { name: 'No' }))
+    expect(field('Tu cargo en la empresa')).toHaveAttribute('placeholder', 'Ej. Jefe de finanzas')
+    expect(
+      screen.getByText(
+        'Puedes enviar la solicitud. Para firmar la cesión necesitaremos al representante legal.',
+      ),
+    ).toBeInTheDocument()
+
+    await user.click(within(representative).getByRole('radio', { name: 'Sí' }))
+    expect(within(contact()).queryByLabelText('Tu cargo en la empresa')).not.toBeInTheDocument()
+  })
+
+  it('el horario usa las etiquetas de shared y la nota del número, y la ficha dice quién recibe los datos', () => {
+    render(<RequestForm config={configFor()} />)
+    const slots = groupNamed(SLOT)
+    for (const label of [
+      'Por la mañana (9 a 13 h)',
+      'Por la tarde (14 a 18 h)',
+      'Cualquier horario',
+    ]) {
+      expect(within(slots).getByRole('radio', { name: label })).not.toBeChecked()
+    }
+    expect(slots).toHaveAccessibleDescription(
+      'Te contactaremos por llamada o WhatsApp desde el +51 954 180 802. Guárdalo para reconocernos.',
+    )
+
+    expect(contact()).toHaveTextContent('Tus datos los recibe y evalúa Anticipate S.A.C.')
+    expect(contact()).toHaveTextContent(
+      'RUC 20606387912 · Av. Velasco Astete 833, Of. 102, San Borja, Lima',
+    )
+    expect(
+      within(contact()).getByRole('link', { name: 'WhatsApp +51 954 180 802' }),
+    ).toHaveAttribute('href', whatsappUrl(supplierGreeting('SEA')))
+    expect(within(contact()).getByRole('link', { name: 'soporte@anticipate.pe' })).toHaveAttribute(
+      'href',
+      'mailto:soporte@anticipate.pe',
+    )
+  })
+})
+
+describe('RequestForm: cierre', () => {
+  it('«Vas a enviar» resume el monto, las facturas, el celular, el horario y el correo', async () => {
+    const user = userEvent.setup()
+    render(<RequestForm config={configFor()} />)
+    const summary = () => screen.getByText('Vas a enviar').parentElement
+    expect(summary()).toHaveTextContent('Solicitas el monto que elijas por tus facturas a SEA.')
+    expect(summary()).toHaveTextContent(
+      'Te llamaremos al celular que nos dejes en el horario que elijas y te escribiremos a tu correo.',
+    )
+
+    bring(twoInvoices())
+    await user.type(field('Celular'), '987654321')
+    await user.type(field('Correo electrónico'), 'carla@empresa.pe')
+    await user.click(
+      within(groupNamed(SLOT)).getByRole('radio', { name: 'Por la mañana (9 a 13 h)' }),
+    )
+    expect(summary()).toHaveTextContent('Solicitas S/ 17,637.50 por 2 facturas a SEA.')
+    expect(summary()).toHaveTextContent(
+      'Te llamaremos al 987 654 321 por la mañana (9 a 13 h) y te escribiremos a carla@empresa.pe.',
+    )
+    expect(screen.getByRole('link', { name: 'Cambiar el monto' })).toHaveAttribute(
+      'href',
+      '#paso-adelanto',
+    )
+    expect(screen.getByRole('link', { name: 'Cambiar tus datos' })).toHaveAttribute(
+      'href',
+      '#paso-datos',
+    )
+  })
+
+  it('los consentimientos enlazan a los documentos del build y el aviso se despliega por capas', async () => {
+    const user = userEvent.setup()
+    render(<RequestForm config={configFor()} />)
+    expect(
+      screen.getByRole('checkbox', {
+        name: 'Acepto los Términos y Condiciones de Anticipate Factoring.',
+      }),
+    ).not.toBeChecked()
+    expect(
+      screen.getByRole('checkbox', {
+        name: 'Autorizo el tratamiento de mis datos personales conforme a la Política de Privacidad (Ley N.° 29733).',
+      }),
+    ).not.toBeChecked()
+    const terms = screen.getByRole('link', { name: 'Términos y Condiciones' })
+    expect(terms).toHaveAttribute('href', 'https://anticipate.pe/terminos')
+    expect(terms).toHaveAttribute('target', '_blank')
+    expect(terms).toHaveAttribute('rel', 'noopener')
+    expect(screen.getByRole('link', { name: 'Política de Privacidad' })).toHaveAttribute(
+      'href',
+      'https://anticipate.pe/privacidad',
+    )
+
+    const toggle = screen.getByRole('button', { name: 'Ver cómo cuidamos tus datos' })
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    expect(toggle).toHaveAttribute('aria-controls', 'aviso-datos')
+    const detail = document.getElementById('aviso-datos')
+    expect(detail).not.toBeVisible()
+    await user.click(toggle)
+    expect(toggle).toHaveAttribute('aria-expanded', 'true')
+    expect(toggle).toHaveTextContent('Ocultar detalle')
+    expect(detail).toBeVisible()
+    expect(detail).toHaveTextContent(
+      'Responsable: Anticipate S.A.C., RUC 20606387912, Av. Velasco Astete 833, Of. 102, San Borja, Lima.',
+    )
+    expect(screen.getByRole('link', { name: 'privacidad@anticipate.pe' })).toHaveAttribute(
+      'href',
+      'mailto:privacidad@anticipate.pe',
+    )
+    expect(
+      screen.getByText(
+        'Enviar no te obliga a nada: primero te mandamos la propuesta con el monto y la tasa, y tú decides si firmas. Te respondemos en menos de 24 horas hábiles.',
+      ),
+    ).toBeInTheDocument()
+    expect(screen.getByText('Protegido por Cloudflare Turnstile')).toBeInTheDocument()
+    expect(submitButton()).toHaveAttribute('type', 'submit')
+  })
+
+  it('enviar con datos inválidos resume los 3 datos arriba, con el foco en el resumen', async () => {
+    const user = userEvent.setup()
+    render(<RequestForm config={configFor()} />)
+    bring([reading('F001-00001234.xml', credit('F001-00001234', '9000.00'))])
+    await fillForm(user, { dni: '4567123', email: 'carla.empresa.pe', terms: false })
+
+    await user.click(submitButton())
+    const summary = screen.getByRole('alert')
+    expect(summary).toHaveTextContent('Te falta completar 3 datos:')
+    expect(summary).toHaveFocus()
+    expect(
+      within(summary)
+        .getAllByRole('link')
+        .map((link) => [link.textContent, link.getAttribute('href')]),
+    ).toEqual([
+      ['DNI', '#dni'],
+      ['Correo', '#correo'],
+      ['Términos y Condiciones', '#terminos'],
+    ])
+    expect(field('DNI')).toHaveAttribute('aria-invalid', 'true')
+    expect(field('Correo electrónico')).toHaveAttribute('aria-invalid', 'true')
+    expect(
+      screen.getByText('Acepta los Términos y Condiciones para continuar.'),
+    ).toBeInTheDocument()
+
+    await user.click(within(summary).getByRole('link', { name: 'Correo' }))
+    expect(field('Correo electrónico')).toHaveFocus()
+
+    // Al corregir un dato, el resumen se actualiza.
+    await user.type(field('DNI'), '8')
+    await user.tab()
+    expect(screen.getByRole('alert')).toHaveTextContent('Te falta completar 2 datos:')
+  })
+
+  it('sin facturas para enviar, el resumen pide primero las facturas', async () => {
+    const user = userEvent.setup()
+    render(<RequestForm config={configFor()} />)
+    await user.click(submitButton())
+    const summary = screen.getByRole('alert')
+    expect(summary).toHaveTextContent('Te falta completar 11 datos:')
+    const invoices = within(summary).getByRole('link', { name: 'Tus facturas' })
+    expect(invoices).toHaveAttribute('href', '#paso-facturas')
+    expect(within(summary).getAllByRole('link')[0]).toBe(invoices)
+
+    await user.click(invoices)
+    expect(screen.getByLabelText('Elegir archivos')).toHaveFocus()
+  })
+
+  it('al completar lo que falta el resumen se cierra, y un envío válido no muestra errores', async () => {
+    const user = userEvent.setup()
+    render(<RequestForm config={configFor()} />)
+    bring(twoInvoices())
+    await fillForm(user, { terms: false })
+
+    await user.click(submitButton())
+    expect(screen.getByRole('alert')).toHaveTextContent('Te falta completar 1 dato:')
+    await user.click(screen.getByRole('checkbox', { name: /^Acepto los Términos/ }))
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+
+    await user.click(submitButton())
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(document.querySelector('[aria-invalid="true"]')).toBeNull()
+  })
+})
+
+describe('RequestForm: pasos por avance e hidratación', () => {
+  it('la barra de pasos de la columna izquierda sigue el avance del formulario', async () => {
+    const user = userEvent.setup()
+    render(<RequestForm config={configFor()} />)
+    const nav = within(screen.getByRole('navigation', { name: 'Pasos de la solicitud' }))
+    const step = (name: RegExp) => nav.getByRole('link', { name })
+    expect(step(/Tus facturas/)).toHaveAttribute('aria-current', 'step')
+    expect(step(/Tus facturas/)).toHaveTextContent('Faltan 2 datos')
+
+    bring(twoInvoices())
+    await user.click(within(groupNamed(CAVALI)).getByRole('radio', { name: 'Sí' }))
+    expect(step(/Tus facturas/)).toHaveTextContent('✓ 2 facturas · S/ 20,750.00')
+    expect(step(/Tus facturas/)).not.toHaveAttribute('aria-current')
+    expect(step(/Tu adelanto/)).toHaveTextContent('✓ S/ 17,637.50')
+    expect(step(/Tus datos/)).toHaveAttribute('aria-current', 'step')
+    expect(step(/Tus datos/)).toHaveTextContent('Faltan 6 datos')
+
+    await fillForm(user)
+    expect(step(/Tus datos/)).toHaveTextContent('✓ Completo')
+    expect(nav.getAllByRole('link').filter((link) => link.hasAttribute('aria-current'))).toEqual([])
+  })
+
+  it('en el HTML del servidor los pasos 02 y 03, las casillas y el botón salen deshabilitados', async () => {
+    const container = document.createElement('div')
+    container.innerHTML = renderToString(<RequestForm config={configFor()} />)
+    document.body.append(container)
+    const form = container.querySelector('form')
+    expect(Array.from(form?.children ?? [], (child) => child.id)).toEqual([
+      'paso-facturas',
+      'paso-adelanto',
+      'paso-datos',
+      '',
+    ])
+    expect(container.querySelector('#paso-adelanto')).toBeDisabled()
+    expect(container.querySelector('#paso-datos')).toBeDisabled()
+    expect(container.querySelector('#terminos')).toBeDisabled()
+    expect(container.querySelector('#privacidad')).toBeDisabled()
+    expect(container.querySelector('button[type="submit"]')).toBeDisabled()
+
+    const onRecoverableError = vi.fn()
+    const root = await act(async () =>
+      hydrateRoot(container, <RequestForm config={configFor()} />, { onRecoverableError }),
+    )
+    expect(container.querySelector('#paso-adelanto')).toBeEnabled()
+    expect(container.querySelector('#paso-datos')).toBeEnabled()
+    expect(container.querySelector('#terminos')).toBeEnabled()
+    expect(container.querySelector('button[type="submit"]')).toBeEnabled()
+    expect(onRecoverableError).not.toHaveBeenCalled()
+    act(() => root.unmount())
+    container.remove()
+  })
+})
+```
+
+- [ ] **Step 10: Correr el test y ver que falla**
+
+Run: `ASTRO_TELEMETRY_DISABLED=1 pnpm --filter @anticipate/landing exec vitest run src/islands/request-form/RequestForm.steps.test.tsx`
+Expected: FAIL: los 14 tests fallan porque la isla todavía no tiene los pasos 02 y 03, el cierre ni la barra de pasos (por ejemplo `TestingLibraryElementError: Unable to find an accessible element with the role "group" and name "02 · Tu adelanto"`).
+
+- [ ] **Step 11: Implementar los campos y los pasos 02 y 03**
+
+`apps/landing/src/islands/request-form/steps/fields.tsx`:
+```tsx
+import type { ClipboardEvent, ReactNode } from 'react'
+import type { ChoiceKey, FieldErrors, FormModel, NormalizedKey, TextKey } from '../form-model'
+import { CheckIcon, ErrorIcon } from '../invoices/icons'
+import styles from './Fields.module.css'
+
+/** Lo que cada paso recibe del formulario: el modelo, los errores por campo y los manejadores. */
+export type FieldControls = {
+  model: FormModel
+  errors: FieldErrors
+  onText: (key: TextKey, value: string) => void
+  /** Al salir del campo: normaliza y muestra su error. */
+  onLeave: (key: TextKey) => void
+  /** Al pegar: normaliza si lo pegado es un valor completo. */
+  onPaste: (key: NormalizedKey, event: ClipboardEvent<HTMLInputElement>) => void
+  onChoose: <K extends ChoiceKey>(key: K, value: FormModel[K]) => void
+}
+
+/** Los `id` que describen un campo: su ayuda y, si hay, su error. */
+export function describedBy(
+  helpId: string | null,
+  errorId: string,
+  error: string | undefined,
+): string | undefined {
+  const ids = [helpId, error === undefined ? null : errorId].filter(
+    (id): id is string => id !== null,
+  )
+  return ids.length === 0 ? undefined : ids.join(' ')
+}
+
+/** El error de un campo (tablero 5 de Estados): ícono y texto en rojo, debajo del campo. */
+export function FieldError({ id, message }: { id: string; message: string | undefined }) {
+  if (message === undefined) return null
+  return (
+    <p id={id} className={styles.error}>
+      <ErrorIcon />
+      {message}
+    </p>
+  )
+}
+
+export type TextFieldProps = {
+  id: string
+  label: ReactNode
+  value: string
+  error: string | undefined
+  help?: ReactNode | undefined
+  onChange: (value: string) => void
+  onBlur: () => void
+  onPaste?: ((event: ClipboardEvent<HTMLInputElement>) => void) | undefined
+  type?: 'text' | 'email' | 'tel' | undefined
+  inputMode?: 'text' | 'numeric' | 'decimal' | 'tel' | 'email' | undefined
+  autoComplete: string
+  placeholder?: string | undefined
+  /** El símbolo de la moneda o el +51, pegado al campo (decorativo: la ayuda lo dice). */
+  affix?: { text: string; kind: 'amount' | 'phone' } | undefined
+  /** Ocupa las dos columnas de la grilla del paso. */
+  wide?: boolean | undefined
+}
+
+/** Un campo de texto con su etiqueta, su ayuda y su error, sin tope de largo (cortaría lo pegado). */
+export function TextField({
+  id,
+  label,
+  value,
+  error,
+  help,
+  onChange,
+  onBlur,
+  onPaste,
+  type,
+  inputMode,
+  autoComplete,
+  placeholder,
+  affix,
+  wide,
+}: TextFieldProps) {
+  const helpId = help === undefined ? null : `${id}-ayuda`
+  const errorId = `${id}-error`
+  const invalid = error !== undefined
+  const input = (
+    <input
+      id={id}
+      className={affix === undefined ? styles.input : styles.affixInput}
+      type={type}
+      inputMode={inputMode}
+      autoComplete={autoComplete}
+      placeholder={placeholder}
+      value={value}
+      aria-invalid={invalid ? true : undefined}
+      aria-describedby={describedBy(helpId, errorId, error)}
+      onChange={(event) => onChange(event.currentTarget.value)}
+      onBlur={onBlur}
+      onPaste={onPaste}
+    />
+  )
+  return (
+    <div className={wide === true ? `${styles.field} ${styles.wide}` : styles.field}>
+      <label htmlFor={id} className={styles.label}>
+        {label}
+      </label>
+      {affix === undefined ? (
+        input
+      ) : (
+        <div className={styles.affix} data-kind={affix.kind} data-invalid={invalid}>
+          <span className={styles.affixText} aria-hidden="true">
+            {affix.text}
+          </span>
+          {input}
+        </div>
+      )}
+      {helpId !== null && (
+        <p id={helpId} className={styles.help}>
+          {help}
+        </p>
+      )}
+      <FieldError id={errorId} message={error} />
+    </div>
+  )
+}
+
+export type ChoiceOption<T extends string> = { value: T; label: string }
+
+export type ChoiceGroupProps<T extends string> = {
+  id: string
+  name: string
+  legend: string
+  variant: 'representative' | 'slot'
+  options: readonly ChoiceOption<T>[]
+  value: T | null
+  onChange: (value: T) => void
+  error: string | undefined
+  note?: ReactNode | undefined
+  /** Lo que aparece según la respuesta (el cargo, con «No»). */
+  children?: ReactNode | undefined
+}
+
+/**
+ * Un grupo de radios con la forma de los botones del diseño (`.opt` de `Main.dc.html`): el radio
+ * nativo cubre toda la opción y las flechas del teclado funcionan sin código propio. Con error, cada
+ * radio lleva `aria-invalid` (ARIA 1.2 no lo admite en el grupo) y el `fieldset` suma el error a su
+ * `aria-describedby`.
+ */
+export function ChoiceGroup<T extends string>({
+  id,
+  name,
+  legend,
+  variant,
+  options,
+  value,
+  onChange,
+  error,
+  note,
+  children,
+}: ChoiceGroupProps<T>) {
+  const noteId = note === undefined ? null : `${id}-nota`
+  const errorId = `${id}-error`
+  const invalid = error !== undefined
+  return (
+    <fieldset
+      id={id}
+      className={styles.group}
+      aria-describedby={describedBy(noteId, errorId, error)}
+      data-invalid={invalid}
+    >
+      <legend className={styles.groupLegend}>{legend}</legend>
+      <div className={styles.choices} data-variant={variant}>
+        {options.map((option) => (
+          <label key={option.value} className={styles.choice} data-checked={option.value === value}>
+            <input
+              className={styles.choiceRadio}
+              type="radio"
+              name={name}
+              value={option.value}
+              checked={option.value === value}
+              aria-invalid={invalid ? true : undefined}
+              onChange={() => onChange(option.value)}
+            />
+            <span className={styles.choiceDot} aria-hidden="true">
+              <CheckIcon size={10} />
+            </span>
+            {option.label}
+          </label>
+        ))}
+      </div>
+      <FieldError id={errorId} message={error} />
+      {children}
+      {noteId !== null && (
+        <p id={noteId} className={styles.help}>
+          {note}
+        </p>
+      )}
+    </fieldset>
+  )
+}
+```
+
+`apps/landing/src/islands/request-form/steps/Fields.module.css`:
+```css
+/*
+ * Campos de los pasos 02 y 03: medidas y colores de Main.dc.html (escritorio), MobileForm.dc.html
+ * (hasta 767 px) y el tablero 5 de Estados (campos con error). Esquinas rectas.
+ */
+.field {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.wide {
+  grid-column: 1 / -1;
+}
+
+.label {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.optional {
+  font-weight: 400;
+  color: var(--muted);
+}
+
+.input,
+.select {
+  width: 100%;
+  min-width: 0;
+  min-height: 48px;
+  margin: 0;
+  padding: 0 14px;
+  border: 1.5px solid var(--field);
+  border-radius: 0;
+  background: #ffffff;
+  color: var(--ink);
+  font: inherit;
+  font-size: 16px;
+}
+
+.select {
+  min-height: 52px;
+  padding: 0 12px;
+}
+
+/* Campo con prefijo: el símbolo de la moneda o el +51. */
+.affix {
+  min-width: 0;
+  display: flex;
+  border: 1.5px solid var(--field);
+  background: #ffffff;
+}
+
+.affix[data-kind="amount"] {
+  border-color: var(--teal-600);
+}
+
+.affixText {
+  flex: none;
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  color: var(--muted);
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.affix[data-kind="amount"] .affixText {
+  padding: 0 14px;
+  font-size: 18px;
+}
+
+.affix[data-kind="phone"] .affixText {
+  border-right: 1.5px solid var(--line);
+}
+
+.affixInput {
+  flex: 1;
+  width: 100%;
+  min-width: 0;
+  min-height: 48px;
+  margin: 0;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 16px;
+}
+
+.affix[data-kind="amount"] .affixInput {
+  padding: 0 14px 0 0;
+  font-size: 20px;
+  font-weight: 800;
+}
+
+/* Con error: borde de 2 px (1,5 px más medio píxel por dentro), sin mover el texto. */
+.input[aria-invalid="true"],
+.select[aria-invalid="true"],
+.affix[data-invalid="true"] {
+  border-color: var(--err);
+  box-shadow: inset 0 0 0 0.5px var(--err);
+}
+
+/* El foco se ve en el recuadro entero, no solo en el campo de adentro. */
+@supports selector(:has(*)) {
+  .affix:has(.affixInput:focus-visible) {
+    outline: 2px solid var(--teal-600);
+    outline-offset: 2px;
+  }
+
+  .affixInput:focus-visible {
+    outline: none;
+  }
+}
+
+.help {
+  margin: 0;
+  font-size: 13px;
+  line-height: 19px;
+  color: var(--muted);
+}
+
+.error {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  font-size: 13px;
+  line-height: 19px;
+  color: var(--err);
+}
+
+.error svg {
+  flex: none;
+}
+
+/* Grupos de opciones: representante legal y horario. */
+.group {
+  grid-column: 1 / -1;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.groupLegend {
+  float: left;
+  width: 100%;
+  padding: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.choice {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 48px;
+  padding: 0 16px;
+  border: 1.5px solid var(--field);
+  background: #ffffff;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.choices[data-variant="representative"] .choice {
+  min-width: 120px;
+  font-size: 16px;
+  font-weight: 700;
+}
+
+/* Elegida: borde de 2 px (el de 1,5 px más medio píxel por dentro), sin mover el texto. */
+.choice[data-checked="true"] {
+  border-color: var(--teal-600);
+  box-shadow: inset 0 0 0 0.5px var(--teal-600);
+  background: var(--teal-100);
+}
+
+.group[data-invalid="true"] .choice:not([data-checked="true"]) {
+  border-color: var(--err);
+}
+
+/* El radio cubre toda la opción: un clic en cualquier parte la marca. */
+.choiceRadio {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.choice:has(.choiceRadio:focus-visible) {
+  outline: 2px solid var(--teal-600);
+  outline-offset: 2px;
+}
+
+.choiceDot {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1.5px solid var(--field);
+  background: #ffffff;
+  color: #ffffff;
+}
+
+.choice[data-checked="true"] .choiceDot {
+  border-color: var(--teal-600);
+  background: var(--teal-600);
+}
+
+/* Con «No»: el cargo y el aviso, lado a lado. */
+.repDetail {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 20px;
+}
+
+.repNotice {
+  display: flex;
+  align-items: center;
+  margin: 0;
+  padding: 12px 16px;
+  background: var(--teal-100);
+  color: var(--teal-800);
+  font-size: 14px;
+  line-height: 21px;
+}
+
+@media (max-width: 767px) {
+  .input,
+  .affixInput {
+    padding: 0 12px;
+  }
+
+  .select {
+    padding: 0 10px;
+  }
+
+  .affix[data-kind="amount"] .affixText {
+    padding: 0 12px;
+    font-size: 17px;
+  }
+
+  .affix[data-kind="amount"] .affixInput {
+    padding: 0 12px 0 0;
+    font-size: 19px;
+  }
+
+  .group {
+    gap: 8px;
+  }
+
+  .choices[data-variant="representative"] {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .choices[data-variant="representative"] .choice {
+    justify-content: center;
+    min-width: 0;
+    padding: 0 8px;
+  }
+
+  .choices[data-variant="slot"] {
+    flex-direction: column;
+    flex-wrap: nowrap;
+    gap: 8px;
+  }
+
+  .choices[data-variant="slot"] .choice {
+    display: flex;
+    gap: 10px;
+    padding: 0 14px;
+  }
+
+  .repDetail {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 12px;
+    margin-top: 4px;
+  }
+
+  .repNotice {
+    padding: 12px 14px;
+  }
+}
+```
+
+El archivo completo reemplaza al de la Tarea 9: agrega la variante de los pasos 02 y 03 (`.fieldsStep`) y su grilla (`.grid`).
+
+`apps/landing/src/islands/request-form/steps/Step.module.css`:
+```css
+/*
+ * Un paso del formulario: fieldset con su legend como primera línea (Main.dc.html y
+ * MobileForm.dc.html). La legend flota para ser un elemento más de la columna flex. Lo usan los tres
+ * pasos (las Tareas 9 y 10).
+ */
+.step {
+  min-width: 0;
+  margin: 0;
+  border: 0;
+  padding: 36px 40px 32px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.step + .step {
+  border-top: 1.5px solid var(--line);
+}
+
+/* Antes de hidratar: los controles se ven deshabilitados. */
+.step:disabled :is(label, button, select, input, a) {
+  opacity: 0.55;
+  cursor: progress;
+}
+
+.legend {
+  float: left;
+  width: 100%;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px 16px;
+}
+
+.legendTitle {
+  font-size: 24px;
+  font-weight: 900;
+}
+
+.legendHint {
+  font-size: 14px;
+  color: var(--muted);
+}
+
+/* Pasos 02 y 03 (Tarea 10): 32 px arriba, como en Main.dc.html, y los campos en dos columnas. */
+.step.fieldsStep {
+  padding-top: 32px;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 20px;
+  margin-top: 6px;
+}
+
+@media (max-width: 767px) {
+  .step {
+    padding: 24px 18px;
+    gap: 16px;
+  }
+
+  .step.fieldsStep {
+    padding-top: 24px;
+  }
+
+  .legend {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+  }
+
+  .legendTitle {
+    font-size: 21px;
+  }
+
+  .legendHint {
+    font-size: 13px;
+  }
+
+  .grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 16px;
+    margin-top: 0;
+  }
+}
+```
+
+`apps/landing/src/islands/request-form/steps/AdvanceStep.tsx`:
+```tsx
+import { CURRENCY_SYMBOLS, type Currency } from '@anticipate/shared/money'
+import { type AmountLimit, FIELD_IDS } from '../form-model'
+import { AMOUNT_HELP_WITHOUT_INVOICES, amountHelpText, PURPOSE_OPTIONS } from '../form-text'
+import fieldStyles from './Fields.module.css'
+import { describedBy, type FieldControls, FieldError, TextField } from './fields'
+import stepStyles from './Step.module.css'
+
+export type AdvanceStepProps = {
+  controls: FieldControls
+  /** Hasta que la isla hidrata, el paso se ve y está deshabilitado. */
+  disabled: boolean
+  /** El máximo del grupo elegido, o `null` si todavía no hay facturas. */
+  limit: AmountLimit | null
+  /** La moneda del símbolo del campo: la del grupo, o la primera del pagador. */
+  currency: Currency
+}
+
+/**
+ * Paso 02 (`fieldset#paso-adelanto`, `Main.dc.html` y `MobileForm.dc.html`): el monto, con el
+ * símbolo de la moneda del grupo, que sale con el máximo y lo sigue mientras la persona no lo cambie,
+ * y el motivo opcional.
+ */
+export default function AdvanceStep({ controls, disabled, limit, currency }: AdvanceStepProps) {
+  const { model, errors } = controls
+  const purposeErrorId = `${FIELD_IDS.purpose}-error`
+  return (
+    <fieldset
+      id="paso-adelanto"
+      className={`${stepStyles.step} ${stepStyles.fieldsStep}`}
+      disabled={disabled}
+    >
+      <legend className={stepStyles.legend}>
+        <span className={stepStyles.legendTitle}>02 · Tu adelanto</span>
+      </legend>
+      <div className={stepStyles.grid}>
+        <TextField
+          id={FIELD_IDS.amount}
+          label="Monto que quieres adelantar"
+          value={model.amountText}
+          error={errors.amount}
+          help={limit === null ? AMOUNT_HELP_WITHOUT_INVOICES : amountHelpText(limit)}
+          onChange={(value) => controls.onText('amountText', value)}
+          onBlur={() => controls.onLeave('amountText')}
+          onPaste={(event) => controls.onPaste('amountText', event)}
+          inputMode="decimal"
+          autoComplete="off"
+          affix={{ text: CURRENCY_SYMBOLS[currency], kind: 'amount' }}
+        />
+        <div className={fieldStyles.field}>
+          <label htmlFor={FIELD_IDS.purpose} className={fieldStyles.label}>
+            ¿Para qué usarás el dinero? <span className={fieldStyles.optional}>(opcional)</span>
+          </label>
+          <select
+            id={FIELD_IDS.purpose}
+            className={fieldStyles.select}
+            value={model.purpose}
+            autoComplete="off"
+            aria-invalid={errors.purpose === undefined ? undefined : true}
+            aria-describedby={describedBy(null, purposeErrorId, errors.purpose)}
+            onChange={(event) => controls.onChoose('purpose', event.currentTarget.value)}
+          >
+            <option value="">Selecciona una opción</option>
+            {PURPOSE_OPTIONS.map((purpose) => (
+              <option key={purpose} value={purpose}>
+                {purpose}
+              </option>
+            ))}
+          </select>
+          <FieldError id={purposeErrorId} message={errors.purpose} />
+        </div>
+      </div>
+    </fieldset>
+  )
+}
+```
+
+`apps/landing/src/islands/request-form/steps/ContactStep.tsx`:
+```tsx
+import {
+  CONTACT_TIME_SLOT_LABELS,
+  CONTACT_TIME_SLOTS,
+  type ContactTimeSlot,
+} from '@anticipate/shared/advance-request'
+import { ANTICIPATE_COMPANY } from '@anticipate/shared/company'
+import TrustCard from '../closing/TrustCard'
+import { FIELD_IDS } from '../form-model'
+import fieldStyles from './Fields.module.css'
+import { ChoiceGroup, type ChoiceOption, type FieldControls, TextField } from './fields'
+import stepStyles from './Step.module.css'
+
+type Answer = 'yes' | 'no'
+
+const REPRESENTATIVE_OPTIONS: readonly ChoiceOption<Answer>[] = [
+  { value: 'yes', label: 'Sí' },
+  { value: 'no', label: 'No' },
+]
+
+const SLOT_OPTIONS: readonly ChoiceOption<ContactTimeSlot>[] = CONTACT_TIME_SLOTS.map((slot) => ({
+  value: slot,
+  label: CONTACT_TIME_SLOT_LABELS[slot],
+}))
+
+export type ContactStepProps = {
+  controls: FieldControls
+  /** Hasta que la isla hidrata, el paso se ve y está deshabilitado. */
+  disabled: boolean
+  payerShortName: string
+}
+
+/**
+ * Paso 03 (`fieldset#paso-datos`, `Main.dc.html` y `MobileForm.dc.html`): la ficha de confianza,
+ * nombre, DNI, celular y correo (normalizados al pegar y al salir), representante legal (con «No»,
+ * el cargo y el aviso) y el horario de la llamada.
+ */
+export default function ContactStep({ controls, disabled, payerShortName }: ContactStepProps) {
+  const { model, errors } = controls
+  const answer: Answer | null =
+    model.isLegalRepresentative === null ? null : model.isLegalRepresentative ? 'yes' : 'no'
+  return (
+    <fieldset
+      id="paso-datos"
+      className={`${stepStyles.step} ${stepStyles.fieldsStep}`}
+      disabled={disabled}
+    >
+      <legend className={stepStyles.legend}>
+        <span className={stepStyles.legendTitle}>03 · Tus datos</span>
+      </legend>
+      <div className={stepStyles.grid}>
+        <TrustCard payerShortName={payerShortName} />
+        <TextField
+          id={FIELD_IDS.fullName}
+          label="Nombre completo"
+          value={model.fullName}
+          error={errors.fullName}
+          onChange={(value) => controls.onText('fullName', value)}
+          onBlur={() => controls.onLeave('fullName')}
+          autoComplete="name"
+          placeholder="Nombres y apellidos"
+          wide
+        />
+        <TextField
+          id={FIELD_IDS.dni}
+          label="DNI"
+          value={model.dniText}
+          error={errors.dni}
+          help="8 dígitos. Lo usamos para verificar tu identidad y evaluar tu solicitud."
+          onChange={(value) => controls.onText('dniText', value)}
+          onBlur={() => controls.onLeave('dniText')}
+          onPaste={(event) => controls.onPaste('dniText', event)}
+          inputMode="numeric"
+          autoComplete="off"
+        />
+        <TextField
+          id={FIELD_IDS.mobile}
+          label="Celular"
+          value={model.mobileText}
+          error={errors.mobile}
+          help="9 dígitos. Puedes pegarlo con +51 o con espacios."
+          onChange={(value) => controls.onText('mobileText', value)}
+          onBlur={() => controls.onLeave('mobileText')}
+          onPaste={(event) => controls.onPaste('mobileText', event)}
+          type="tel"
+          inputMode="tel"
+          autoComplete="tel-national"
+          affix={{ text: '+51', kind: 'phone' }}
+        />
+        <TextField
+          id={FIELD_IDS.email}
+          label="Correo electrónico"
+          value={model.emailText}
+          error={errors.email}
+          help="Aquí te llegan la copia de tu solicitud y la propuesta."
+          onChange={(value) => controls.onText('emailText', value)}
+          onBlur={() => controls.onLeave('emailText')}
+          onPaste={(event) => controls.onPaste('emailText', event)}
+          type="email"
+          inputMode="email"
+          autoComplete="email"
+          placeholder="nombre@empresa.pe"
+          wide
+        />
+        <ChoiceGroup
+          id={FIELD_IDS.isLegalRepresentative}
+          name="representante"
+          legend="¿Eres representante legal de la empresa?"
+          variant="representative"
+          options={REPRESENTATIVE_OPTIONS}
+          value={answer}
+          onChange={(value) => controls.onChoose('isLegalRepresentative', value === 'yes')}
+          error={errors.isLegalRepresentative}
+        >
+          {model.isLegalRepresentative === false && (
+            <div className={fieldStyles.repDetail}>
+              <TextField
+                id={FIELD_IDS.jobTitle}
+                label="Tu cargo en la empresa"
+                value={model.jobTitle}
+                error={errors.jobTitle}
+                onChange={(value) => controls.onText('jobTitle', value)}
+                onBlur={() => controls.onLeave('jobTitle')}
+                autoComplete="organization-title"
+                placeholder="Ej. Jefe de finanzas"
+              />
+              <p className={fieldStyles.repNotice}>
+                Puedes enviar la solicitud. Para firmar la cesión necesitaremos al representante
+                legal.
+              </p>
+            </div>
+          )}
+        </ChoiceGroup>
+        <ChoiceGroup
+          id={FIELD_IDS.contactTimeSlot}
+          name="horario"
+          legend="¿Cuándo prefieres que te llamemos?"
+          variant="slot"
+          options={SLOT_OPTIONS}
+          value={model.contactTimeSlot}
+          onChange={(value) => controls.onChoose('contactTimeSlot', value)}
+          error={errors.contactTimeSlot}
+          note={`Te contactaremos por llamada o WhatsApp desde el ${ANTICIPATE_COMPANY.phoneDisplay}. Guárdalo para reconocernos.`}
+        />
+      </div>
+    </fieldset>
+  )
+}
+```
+
+- [ ] **Step 12: Implementar la ficha de confianza, el resumen de errores y el cierre**
+
+`apps/landing/src/islands/request-form/closing/TrustCard.tsx`:
+```tsx
+import { ANTICIPATE_COMPANY, supplierGreeting, whatsappUrl } from '@anticipate/shared/company'
+import { ShieldCheckIcon } from '../invoices/icons'
+import styles from './Closing.module.css'
+
+/**
+ * Ficha de confianza al inicio del paso 03 (`Main.dc.html`): quién recibe y evalúa los datos, con su
+ * RUC y su dirección, y los canales de contacto, todo de `ANTICIPATE_COMPANY`. Hasta 767 px, como
+ * `MobileForm.dc.html`: sin la columna de enlaces (van en "¿Tienes dudas?", después del formulario) y
+ * con el escudo junto al título.
+ */
+export default function TrustCard({ payerShortName }: { payerShortName: string }) {
+  const { legalName, ruc, address, phoneDisplay, supportEmail } = ANTICIPATE_COMPANY
+  return (
+    <div className={styles.trust}>
+      <span className={styles.trustIcon}>
+        <ShieldCheckIcon size={22} />
+      </span>
+      <div className={styles.trustBody}>
+        <p className={styles.trustTitle}>
+          <ShieldCheckIcon size={18} className={styles.trustInlineIcon} />
+          Tus datos los recibe y evalúa {legalName}.
+        </p>
+        <p className={styles.trustText}>
+          RUC {ruc} · {address}
+        </p>
+      </div>
+      <div className={styles.trustLinks}>
+        <a
+          className={styles.trustWhatsapp}
+          href={whatsappUrl(supplierGreeting(payerShortName))}
+          target="_blank"
+          rel="noopener"
+        >
+          WhatsApp {phoneDisplay}
+        </a>
+        <a href={`mailto:${supportEmail}`}>{supportEmail}</a>
+      </div>
+    </div>
+  )
+}
+```
+
+`apps/landing/src/islands/request-form/closing/ErrorSummary.tsx`:
+```tsx
+import { Fragment, type MouseEvent, type Ref } from 'react'
+import { type ErrorSummaryItem, errorSummaryTitle } from '../form-text'
+import styles from './Closing.module.css'
+
+/**
+ * Lleva el foco al campo del enlace: el control mismo, o el primer `input` si es un grupo (el primer
+ * radio, o el campo de archivos del paso 01). Lo centra para que no quede debajo de una barra fija.
+ */
+function focusField(event: MouseEvent<HTMLAnchorElement>, href: string): void {
+  const target = document.getElementById(href.slice(1))
+  if (target === null) return
+  const control =
+    target instanceof HTMLFieldSetElement ? target.querySelector<HTMLElement>('input') : target
+  if (control === null) return
+  event.preventDefault()
+  if (typeof target.scrollIntoView === 'function') target.scrollIntoView({ block: 'center' })
+  control.focus({ preventScroll: true })
+}
+
+/**
+ * Resumen de errores al enviar (tablero 5 de Estados): "Te falta completar 3 datos:" y un enlace por
+ * dato. Es un `role="alert"` que recibe el foco (`tabIndex={-1}`), así el lector de pantalla lo lee y
+ * quien usa el teclado sigue desde ahí.
+ */
+export default function ErrorSummary({
+  items,
+  summaryRef,
+}: {
+  items: readonly ErrorSummaryItem[]
+  summaryRef: Ref<HTMLDivElement>
+}) {
+  return (
+    <div ref={summaryRef} className={styles.summary} role="alert" tabIndex={-1}>
+      <p className={styles.summaryTitle}>{errorSummaryTitle(items.length)}</p>
+      {items.length > 0 && (
+        <p className={styles.summaryLinks}>
+          {items.map((item, index) => (
+            <Fragment key={item.key}>
+              {index > 0 && ' · '}
+              <a
+                className={styles.summaryLink}
+                href={item.href}
+                onClick={(event) => focusField(event, item.href)}
+              >
+                {item.label}
+              </a>
+            </Fragment>
+          ))}
+        </p>
+      )}
+    </div>
+  )
+}
+```
+
+`apps/landing/src/islands/request-form/closing/Closing.tsx`:
+```tsx
+import { ANTICIPATE_COMPANY } from '@anticipate/shared/company'
+import { type ReactNode, useState } from 'react'
+import type { IntakeView } from '../../../lib/intake/intake-state'
+import type { IslandConfig } from '../../../lib/island-config'
+import { FIELD_IDS } from '../form-model'
+import {
+  NOTICE_TOGGLE_TEXTS,
+  PROMISE_TEXT,
+  privacyDetailText,
+  privacyLead,
+  SEND_SUMMARY_FALLBACKS,
+  sendSummary,
+  TURNSTILE_TEXT,
+} from '../form-text'
+import { ArrowIcon, ShieldIcon } from '../invoices/icons'
+import { type FieldControls, FieldError } from '../steps/fields'
+import styles from './Closing.module.css'
+
+/** `id` de la segunda capa del aviso de privacidad (`aria-controls` de su botón). */
+export const PRIVACY_DETAIL_ID = 'aviso-datos'
+
+/** Un dato de "Vas a enviar": en negrita si ya está, o el texto de lo que falta. */
+function Value({ value, fallback }: { value: string | null; fallback: string }) {
+  return value === null ? fallback : <strong>{value}</strong>
+}
+
+type ConsentProps = {
+  id: string
+  checked: boolean
+  error: string | undefined
+  disabled: boolean
+  onChange: (checked: boolean) => void
+  children: ReactNode
+}
+
+/** Una casilla de consentimiento: la etiqueta entera la marca, y el error va debajo. */
+function Consent({ id, checked, error, disabled, onChange, children }: ConsentProps) {
+  const errorId = `${id}-error`
+  return (
+    <div className={styles.consentField}>
+      <label className={styles.consent} htmlFor={id}>
+        <input
+          id={id}
+          className={styles.checkbox}
+          type="checkbox"
+          checked={checked}
+          disabled={disabled}
+          aria-invalid={error === undefined ? undefined : true}
+          aria-describedby={error === undefined ? undefined : errorId}
+          onChange={(event) => onChange(event.currentTarget.checked)}
+        />
+        <span>{children}</span>
+      </label>
+      <FieldError id={errorId} message={error} />
+    </div>
+  )
+}
+
+export type ClosingProps = {
+  config: IslandConfig
+  view: IntakeView | null
+  controls: FieldControls
+  /** Hasta que la isla hidrata, las casillas y los botones están deshabilitados. */
+  disabled: boolean
+}
+
+/**
+ * Cierre del formulario (`Main.dc.html` y `MobileForm.dc.html`), un solo bloque debajo del paso 03:
+ * "Vas a enviar", los consentimientos con los enlaces legales del build, el aviso por capas, "Enviar
+ * no te obliga a nada…", "Protegido por Cloudflare Turnstile" y el botón «Enviar solicitud». Debajo
+ * va el panel del envío de la Tarea 11.
+ */
+export default function Closing({ config, view, controls, disabled }: ClosingProps) {
+  const [noticeOpen, setNoticeOpen] = useState(false)
+  const { model, errors } = controls
+  const summary = sendSummary(model, view)
+  return (
+    <div className={styles.closing}>
+      <div className={styles.sendSummary}>
+        <p className={styles.eyebrow}>Vas a enviar</p>
+        <p className={styles.sendLine}>
+          Solicitas <Value value={summary.amount} fallback={SEND_SUMMARY_FALLBACKS.amount} /> por{' '}
+          <Value value={summary.invoices} fallback={SEND_SUMMARY_FALLBACKS.invoices} /> a{' '}
+          {config.payer.shortName}.{' '}
+          <a className={styles.changeLink} href="#paso-adelanto">
+            Cambiar <span className="sr-only">el monto</span>
+          </a>
+        </p>
+        <p className={styles.sendLine}>
+          Te llamaremos al <Value value={summary.mobile} fallback={SEND_SUMMARY_FALLBACKS.mobile} />{' '}
+          {summary.slot} y te escribiremos a{' '}
+          <Value value={summary.email} fallback={SEND_SUMMARY_FALLBACKS.email} />.{' '}
+          <a className={styles.changeLink} href="#paso-datos">
+            Cambiar <span className="sr-only">tus datos</span>
+          </a>
+        </p>
+      </div>
+
+      <Consent
+        id={FIELD_IDS.acceptTerms}
+        checked={model.acceptTerms}
+        error={errors.acceptTerms}
+        disabled={disabled}
+        onChange={(checked) => controls.onChoose('acceptTerms', checked)}
+      >
+        Acepto los{' '}
+        <a href={config.legal.termsUrl} target="_blank" rel="noopener">
+          Términos y Condiciones
+        </a>{' '}
+        de Anticipate Factoring.
+      </Consent>
+      <Consent
+        id={FIELD_IDS.acceptPrivacy}
+        checked={model.acceptPrivacy}
+        error={errors.acceptPrivacy}
+        disabled={disabled}
+        onChange={(checked) => controls.onChoose('acceptPrivacy', checked)}
+      >
+        Autorizo el tratamiento de mis datos personales conforme a la{' '}
+        <a href={config.legal.privacyUrl} target="_blank" rel="noopener">
+          Política de Privacidad
+        </a>{' '}
+        (Ley N.° 29733).
+      </Consent>
+
+      <div className={styles.notice}>
+        <p className={styles.noticeText}>
+          {privacyLead()}{' '}
+          <button
+            type="button"
+            className={styles.noticeToggle}
+            aria-expanded={noticeOpen}
+            aria-controls={PRIVACY_DETAIL_ID}
+            disabled={disabled}
+            onClick={() => setNoticeOpen((open) => !open)}
+          >
+            {noticeOpen ? NOTICE_TOGGLE_TEXTS.open : NOTICE_TOGGLE_TEXTS.closed}
+          </button>
+        </p>
+        <p id={PRIVACY_DETAIL_ID} className={styles.noticeText} hidden={!noticeOpen}>
+          {privacyDetailText()}{' '}
+          <a href={`mailto:${ANTICIPATE_COMPANY.privacyEmail}`}>
+            {ANTICIPATE_COMPANY.privacyEmail}
+          </a>
+          .
+        </p>
+      </div>
+
+      <p className={styles.promise}>{PROMISE_TEXT}</p>
+      <div className={styles.submitRow}>
+        <p className={styles.turnstile}>
+          <ShieldIcon />
+          {TURNSTILE_TEXT}
+        </p>
+        <button type="submit" className={styles.submit} disabled={disabled}>
+          Enviar solicitud
+          <ArrowIcon />
+        </button>
+      </div>
+    </div>
+  )
+}
+```
+
+`apps/landing/src/islands/request-form/closing/Closing.module.css`:
+```css
+/*
+ * Cierre del formulario, ficha de confianza del paso 03 y resumen de errores: Main.dc.html
+ * (escritorio), MobileForm.dc.html (hasta 767 px) y el tablero 5 de Estados. Esquinas rectas.
+ */
+
+/* Ficha de confianza: ocupa las dos columnas del paso 03. */
+.trust {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr) auto;
+  gap: 16px;
+  align-items: center;
+  padding: 16px 18px;
+  background: var(--surface);
+  border-left: 4px solid var(--teal);
+}
+
+.trustIcon {
+  width: 44px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #ffffff;
+  color: var(--teal-700);
+}
+
+.trustBody {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 21px;
+}
+
+.trustTitle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 800;
+}
+
+.trustInlineIcon {
+  display: none;
+  flex: none;
+  color: var(--teal-700);
+}
+
+.trustText {
+  margin: 0;
+}
+
+/* Cada enlace mide 44 px de alto (la ficha queda más alta que en el tablero). */
+.trustLinks {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  font-size: 14px;
+  line-height: 21px;
+}
+
+.trustLinks a {
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+}
+
+.trustWhatsapp {
+  font-weight: 700;
+}
+
+/* Resumen de errores al enviar (tablero 5), arriba del paso 01. */
+.summary {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 32px 40px 0;
+  padding: 14px 16px;
+  border-left: 4px solid var(--err);
+  background: var(--err-bg);
+  color: #5c1a14;
+  font-size: 14px;
+  line-height: 21px;
+}
+
+.summary:focus {
+  outline: 2px solid var(--err);
+  outline-offset: 2px;
+}
+
+.summaryTitle {
+  margin: 0;
+  font-weight: 800;
+}
+
+.summaryLinks {
+  margin: 0;
+}
+
+.summaryLink {
+  position: relative;
+  color: #5c1a14;
+  font-weight: 700;
+}
+
+.summaryLink:hover {
+  color: var(--ink);
+}
+
+/*
+ * "Cambiar", los enlaces del resumen y el botón del aviso van dentro de una frase: su área de toque
+ * llega a 44 px de alto sin mover el texto. Los enlaces de los consentimientos no la amplían, para no
+ * quitarle clics a la etiqueta que marca la casilla.
+ */
+.summaryLink::after,
+.changeLink::after,
+.noticeToggle::after {
+  content: "";
+  position: absolute;
+  inset: -12px -4px;
+}
+
+.changeLink {
+  position: relative;
+}
+
+/* Cierre: "Vas a enviar", consentimientos, aviso por capas y el botón. */
+.closing {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: 32px 40px 40px;
+  border-top: 1.5px solid var(--line);
+}
+
+.sendSummary {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 16px 18px;
+  background: var(--surface);
+  font-size: 15px;
+  line-height: 23px;
+}
+
+.eyebrow {
+  margin: 0;
+  color: var(--teal-700);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.sendLine {
+  margin: 0;
+}
+
+.consentField {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* La etiqueta entera marca la casilla y mide al menos 44 px de alto. */
+.consent {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  min-height: 44px;
+  font-size: 15px;
+  line-height: 23px;
+  cursor: pointer;
+}
+
+.checkbox {
+  width: 20px;
+  height: 20px;
+  flex: none;
+  margin: 2px 0 0;
+  accent-color: var(--teal-600);
+  cursor: pointer;
+}
+
+/* Con error, un contorno rojo que cede su lugar al del foco. */
+.checkbox[aria-invalid="true"]:not(:focus-visible) {
+  outline: 2px solid var(--err);
+  outline-offset: 1px;
+}
+
+.checkbox:disabled {
+  opacity: 0.55;
+  cursor: progress;
+}
+
+.notice {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px 16px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.noticeText {
+  margin: 0;
+}
+
+.noticeToggle {
+  position: relative;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--teal-700);
+  font: inherit;
+  font-weight: 700;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+
+.noticeToggle:hover {
+  color: var(--teal-800);
+}
+
+.noticeToggle:disabled {
+  opacity: 0.55;
+  cursor: progress;
+}
+
+.promise {
+  margin: 4px 0 0;
+  color: var(--ink);
+  font-size: 15px;
+  line-height: 23px;
+}
+
+.submitRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.turnstile {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.turnstile svg {
+  flex: none;
+}
+
+.submit {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  min-width: 280px;
+  min-height: 60px;
+  padding: 0 24px;
+  border: 0;
+  background: var(--teal-600);
+  color: #ffffff;
+  font: inherit;
+  font-size: 18px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.submit:hover {
+  background: var(--teal-700);
+}
+
+/* Hasta hidratar. */
+.submit:disabled {
+  background: #9fb7b5;
+  cursor: progress;
+}
+
+@media (max-width: 767px) {
+  .trust {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 14px 16px;
+  }
+
+  .trustIcon,
+  .trustLinks {
+    display: none;
+  }
+
+  .trustInlineIcon {
+    display: block;
+  }
+
+  .summary {
+    margin: 24px 18px 0;
+  }
+
+  .closing {
+    gap: 16px;
+    padding: 24px 18px 28px;
+  }
+
+  .sendSummary {
+    padding: 14px 16px;
+  }
+
+  .consent {
+    line-height: 22px;
+  }
+
+  .checkbox {
+    width: 22px;
+    height: 22px;
+    margin: 0;
+  }
+
+  .notice {
+    padding: 12px 14px;
+  }
+
+  .promise {
+    margin-top: 0;
+    line-height: 22px;
+  }
+
+  /* El botón a todo el ancho y "Protegido por Cloudflare Turnstile" debajo. */
+  .submitRow {
+    flex-direction: column-reverse;
+    align-items: stretch;
+    gap: 16px;
+  }
+
+  .submit {
+    width: 100%;
+    min-width: 0;
+    padding: 0 20px;
+  }
+
+  .turnstile {
+    justify-content: center;
+  }
+}
+```
+
+- [ ] **Step 13: Armar la isla completa**
+
+El archivo completo del CSS de la isla reemplaza al de la Tarea 9: agrega el recuadro "¿Tienes dudas?" de móvil (`.doubts`).
+
+`apps/landing/src/islands/request-form/RequestForm.module.css`:
+```css
+/*
+ * Isla del formulario dentro de section#solicitud (el fondo y los márgenes son de la sección, en
+ * [payer].astro). Desde 1024 px, las dos columnas de Main.dc.html con la izquierda fija; entre 768 y
+ * 1023 px, una columna; hasta 767 px, MobileForm.dc.html.
+ */
+.root {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 40px;
+  align-items: start;
+}
+
+.aside {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  min-width: 0;
+}
+
+.eyebrow {
+  font-size: 13px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--teal-700);
+  font-weight: 700;
+}
+
+.title {
+  margin: 0;
+  font-size: 40px;
+  line-height: 1.08;
+  letter-spacing: -0.02em;
+  font-weight: 900;
+}
+
+.lead {
+  margin: 0;
+  max-width: 640px;
+  font-size: 17px;
+  line-height: 27px;
+  color: var(--muted);
+}
+
+.maxBox {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  max-width: 420px;
+  margin: 0;
+  padding: 14px 16px;
+  background: var(--teal-700);
+  color: #ffffff;
+}
+
+.maxLabel {
+  font-size: 14px;
+  color: var(--teal-100);
+}
+
+.maxValue {
+  font-size: 20px;
+  font-weight: 900;
+}
+
+.help {
+  margin: 0;
+  font-size: 15px;
+  line-height: 23px;
+  color: var(--muted);
+}
+
+.helpLink {
+  font-weight: 700;
+}
+
+.form {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  background: #ffffff;
+  box-shadow:
+    0 30px 70px -34px rgba(7, 52, 50, 0.4),
+    0 2px 8px rgba(7, 52, 50, 0.06);
+}
+
+/* Hasta que la isla hidrata: el formulario se ve ocupado y sus pasos, deshabilitados. */
+.form[aria-busy="true"] {
+  cursor: progress;
+}
+
+/* "¿Tienes dudas?" después del formulario: solo en móvil (MobileForm.dc.html). */
+.doubts {
+  display: none;
+}
+
+@media (min-width: 1024px) {
+  .root {
+    grid-template-columns: 320px minmax(0, 1fr);
+    gap: 64px;
+  }
+
+  .aside {
+    position: sticky;
+    top: calc(var(--header-height) + 24px);
+  }
+
+  .title {
+    font-size: 48px;
+  }
+
+  .maxBox {
+    max-width: none;
+  }
+}
+
+@media (max-width: 767px) {
+  /* Las piezas de la columna izquierda pasan a esta columna: la barra de pasos de la Tarea 10 queda
+     con el formulario entero como bloque contenedor (la Tarea 13 la deja fija). */
+  .root {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .aside {
+    display: contents;
+  }
+
+  .eyebrow {
+    padding: 0 4px;
+    font-size: 12px;
+  }
+
+  .title {
+    padding: 0 4px;
+    font-size: 32px;
+    line-height: 1.1;
+  }
+
+  .lead {
+    padding: 0 4px;
+    font-size: 16px;
+    line-height: 25px;
+  }
+
+  .desktopOnly,
+  .maxBox,
+  .help {
+    display: none;
+  }
+
+  .form {
+    margin-top: 10px;
+    box-shadow:
+      0 24px 50px -30px rgba(7, 52, 50, 0.4),
+      0 2px 6px rgba(7, 52, 50, 0.06);
+  }
+
+  .doubts {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-top: 10px;
+    padding: 18px;
+    background: #ffffff;
+    font-size: 14px;
+    line-height: 21px;
+  }
+
+  .doubtsTitle {
+    margin: 0;
+    font-size: 15px;
+    font-weight: 800;
+  }
+
+  .doubtsLink {
+    align-self: flex-start;
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
+  }
+
+  .doubtsWhatsapp {
+    font-weight: 700;
+  }
+}
+```
+
+`apps/landing/src/islands/request-form/RequestForm.tsx`:
+```tsx
+import { ANTICIPATE_COMPANY, supplierGreeting, whatsappUrl } from '@anticipate/shared/company'
+import { LIMA_TIME_ZONE, todayIn } from '@anticipate/shared/dates'
+import type { Amount, Currency } from '@anticipate/shared/money'
+import { type FormEvent, useEffect, useReducer, useRef, useState } from 'react'
+import type { IslandConfig } from '../../lib/island-config'
+import { intakeStore, useIntake } from '../../lib/store/intake-store'
+import Closing from './closing/Closing'
+import ErrorSummary from './closing/ErrorSummary'
+import StepsNav from './closing/StepsNav'
+import {
+  type AmountLimit,
+  amountAfterMaxChange,
+  buildAdvanceRequestForm,
+  type FieldErrors,
+  type FormFieldName,
+  type FormModel,
+  formFieldErrors,
+  formReducer,
+  initialFormModel,
+  isBlank,
+  MODEL_FIELDS,
+  normalizeFieldText,
+  pastedFieldValue,
+  type SourceInfo,
+  setField,
+  updateFieldErrors,
+} from './form-model'
+import { errorSummaryItems } from './form-text'
+import RequestAside from './RequestAside'
+import styles from './RequestForm.module.css'
+import { stepStatuses } from './step-status'
+import AdvanceStep from './steps/AdvanceStep'
+import ContactStep from './steps/ContactStep'
+import type { FieldControls } from './steps/fields'
+import InvoicesStep from './steps/InvoicesStep'
+import { useHydrated } from './use-hydrated'
+
+/**
+ * El resumen de errores abierto: los errores con que se abrió (o que él mismo actualizó), si faltaban
+ * facturas para enviar y si el esquema falló sin ningún dato que la persona pueda corregir.
+ */
+type SummaryState = { errors: FieldErrors; invoicesMissing: boolean; unexplained: boolean }
+
+/**
+ * Isla del formulario de solicitud (`client:idle`), dentro de `section#solicitud`: la columna
+ * izquierda con la barra de pasos y el `<form>` con el paso 01 (facturas y Cavali), el 02 (monto y
+ * motivo), el 03 (datos) y el cierre. Comparte las facturas con la calculadora por el almacén de la
+ * Tarea 8. Hasta hidratar, los pasos y el botón salen deshabilitados y el `<form>` con `aria-busy`.
+ */
+export default function RequestForm({ config }: { config: IslandConfig }) {
+  const { payer, intakeLimits } = config
+  const [model, dispatch] = useReducer(formReducer, initialFormModel)
+  const { view, reading } = useIntake()
+  const hydrated = useHydrated()
+  const [fieldErrors, setFieldErrors] = useState<FieldErrors>({})
+  // La Tarea 11 lo reemplaza por el origen de la primera visita (readCurrentSource).
+  const [source] = useState<SourceInfo>({})
+  const [summary, setSummary] = useState<SummaryState | null>(null)
+  const [summaryFocus, setSummaryFocus] = useState(0)
+  const [followedMax, setFollowedMax] = useState<Amount | null>(null)
+  const summaryRef = useRef<HTMLDivElement>(null)
+
+  const group = view?.chosenGroup ?? null
+  const limit: AmountLimit | null =
+    group === null ? null : { maxAdvance: group.maxAdvance, currency: group.currency }
+  const fieldCurrency: Currency = group?.currency ?? payer.allowedCurrencies[0] ?? 'PEN'
+  // El resumen sigue abierto mientras los errores sean los suyos: si otro los cambia (la respuesta
+  // de la API en la Tarea 11, «Empezar de nuevo» en la Tarea 12), se cierra.
+  const openSummary = summary !== null && summary.errors === fieldErrors ? summary : null
+
+  useEffect(() => {
+    intakeStore.configure({
+      payer,
+      limits: intakeLimits,
+      today: todayIn(LIMA_TIME_ZONE, new Date()),
+    })
+  }, [payer, intakeLimits])
+
+  // El foco va al resumen cada vez que un envío falla.
+  useEffect(() => {
+    if (summaryFocus > 0) summaryRef.current?.focus()
+  }, [summaryFocus])
+
+  /** Cambia los errores por campo y mantiene al día el resumen abierto. */
+  const applyErrors = (next: FieldErrors): void => {
+    if (next === fieldErrors) return
+    setFieldErrors(next)
+    if (openSummary !== null) setSummary({ ...openSummary, errors: next })
+  }
+
+  // El monto sigue al máximo del grupo mientras la persona no lo cambie: se ajusta durante el render
+  // cuando cambia el máximo (otro grupo, otras facturas o las del borrador).
+  const maxAdvance = group?.maxAdvance ?? null
+  if (followedMax !== maxAdvance) {
+    setFollowedMax(maxAdvance)
+    const amountText = amountAfterMaxChange(model.amountText, followedMax, limit)
+    if (amountText !== null) {
+      dispatch(setField('amountText', amountText))
+      applyErrors(updateFieldErrors(fieldErrors, {}, ['amount'], 'refresh'))
+    }
+  }
+
+  /** Valida `fields` con el modelo `next` y muestra, actualiza o quita sus errores. */
+  const refresh = (
+    next: FormModel,
+    fields: readonly FormFieldName[],
+    mode: 'show' | 'refresh',
+  ): void => {
+    applyErrors(updateFieldErrors(fieldErrors, formFieldErrors(next, limit), fields, mode))
+  }
+
+  const controls: FieldControls = {
+    model,
+    errors: fieldErrors,
+    onText: (key, value) => dispatch(setField(key, value)),
+    onLeave: (key) => {
+      const value = normalizeFieldText(key, model[key], fieldCurrency)
+      const next = formReducer(model, setField(key, value))
+      if (next !== model) dispatch(setField(key, value))
+      // Un campo vacío que no tenía error no se marca al salir: recorrerlo con Tab no es un error.
+      refresh(next, [MODEL_FIELDS[key]], isBlank(value) ? 'refresh' : 'show')
+    },
+    onPaste: (key, event) => {
+      const input = event.currentTarget
+      const replacesAll =
+        isBlank(input.value) ||
+        (input.selectionStart === 0 && input.selectionEnd === input.value.length)
+      const value = replacesAll
+        ? pastedFieldValue(key, event.clipboardData.getData('text'), fieldCurrency)
+        : null
+      if (value === null) return
+      event.preventDefault()
+      const next = formReducer(model, setField(key, value))
+      dispatch(setField(key, value))
+      refresh(next, [MODEL_FIELDS[key]], 'refresh')
+    },
+    onChoose: (key, value) => {
+      const next = formReducer(model, setField(key, value))
+      dispatch(setField(key, value))
+      refresh(
+        next,
+        key === 'isLegalRepresentative'
+          ? ['isLegalRepresentative', 'jobTitle']
+          : [MODEL_FIELDS[key]],
+        'refresh',
+      )
+    },
+  }
+
+  /** Muestra los errores y abre el resumen con el foco. */
+  const openErrors = (errors: FieldErrors, invoicesMissing: boolean): void => {
+    setFieldErrors(errors)
+    setSummary({
+      errors,
+      invoicesMissing,
+      unexplained: !invoicesMissing && Object.keys(errors).length === 0,
+    })
+    setSummaryFocus((count) => count + 1)
+  }
+
+  const onSubmit = (event: FormEvent<HTMLFormElement>): void => {
+    event.preventDefault()
+    const files = view?.submission ?? null
+    if (files === null) {
+      // Sin facturas para enviar: el resumen pide las facturas y los datos que falten, y no se sigue.
+      openErrors(formFieldErrors(model, limit), true)
+      return
+    }
+    const result = buildAdvanceRequestForm(model, files, config, source)
+    if (!result.ok) {
+      openErrors(result.errors, false)
+      return
+    }
+    setFieldErrors({})
+    setSummary(null)
+    // La Tarea 11 envía aquí: submission.send(result.form, files)
+  }
+
+  const steps = stepStatuses(model, view, group?.currency ?? null)
+  const invoicesMissing =
+    (openSummary?.invoicesMissing ?? false) && (view?.submission ?? null) === null
+  const summaryItems = openSummary === null ? [] : errorSummaryItems(fieldErrors, invoicesMissing)
+  const showSummary = openSummary !== null && (summaryItems.length > 0 || openSummary.unexplained)
+
+  return (
+    <div className={styles.root}>
+      <RequestAside config={config} view={view}>
+        <StepsNav steps={steps} invoiceCount={view?.submission?.invoiceNumbers.length ?? 0} />
+      </RequestAside>
+      <form
+        className={styles.form}
+        noValidate
+        aria-busy={hydrated ? undefined : true}
+        onSubmit={onSubmit}
+      >
+        {showSummary && <ErrorSummary items={summaryItems} summaryRef={summaryRef} />}
+        <InvoicesStep
+          config={config}
+          view={view}
+          reading={reading}
+          disabled={!hydrated}
+          cavali={model.cavali}
+          onCavaliChange={(value) => controls.onChoose('cavali', value)}
+          cavaliError={fieldErrors.cavali}
+        />
+        <AdvanceStep
+          controls={controls}
+          disabled={!hydrated}
+          limit={limit}
+          currency={fieldCurrency}
+        />
+        <ContactStep controls={controls} disabled={!hydrated} payerShortName={payer.shortName} />
+        <Closing config={config} view={view} controls={controls} disabled={!hydrated} />
+      </form>
+      <div className={styles.doubts}>
+        <p className={styles.doubtsTitle}>¿Tienes dudas?</p>
+        <a
+          className={`${styles.doubtsLink} ${styles.doubtsWhatsapp}`}
+          href={whatsappUrl(supplierGreeting(payer.shortName))}
+          target="_blank"
+          rel="noopener"
+        >
+          WhatsApp {ANTICIPATE_COMPANY.phoneDisplay}
+        </a>
+        <a className={styles.doubtsLink} href={`mailto:${ANTICIPATE_COMPANY.supportEmail}`}>
+          {ANTICIPATE_COMPANY.supportEmail}
+        </a>
+      </div>
+    </div>
+  )
+}
+```
+
+Run: `ASTRO_TELEMETRY_DISABLED=1 pnpm --filter @anticipate/landing exec vitest run src/islands/request-form`
+Expected: PASS, 84 tests en 9 archivos: los 35 de la Tarea 9 (con los 5 del reducer, ahora en el `form-model.test.ts` nuevo) y los 49 de esta tarea (17 del armado y la validación, 7 de los textos, 7 de los pasos por avance, 4 de la barra de pasos y 14 de la isla), sin avisos de `act(...)` ni de hidratación en la consola.
+
+Run: `pnpm --filter @anticipate/landing typecheck`
+Expected: `astro check` termina con `0 errors`, `0 warnings` y `0 hints`.
+
+- [ ] **Step 14: Build con fixtures y comprobación del HTML**
+
+`[payer].astro` no cambia: la isla ya está montada con `client:idle` desde la Tarea 9.
+
+Run: `rm -rf apps/landing/dist && LANDING_DATA=fixtures pnpm --filter @anticipate/landing build`
+Expected: build completo con `/404.html`, `/sea.html` e `/index.html`.
+
+Run: `grep -oE '<fieldset id="paso-(adelanto|datos)"[^>]*disabled=""' apps/landing/dist/sea.html | wc -l; grep -oE '<button type="submit"[^>]*disabled=""' apps/landing/dist/sea.html | wc -l; grep -o 'aria-label="Pasos de la solicitud"' apps/landing/dist/sea.html; grep -oE 'id="aviso-datos"[^>]*hidden=""' apps/landing/dist/sea.html | wc -l; grep -o 'Te contactaremos por llamada o WhatsApp desde el +51 954 180 802' apps/landing/dist/sea.html; grep -c 'maxlength' apps/landing/dist/sea.html`
+Expected, una línea por comando: `2` (los pasos 02 y 03 salen deshabilitados en el HTML del build); `1` (el botón también); `aria-label="Pasos de la solicitud"`; `1`; `Te contactaremos por llamada o WhatsApp desde el +51 954 180 802`; `0`.
+
+- [ ] **Step 15: Revisión visual contra los tableros**
+
+Run: `LANDING_DATA=fixtures ASTRO_TELEMETRY_DISABLED=1 pnpm --filter @anticipate/landing exec astro dev --port 4321 --ignore-lock`, en segundo plano.
+
+Los archivos de prueba son los del Step 14 de la Tarea 9 (en `$TMPDIR` o `/tmp`); si ya no están, se generan con el mismo comando.
+
+Abrir `http://localhost:4321/sea` a 1440, 1024, 768, 390 y 360 px de ancho y comparar `#solicitud` con la sección del formulario de `Main.dc.html`, con `MobileForm.dc.html`, con el marco 3 de `MobileExtras.dc.html` y con el tablero 5 de `Estados.dc.html`:
+1. Sin archivos: la barra de pasos con "01 Tus facturas · Faltan 2 datos" resaltado y los otros dos "Pendiente"; el monto vacío con "Sube tus facturas en el paso 01 y calculamos tu máximo.".
+2. Subir por la calculadora `F001-00001234.xml` y `F001-00001240.xml` y seguir con "Continuar con estas 2 facturas"; marcar Cavali.
+3. En el paso 01, agregar `F001-00001300.xml` (dólares), elegir "1 en dólares" y volver a soles; después escribir 10000 en el monto, salir del campo y volver a elegir dólares.
+4. En el paso 03, escribir un DNI de 7 dígitos y un correo sin @ y salir de cada campo; elegir "No" en representante; elegir un horario; pulsar «Enviar solicitud» sin marcar los Términos; pulsar el enlace "Correo" del resumen.
+5. Pegar en el celular `+51 987 654 321` copiado de un chat de WhatsApp (con sus marcas de dirección invisibles) y, con el monto vacío, `S/ 5,000.50`.
+6. "Ver cómo cuidamos tus datos" y "Ocultar detalle".
+7. Con el teclado: Tab recorre la barra de pasos, el paso 01, el monto, el motivo, la ficha, los datos, los radios (las flechas cambian la opción), los "Cambiar", las casillas, el aviso y el botón; Enter en un campo envía.
+
+Al terminar, detener el servidor (Ctrl+C sobre el proceso, o `kill` de su PID) y comprobar con `ss -ltnp | grep 4321` que no queda nada escuchando.
+
+Expected:
+- a 1440 px, la barra de pasos de `Main.dc.html` entre la bajada y "Adelanto máximo": cuadrado de 26 px con ✓ o el número, nombre de 16 px y estado de 13 px, borde izquierdo de 2 px y el resalte en el paso con `aria-current`; con las dos facturas y Cavali, "✓ 2 facturas · S/ 20,750.00", "✓ S/ 17,637.50" y "03 Tus datos · Faltan 6 datos";
+- el paso 02 en dos columnas: el monto con "S/" a la izquierda, borde `--teal-600`, 20 px en negrita y "Máximo S/ 17,637.50. Puedes pedir menos."; el motivo con "(opcional)" y sus 7 opciones; al elegir dólares el monto pasa a `2,720.00` con "US$", al volver a soles vuelve a `17,637.50`, y `10,000.00` escrito a mano no cambia al elegir otro grupo;
+- el paso 03 como en `Main.dc.html`: la ficha de confianza con el escudo, "Tus datos los recibe y evalúa Anticipate S.A.C.", RUC y dirección, y a la derecha WhatsApp y soporte (cada enlace de 44 px de alto); nombre a lo ancho, DNI y celular (con "+51") lado a lado, correo a lo ancho; representante con dos opciones de 120 px; con "No", el cargo y el aviso en dos columnas; horario con tres opciones y la nota del número;
+- con errores, el borde de 2 px en rojo y el texto con el ícono (tablero 5): "El DNI debe tener 8 dígitos. Tiene 7." y "Revisa el correo: le falta la @."; al enviar, el resumen rojo arriba del paso 01, con el foco, "Te falta completar 3 datos:" y "DNI · Correo · Términos y Condiciones"; el enlace "Correo" lleva el foco al correo; el borde rojo de la casilla de los Términos;
+- lo pegado queda como `987 654 321` en el celular y `5,000.50` en el monto;
+- el cierre: "Vas a enviar" con los datos en negrita y los "Cambiar"; las casillas de 20 px con sus enlaces; el aviso por capas; "Enviar no te obliga a nada…"; "Protegido por Cloudflare Turnstile" a la izquierda y el botón de 280 × 60 px a la derecha;
+- entre 768 y 1023 px, una columna con la barra de pasos vertical arriba y los pasos 02 y 03 todavía en dos columnas;
+- a 390 y 360 px, `MobileForm.dc.html`: la barra de pasos en tres columnas con barra de 4 px ("✓ Facturas · 2 facturas", "✓ Adelanto · Listo", "03 Datos · Pendiente" o "Faltan {n}"); los pasos 02 y 03 en una columna (monto de 19 px); la ficha sin enlaces y con el escudo junto al título; representante en dos columnas y un horario por fila; el botón a todo el ancho con "Protegido por Cloudflare Turnstile" debajo; "¿Tienes dudas?" con WhatsApp y soporte después del formulario;
+- el foco se ve en cada control (en el monto y el celular, en el recuadro entero), ningún ancho tiene desplazamiento horizontal y todos los objetivos miden al menos 44 px (los enlaces dentro de una frase, con su área ampliada);
+- `ss` no muestra nada en el 4321.
+
+Si una medida difiere del tablero, se corrige en el CSS Module y se sigue: el Step 16 vuelve a correr los tests y el lint.
+
+- [ ] **Step 16: Verificación completa**
+
+Run: `pnpm turbo run test --filter=@anticipate/landing`
+Expected: PASS, 247 tests en 30 archivos: los 198 de las Tareas 5 a 9 y los 49 de esta. La cobertura de `src/lib/**` no cambia (esta tarea no toca `src/lib`).
+
+Run: `pnpm turbo run typecheck --filter=@anticipate/landing`
+Expected: `0 errors`, `0 warnings` y `0 hints`.
+
+Run: `pnpm lint`
+Expected: `biome check .` sin errores ni avisos. Si solo marca formato: `pnpm lint:fix` y otra vez `pnpm lint`.
+
+Run: `grep -rnE "SEA|\b85\b|\b15\b" apps/landing/src/islands/request-form --include=*.ts --include=*.tsx --include=*.css --exclude=*.test.ts --exclude=*.test.tsx`
+Expected: ninguna línea: los datos del pagador salen de `config.payer` y los de Anticipate de `ANTICIPATE_COMPANY`.
+
+Run: `grep -rn 'maxlength\|maxLength\|client:visible' apps/landing/src/islands/request-form "apps/landing/src/pages/[payer].astro" --exclude=*.test.ts --exclude=*.test.tsx`
+Expected: ninguna línea (el test de la isla comprueba con `[maxlength]` que ningún campo lo lleva).
+
+Run: `grep -rln "@anticipate/shared/testing" apps/landing/src --include=*.ts --include=*.tsx | grep -v '\.test\.'`
+Expected: ninguna línea.
+
+Run: `pnpm verify`
+Expected: todo en verde; la landing se construye con fixtures.
+
+Run: `git status --short`
+Expected: solo los archivos de `Files` de esta tarea, más el `M .vscode/settings.json` que ya estaba, que no se agrega.
+
+- [ ] **Step 17: Commit**
+
+```bash
+git add apps/landing/src/islands/request-form
+git commit -m "feat(landing): pasos 02 y 03 del formulario, cierre, resumen de errores y pasos por avance"
+```
+
+---
 
 ---
 
@@ -24026,7 +33790,2099 @@ git commit -m "feat(landing): borrador en el dispositivo con IndexedDB, 72 h y o
 
 ---
 
-### Task 13: Comportamiento móvil (pendiente de escribir)
+### Task 13: Comportamiento móvil: barra fija neutra y con «Continuar», pasos fijos en el formulario y `scroll-margin-top`
+
+**Files:**
+- Create: `apps/landing/src/lib/store/form-progress.ts`, `apps/landing/src/scripts/keyboard.ts`, `apps/landing/src/scripts/form-steps-bar.ts`, `apps/landing/src/scripts/sticky-bar.ts`, `apps/landing/src/components/site/StickyBar.astro`
+- Modify: `apps/landing/src/pages/[payer].astro` (archivo completo: monta `StickyBar` después de `</main>` y pone el margen lateral de móvil de `#solicitud` en `--request-inline`), `apps/landing/src/islands/request-form/RequestForm.tsx` (parches numerados sobre lo que dejó la Tarea 12: publica el avance, observa el paso visible y se lo pasa a `StepsNav`), `apps/landing/src/islands/request-form/closing/StepsNav.module.css` (un bloque al final: la barra de pasos fija en móvil), `apps/landing/src/islands/request-form/RequestForm.module.css` (un bloque al final: `scroll-margin-top`)
+- Test: `apps/landing/src/lib/store/form-progress.test.ts`, `apps/landing/src/scripts/keyboard.test.ts`, `apps/landing/src/scripts/form-steps-bar.test.ts`, `apps/landing/src/scripts/sticky-bar.test.ts`, `apps/landing/src/components/site/StickyBar.test.ts`, `apps/landing/src/islands/request-form/RequestForm.mobile.test.tsx`
+
+Esta tarea no agrega dependencias ni toca `pnpm-lock.yaml`. Los tests de las Tareas 5 a 12 no cambian y tienen que seguir pasando.
+
+**Interfaces:**
+- Consumes:
+  - Tarea 12: `RequestForm.tsx` tal como lo dejó, con los nombres locales de la Tarea 10 (`model`, `view`, `group`, `steps`, `summaryFocus` y el `useEffect` que enfoca el resumen) y de la Tarea 11 (`submission`, declarado antes que `group`). `useDraft` funciona sin IndexedDB (en jsdom `indexedDB` no existe).
+  - Tarea 11 (`src/islands/request-form/`):
+    - `submission.state.phase.kind === 'confirmed'`, y el `if` que en ese caso devuelve `<Confirmation>` en lugar del formulario, puesto justo antes del `return` del formulario: todos los hooks de esta tarea van antes de ese `if`.
+    - `sendAnother` ("Enviar otra solicitud", un `<button>`) vuelve al formulario con el almacén vacío y llama a `goToStep('paso-facturas')`, que usa `scrollIntoView({ block: 'start' })` y por lo tanto respeta `scroll-margin-top`.
+    - `LockedSteps` envuelve los tres `fieldset` en un `div` con `display: contents`.
+    - En modo demostración (`apiBaseUrl: ''`), `submission.send` confirma sin red ni Turnstile (lo usan los tests).
+  - Tarea 10 (`src/islands/request-form/`):
+    - `step-status.ts`: `type StepStatus = { id: 'paso-facturas' | 'paso-adelanto' | 'paso-datos'; number: '01' | '02' | '03'; label: string; shortLabel: string; state: StepState; text: string; missing: number }` y `stepStatuses(model: FormModel, view: IntakeView | null, currency: Currency | null): StepStatus[]` (el primer paso con datos que faltan es `current`; un paso sin datos que falten es `done`).
+    - `closing/StepsNav.tsx`: `StepsNav(props: { steps: StepStatus[]; activeId?: StepStatus['id'] | null | undefined; invoiceCount?: number | undefined })`, con `<nav aria-label="Pasos de la solicitud">`, `aria-current="step"` en `activeId` o, sin él, en el paso `current`, y el ✓ solo en los pasos `done`. `closing/StepsNav.module.css` con `.nav`, `.link`, `.mark` y `.shortText` y su bloque de hasta 767 px (tres columnas, barra de 4 px).
+    - `RequestForm.module.css` con `.root` (hasta 767 px, columna flexible con `.aside` en `display: contents`, así la barra de pasos es hija directa de `.root`).
+    - `form-model.ts`: `FIELD_IDS.acceptTerms === 'terminos'` (la casilla de los Términos, en el cierre); en los tests, `type FormModel` e `initialFormModel`.
+    - `form-text.ts`: `invoiceCountText(count: number): string` (solo en un test).
+    - Los textos y las etiquetas del formulario que usan los tests: `¿Tus facturas ya están registradas en Cavali?`, `03 · Tus datos`, `Nombre completo`, `DNI`, `Celular`, `Correo electrónico`, `¿Eres representante legal de la empresa?`, `¿Cuándo prefieres que te llamemos?`, las casillas `Acepto los Términos…` y `Autorizo el tratamiento…` y el botón «Enviar solicitud».
+  - Tarea 9: `[payer].astro` con `<section id="solicitud" class="request">`, la isla con `client:idle` y el estilo con ámbito de la sección (56 px y 16 px en móvil); `RequestAside` pasa a `display: contents` hasta 767 px; `#paso-facturas`.
+  - Tarea 8: `intakeStore` (`dispatch`, en los tests) y `useIntake()`.
+  - Tarea 7 (`src/lib/intake/`): `type IntakeView` (`chosenGroup: InvoiceGroup | null`, con `invoices`, `maxAdvance` y `currency`); en los tests, `emptyIntake()`, `addReadings`, `viewIntake`, `readXmlBytes(name, bytes, maxXmlBytes)` y `type FileReading`, `type IntakeContext`.
+  - Tarea 6: `Hero` es `section#top`; la cabecera es fija solo desde 1024 px; `Icon` (`src/components/site/Icon.astro`) con `name="arrow-right"`; `SiteFooter` es un `<footer>`.
+  - Tarea 5: los tokens `--ink`, `--muted`, `--line`, `--teal-600`, `--teal-700`, `--gutter`, `--page-max` y `--header-height` (64 px; 76 px desde 1024 px); `renderAstro(component, options?)` (`src/test/render-astro.ts`) y `FIXTURE_PAYERS` (`src/lib/build-data/fixtures.ts`), solo en los tests; `type IslandConfig`; la cobertura de `src/lib/**`.
+  - Tarea 2: `formatMoney(amount, currency)` (`/money`).
+  - Ya en shared: `type Currency` (`/money`); `type PublicPayer` (`/payer`). Solo en los tests: `buildInvoiceXml` y `type TestXmlOptions` (`/testing`), `type IntakeLimits` (`/api`), `type PayerConditions` (`/intake`) y `type IsoDate` (`/dates`).
+- Produces:
+  - `src/lib/store/form-progress.ts`, con las firmas del mini-contrato y la fábrica del almacén:
+    ```ts
+    export type FormProgress = { invoiceCount: number; maxAdvanceText: string | null; pending: { id: StepStatus['id']; number: StepStatus['number']; label: string } | null }
+    export type FormProgressStore = { getSnapshot(): FormProgress | null; subscribe(listener: () => void): () => void; publish(progress: FormProgress | null): void }
+    export function createFormProgressStore(): FormProgressStore   // publish no avisa si el avance es igual al anterior
+    export const formProgress: FormProgressStore                    // el de la página: la isla publica, la barra lee
+    export function progressFromSteps(steps: readonly StepStatus[], view: IntakeView | null, currency: Currency | null): FormProgress
+    ```
+    `invoiceCount` y `maxAdvanceText` son los del grupo elegido (`formatMoney(maxAdvance, currency ?? group.currency)`); `pending`, el primer paso que no está `done`, o `null`.
+  - `src/scripts/keyboard.ts`:
+    ```ts
+    export const KEYBOARD_VIEWPORT_RATIO = 0.75
+    export type KeyboardViewport = { readonly height: number; addEventListener(type: 'resize', listener: () => void): void; removeEventListener(type: 'resize', listener: () => void): void }
+    export type KeyboardWindow = { readonly innerHeight: number; readonly visualViewport: KeyboardViewport | null; addEventListener(type: 'resize', listener: () => void): void; removeEventListener(type: 'resize', listener: () => void): void }
+    export function isKeyboardOpen(viewportHeight: number, innerHeight: number): boolean   // viewportHeight < 0.75 * innerHeight
+    export function watchKeyboard(win: KeyboardWindow, onChange: (open: boolean) => void): () => void
+    ```
+  - `src/scripts/form-steps-bar.ts`:
+    ```ts
+    export type FormStepId = StepStatus['id']
+    export const FORM_STEP_IDS: readonly FormStepId[]            // ['paso-facturas', 'paso-adelanto', 'paso-datos']
+    export const STEPS_NAV_SELECTOR = 'nav[aria-label="Pasos de la solicitud"]'
+    export const STEPS_BAR_HEIGHT_PROPERTY = '--steps-bar-height'
+    export const VISIBLE_STEP_ROOT_MARGIN = '-35% 0px -64% 0px'
+    export type SeenEntry = { readonly target: Element; readonly isIntersecting: boolean }
+    export type ObserverLike = { observe(target: Element): void; disconnect(): void }
+    export type ObserverCtor = new (callback: (entries: SeenEntry[]) => void, options?: IntersectionObserverInit) => ObserverLike
+    export type SizeObserverCtor = new (callback: () => void) => ObserverLike
+    export type FormStepsDeps = { Observer: ObserverCtor | null; SizeObserver: SizeObserverCtor | null }
+    export type FormStepsWindow = { readonly IntersectionObserver?: ObserverCtor; readonly ResizeObserver?: SizeObserverCtor }
+    export function formStepsDeps(win: FormStepsWindow): FormStepsDeps
+    export function visibleStepFrom(inBand: ReadonlySet<FormStepId>, previous: FormStepId | null): FormStepId | null
+    export function watchFormSteps(root: HTMLElement, deps: FormStepsDeps, onVisible: (id: FormStepId | null) => void): () => void
+    ```
+  - `src/scripts/sticky-bar.ts`:
+    ```ts
+    export type StickyBarText = { variant: 'neutral' | 'resume'; lead: string; sub: string; action: string; href: string }
+    export const REQUEST_HREF = '#paso-facturas'
+    export const READY_HREF = '#terminos'
+    export const STICKY_BAR_SPACE_PROPERTY = '--sticky-bar-space'
+    export function neutralStickyBar(advancePercent: number, shortName: string): StickyBarText
+    export function barInvoicesText(count: number): string
+    export function stickyBarText(progress: FormProgress | null, neutral: StickyBarText): StickyBarText
+    export type StickyBarSignals = { heroInView: boolean; requestInView: boolean; keyboardOpen: boolean }
+    export function isStickyBarVisible(signals: StickyBarSignals): boolean
+    export type StickyBarParts = { bar: HTMLElement; lead: HTMLElement; sub: HTMLElement; action: HTMLAnchorElement; label: HTMLElement }
+    export function findStickyBarParts(root: ParentNode): StickyBarParts | null
+    export type StickyBarDeps = { hero: Element; request: Element; Observer: ObserverCtor | null; watchKeyboard: (onChange: (open: boolean) => void) => () => void; progress: Pick<FormProgressStore, 'getSnapshot' | 'subscribe'>; reserveSpace: (height: number | null) => void }
+    export function installStickyBar(parts: StickyBarParts, deps: StickyBarDeps): () => void
+    export type StickyBarWindow = KeyboardWindow & { readonly document: Document; readonly IntersectionObserver?: ObserverCtor }
+    export function startStickyBar(win: StickyBarWindow): () => void
+    ```
+  - `src/components/site/StickyBar.astro` con `type Props = { payer: PublicPayer }`: `<aside data-sticky-bar aria-label="Acceso rápido a la solicitud" hidden>` con la versión neutra (`data-sticky-bar-lead`, `data-sticky-bar-sub`, el enlace `a[data-sticky-bar-action]` con `data-sticky-bar-label`) y el `<script>` que llama a `startStickyBar(window)`.
+  - `src/pages/[payer].astro`: `<StickyBar payer={payer} />` entre `</main>` y `<SiteFooter>`; `.request` define `--request-inline: 16px`.
+  - En `RequestForm.tsx` (nombres locales, no interfaces): `rootRef` en la raíz de la isla, `visibleStep` (el paso que se ve), `confirmed`, `progress`, y `steps` calculado antes de la confirmación. `StepsNav` recibe `activeId={visibleStep}`.
+  - Propiedades CSS: `--steps-bar-height` (en la raíz de la isla), `--sticky-bar-space` (en `<html>`) y `--request-inline` (en `#solicitud`).
+  - Lo que el E2E móvil de la Tarea 15 (`mobile.spec.ts`, Pixel 7) busca: el enlace `Solicitar` (nombre exacto) fuera de la vista al abrir, visible al llegar a `#como-funciona` y oculto dentro de `#solicitud`; con facturas, el enlace `Continuar` (nombre exacto) con `href` `#paso-facturas`, `#paso-adelanto` o `#paso-datos` y el texto `Te falta el paso 0X · {paso}`; dentro del formulario, el `nav` "Pasos de la solicitud" a la vista, la cabecera fuera y, al tocar "Datos", la `legend` de `#paso-datos` debajo de la barra de pasos; a 360 px, sin desplazamiento horizontal.
+
+**Decisiones de esta tarea:**
+- **Scripts sin framework, con dependencias inyectadas.** `keyboard.ts`, `form-steps-bar.ts` y `sticky-bar.ts` reciben la ventana, los observadores y el almacén como parámetros: los tests los prueban en jsdom con `IntersectionObserver`, `ResizeObserver` y `visualViewport` simulados, y el comportamiento real lo prueba el E2E móvil. Los tipos de los observadores son estrechos (`ObserverCtor`, `SizeObserverCtor`, `KeyboardWindow`): `window` los cumple tal cual y un doble de prueba también, sin conversiones.
+- **Un solo almacén de avance.** La isla publica su avance en `formProgress` (`src/lib/store/form-progress.ts`) y el script de la barra lo lee del mismo módulo. Astro construye los scripts y las islas en un solo build de cliente, así que el módulo queda en un chunk compartido y es una sola instancia; en `astro dev` los dos lo piden por la misma URL. El E2E lo prueba: si fueran dos instancias, la barra nunca pasaría a «Continuar». La isla publica en un efecto después de cada render y el almacén ignora un avance igual al anterior. Hasta que la isla hidrata, al desmontarse y con la confirmación el avance es `null` y la barra queda neutra, como pide el contrato ("si no, muestra la versión neutra").
+- **Qué muestra la barra con facturas.** El número de facturas y el máximo del grupo elegido: los mismos que el recuadro "Adelanto máximo" de la columna izquierda y que el monto que sigue al máximo (Tarea 10). El paso pendiente es el primero que no está `done`, que es el `current` de `stepStatuses`. Sin facturas en el grupo, la barra sigue neutra aunque la isla ya haya publicado.
+- **Visibilidad.** Un `IntersectionObserver` (umbral 0) sobre `#top` y `#solicitud`: la barra se ve si el hero no se ve (ya se pasó la calculadora), si `#solicitud` no se ve y si el teclado está cerrado. Se oculta con `hidden`, así sale del orden de tabulación y del árbol de accesibilidad, y arranca oculta hasta el primer aviso del observador, que llega al empezar a observar.
+- **Sin `IntersectionObserver` la barra no aparece nunca.** Sin él no se sabe si taparía el formulario o el botón «Enviar solicitud», y la página ya tiene «Solicitar adelanto» en la cabecera, en el hero y en la franja final. **Sin `visualViewport` el teclado cuenta como cerrado**: el único campo fuera de `#solicitud` es el monto de la calculadora, en el hero, donde la barra ya está oculta.
+- **Teclado.** La regla es la del contrato, `visualViewport.height < 0.75 * innerHeight`, recalculada con el `resize` de `visualViewport` y el de la ventana (al girar el teléfono cambia `innerHeight`). Con el zoom de dos dedos (más de 1,34×) también se achica la vista visual y la barra se oculta: se acepta, porque con zoom una barra fija taparía más de lo que se está leyendo.
+- **Anchos.** La barra se ve hasta 1023 px, no solo hasta 767: entre 768 y 1023 px la cabecera no queda fija (Tarea 6) y sin la barra no habría una forma de volver a la solicitud a mano; ahí su contenido se alinea con la columna de la página. Desde 1024 px la cabecera fija ya trae «Solicitar adelanto» y la barra es `display: none`. La barra de pasos queda fija solo hasta 767 px: entre 768 y 1023 px es la lista vertical de la Tarea 10 arriba del formulario, y fija ocuparía unos 150 px de pantalla.
+- **Pasos fijos (marco 3).** Hasta 767 px el `nav` de `StepsNav` es `position: sticky; top: 0`. Como la columna izquierda es `display: contents` (Tarea 9), su bloque contenedor es la raíz de la isla: queda fija mientras se recorre el formulario y se suelta en "¿Tienes dudas?". Toma siempre el aspecto del marco 3 (franja blanca al 97 % de lado a lado, con `margin-inline` negativo igual a `--request-inline`, borde y sombra abajo, textos de 12 y 11 px): `MobileForm.dc.html` la dibuja sin franja antes de fijarse, pero un solo aspecto evita que cambie de alto justo al fijarse. La cabecera de móvil no es fija (Tarea 6), así que dentro del formulario solo quedan fijos los pasos.
+- **Paso visible.** Un `IntersectionObserver` con `rootMargin: '-35% 0px -64% 0px'`: una franja del 1 % del alto que empieza al 35 % desde arriba, siempre debajo de la barra de pasos. El paso visible es el último, en el orden del formulario, que cruza la franja; si ninguno la cruza (arriba del paso 01 o en el cierre), sigue el anterior. `StepsNav` lo recibe en `activeId` y le pone `aria-current="step"` y el resalte; el ✓ sigue dependiendo solo de que el paso esté `done` (Tarea 10). En escritorio la columna izquierda también resalta el paso que se ve. Sin `IntersectionObserver`, `activeId` queda en `null` y el resalte va en el paso actual, como en la Tarea 10. El efecto depende de `confirmed`: con la confirmación deja de observar y, después de "Enviar otra solicitud", observa los `fieldset` nuevos.
+- **`scroll-margin-top`.** En `#paso-facturas`, `#paso-adelanto`, `#paso-datos` y `#terminos`: hasta 767 px, el alto de la barra de pasos más 16 px (`form-steps-bar.ts` lo mide con `ResizeObserver` y lo deja en `--steps-bar-height` sobre la raíz de la isla; sin medida, 64 px, apenas más que los 63 px que suman el relleno de 10 y 8 px, los enlaces de 44 px y el borde de 1 px del marco 3); desde 1024 px, `--header-height` más 16 px; entre los dos, 16 px, porque no hay nada fijo arriba. Lo usan los enlaces de la barra de pasos, «Solicitar», «Continuar», los «Cambiar» del cierre, el resumen de errores y `goToStep` de la Tarea 11. La misma regla va en los controles de la isla (enlaces, botones, campos y elementos con `tabindex="-1"`, como las filas de facturas y el resumen de errores) hasta 767 px y desde 1024 px: al recorrer el formulario hacia arriba con Mayús+Tab, el control con el foco no queda debajo de la barra ni de la cabecera (WCAG 2.2, 2.4.11). Los `id` van como `[id="…"]` porque CSS Modules renombraría un `#id`.
+- **Espacio abajo.** Mientras la barra se ve, el script deja su alto en `--sticky-bar-space` sobre `<html>` y el `body` lleva ese `padding-bottom` hasta 1023 px: el pie no queda tapado. Al final de la página la barra siempre se ve (ni el hero ni `#solicitud` están a la vista), así que el relleno no mueve el contenido mientras se lee.
+- **Textos que el diseño no trae** (los fija este plan): "1 factura" (singular del marco 2b); sin pasos pendientes, "Revisa y envía tu solicitud" con «Continuar» a `#terminos`, la casilla de los Términos, porque lo que falta es aceptar y enviar; el nombre de la región, `aria-label="Acceso rápido a la solicitud"`. "Hasta {advancePercent} %", "de tus facturas a {shortName}", «Solicitar», "{n} facturas · {máximo}", "Te falta el paso 0X · {paso}" y «Continuar» son de los marcos 2 y 2b. `barInvoicesText` repite `invoiceCountText` de la Tarea 10 para no importar `form-text.ts` (que trae `form-model.ts` y Zod) en un script que carga con la página; un test comprueba que dicen lo mismo. `READY_HREF` repite `FIELD_IDS.acceptTerms` por la misma razón, y el test de la isla comprueba que `#terminos` es la casilla.
+- **Medidas del diseño.** Barra (marcos 2 y 2b): relleno de 12 px arriba, 16 px a los lados y 16 px abajo (más `env(safe-area-inset-bottom)`), fondo blanco al 97 %, borde superior `--line` y sombra `0 -8px 24px rgba(7, 52, 50, 0.1)`; "Hasta {n} %" de 17 px/22 px en 900 y `--teal-700`, el resumen con facturas de 15 px/20 px en 800 y `--ink`, la segunda línea de 13 px en `--muted`; el botón de 52 px de alto, 18 px de relleno, `--teal-600`, 16 px en 800, con la flecha de 18 px. Barra de pasos (marco 3): relleno `10px 16px 8px`, fondo blanco al 97 %, borde inferior `--line`, sombra `0 8px 20px -14px rgba(7, 52, 50, 0.35)`, 3 px entre la barra de color y los textos. La capa de la barra fija (25) queda sobre la cabecera (20) y bajo el aviso "Quitaste…" (30), que igual solo aparece dentro de `#solicitud`, donde la barra está oculta.
+- **Los CSS de las Tareas 9 y 10 no se reescriben.** `StepsNav.module.css` y `RequestForm.module.css` reciben un bloque al final que pisa lo necesario con los mismos selectores, más abajo en el archivo. Así una corrección posterior de esos archivos no se pierde.
+- **`[payer].astro` completo.** `StickyBar` va entre `</main>` y el pie, como región complementaria con nombre, fuera de `main`. El margen lateral de móvil de `#solicitud` (16 px, Tarea 9) pasa a `--request-inline`, que usa la barra de pasos para ir de lado a lado.
+- **Estilos de móvil de las secciones y de las islas.** Las Tareas 6, 8, 9 y 10 ya traen sus estilos hasta 767 px y del paso intermedio, revisados en sus pasos de revisión visual. Esta tarea agrega lo que falta de `MobileExtras.dc.html` (marcos 2, 2b y 3) y los márgenes de desplazamiento; su revisión visual recorre todas las secciones a 360 y 390 px con la barra a la vista y corrige en el CSS de cada componente lo que difiera del tablero.
+- **CSP (Tarea 14).** El `<script>` de `StickyBar.astro` es un script procesado por Astro, con su hash en la CSP. El script solo cambia textos, `hidden`, `data-variant`, `href` y propiedades CSS con `style.setProperty`, que la CSP no restringe.
+- **Hidratación.** `visibleStep` arranca en `null` y el servidor no publica nada: el HTML hidrata igual que antes, con el resalte en el paso actual.
+
+Antes de empezar: las Tareas 9 a 12 están hechas y con su commit. `pnpm turbo run build --filter=@anticipate/shared` (la landing lee el `dist` de shared).
+
+- [ ] **Step 1: Escribir el test del almacén de avance**
+
+`progressFromSteps` se prueba con `stepStatuses` de verdad y con una vista armada con el estado de admisión de la Tarea 7, como `step-status.test.ts`.
+
+`apps/landing/src/lib/store/form-progress.test.ts`:
+```ts
+import type { IntakeLimits } from '@anticipate/shared/api'
+import type { IsoDate } from '@anticipate/shared/dates'
+import type { PayerConditions } from '@anticipate/shared/intake'
+import { buildInvoiceXml, type TestXmlOptions } from '@anticipate/shared/testing'
+import { describe, expect, it, vi } from 'vitest'
+import { type FormModel, initialFormModel } from '../../islands/request-form/form-model'
+import { type StepStatus, stepStatuses } from '../../islands/request-form/step-status'
+import { addReadings, emptyIntake, type IntakeView, viewIntake } from '../intake/intake-state'
+import { readXmlBytes } from '../intake/read-intake-file'
+import type { FileReading, IntakeContext } from '../intake/types'
+import { createFormProgressStore, type FormProgress, progressFromSteps } from './form-progress'
+
+const MiB = 1024 * 1024
+const PAYER: PayerConditions = {
+  slug: 'sea',
+  ruc: '20131312955',
+  shortName: 'SEA',
+  advancePercent: 85,
+  minTermDays: 15,
+  maxInvoices: 10,
+  allowedCurrencies: ['PEN', 'USD'],
+}
+const LIMITS: IntakeLimits = {
+  maxFiles: 20,
+  maxXmlBytes: MiB,
+  maxPdfBytes: 10 * MiB,
+  maxBodyBytes: 95_000_000,
+}
+const CTX: IntakeContext = { payer: PAYER, limits: LIMITS, today: '2026-09-26' as IsoDate }
+const encoder = new TextEncoder()
+
+const xml = (name: string, options: TestXmlOptions): FileReading =>
+  readXmlBytes(name, encoder.encode(buildInvoiceXml(options)), LIMITS.maxXmlBytes)
+
+const credit = (seriesNumber: string, net: string, extra: TestXmlOptions = {}): TestXmlOptions => ({
+  seriesNumber,
+  total: net,
+  netPendingAmount: net,
+  detraction: null,
+  installments: [{ id: 'Cuota001', amount: net, dueDate: '2026-11-30' }],
+  ...extra,
+})
+
+const viewOf = (readings: FileReading[]): IntakeView =>
+  viewIntake(addReadings(emptyIntake(), readings, CTX), CTX)
+
+/** Dos facturas en soles: neto S/ 20,750.00 y máximo S/ 17,637.50. */
+const twoInvoices = (): IntakeView =>
+  viewOf([
+    xml('F001-00001234.xml', credit('F001-00001234', '12450.00')),
+    xml('F001-00001240.xml', credit('F001-00001240', '8300.00')),
+  ])
+
+/** Cavali, el monto y el paso 03 completos. */
+const COMPLETE: FormModel = {
+  ...initialFormModel,
+  cavali: 'YES',
+  amountText: '17,637.50',
+  fullName: 'Carla Quispe Mamani',
+  dniText: '45678912',
+  mobileText: '987 654 321',
+  emailText: 'carla@empresa.pe',
+  isLegalRepresentative: true,
+  contactTimeSlot: 'ANY',
+}
+
+const step = (
+  id: StepStatus['id'],
+  number: StepStatus['number'],
+  label: string,
+  state: StepStatus['state'],
+): StepStatus => ({ id, number, label, shortLabel: label, state, text: '', missing: 0 })
+
+const SAMPLE: FormProgress = {
+  invoiceCount: 2,
+  maxAdvanceText: 'S/ 17,637.50',
+  pending: { id: 'paso-datos', number: '03', label: 'Tus datos' },
+}
+
+describe('createFormProgressStore', () => {
+  it('empieza sin avance y avisa solo cuando el avance cambia', () => {
+    const store = createFormProgressStore()
+    const listener = vi.fn()
+    store.subscribe(listener)
+    expect(store.getSnapshot()).toBeNull()
+
+    store.publish(null)
+    expect(listener).not.toHaveBeenCalled()
+
+    store.publish(SAMPLE)
+    expect(store.getSnapshot()).toEqual(SAMPLE)
+    expect(listener).toHaveBeenCalledTimes(1)
+
+    // Un objeto nuevo con los mismos datos no avisa: la isla publica en cada render.
+    store.publish({ ...SAMPLE, pending: { id: 'paso-datos', number: '03', label: 'Tus datos' } })
+    expect(listener).toHaveBeenCalledTimes(1)
+
+    store.publish({
+      ...SAMPLE,
+      pending: { id: 'paso-adelanto', number: '02', label: 'Tu adelanto' },
+    })
+    store.publish({ ...SAMPLE, pending: null })
+    store.publish({ ...SAMPLE, pending: null, maxAdvanceText: 'US$ 2,720.00' })
+    store.publish({ ...SAMPLE, pending: null, maxAdvanceText: 'US$ 2,720.00', invoiceCount: 1 })
+    store.publish(null)
+    expect(listener).toHaveBeenCalledTimes(6)
+    expect(store.getSnapshot()).toBeNull()
+  })
+
+  it('la función de subscribe deja de avisar', () => {
+    const store = createFormProgressStore()
+    const listener = vi.fn()
+    const unsubscribe = store.subscribe(listener)
+    unsubscribe()
+    store.publish(SAMPLE)
+    expect(listener).not.toHaveBeenCalled()
+  })
+})
+
+describe('progressFromSteps', () => {
+  it('sin facturas: 0 facturas, sin máximo y el paso 01 pendiente', () => {
+    expect(progressFromSteps(stepStatuses(initialFormModel, null, null), null, null)).toEqual({
+      invoiceCount: 0,
+      maxAdvanceText: null,
+      pending: { id: 'paso-facturas', number: '01', label: 'Tus facturas' },
+    })
+  })
+
+  it('con dos facturas lleva su máximo y el primer paso sin terminar', () => {
+    const view = twoInvoices()
+    expect(progressFromSteps(stepStatuses(initialFormModel, view, 'PEN'), view, 'PEN')).toEqual({
+      invoiceCount: 2,
+      maxAdvanceText: 'S/ 17,637.50',
+      pending: { id: 'paso-facturas', number: '01', label: 'Tus facturas' },
+    })
+    const withCavali: FormModel = { ...initialFormModel, cavali: 'NO', amountText: '17,637.50' }
+    expect(progressFromSteps(stepStatuses(withCavali, view, 'PEN'), view, 'PEN').pending).toEqual({
+      id: 'paso-datos',
+      number: '03',
+      label: 'Tus datos',
+    })
+  })
+
+  it('con todo completo no queda ningún paso pendiente', () => {
+    const view = twoInvoices()
+    expect(progressFromSteps(stepStatuses(COMPLETE, view, 'PEN'), view, 'PEN').pending).toBeNull()
+  })
+
+  it('el máximo va en la moneda del grupo elegido', () => {
+    const view = viewOf([
+      xml('F001-00001300.xml', credit('F001-00001300', '3200.00', { currency: 'USD' })),
+    ])
+    expect(progressFromSteps([], view, null)).toEqual({
+      invoiceCount: 1,
+      maxAdvanceText: 'US$ 2,720.00',
+      pending: null,
+    })
+  })
+
+  it('el pendiente es el primero que no está hecho, aunque uno posterior esté hecho', () => {
+    const steps = [
+      step('paso-facturas', '01', 'Tus facturas', 'done'),
+      step('paso-adelanto', '02', 'Tu adelanto', 'current'),
+      step('paso-datos', '03', 'Tus datos', 'done'),
+    ]
+    expect(progressFromSteps(steps, null, null).pending).toEqual({
+      id: 'paso-adelanto',
+      number: '02',
+      label: 'Tu adelanto',
+    })
+  })
+})
+```
+
+- [ ] **Step 2: Correr el test y ver que falla**
+
+Run: `ASTRO_TELEMETRY_DISABLED=1 pnpm --filter @anticipate/landing exec vitest run src/lib/store/form-progress.test.ts`
+Expected: FAIL: no se resuelve `./form-progress`.
+
+- [ ] **Step 3: Implementar el almacén de avance**
+
+`apps/landing/src/lib/store/form-progress.ts`:
+```ts
+import { type Currency, formatMoney } from '@anticipate/shared/money'
+import type { StepStatus } from '../../islands/request-form/step-status'
+import type { IntakeView } from '../intake/intake-state'
+
+/**
+ * Lo que la barra fija de móvil (`src/scripts/sticky-bar.ts`) necesita saber del formulario: cuántas
+ * facturas lleva el grupo elegido, su adelanto máximo ya escrito y el primer paso sin terminar.
+ */
+export type FormProgress = {
+  invoiceCount: number
+  maxAdvanceText: string | null
+  pending: { id: StepStatus['id']; number: StepStatus['number']; label: string } | null
+}
+
+export type FormProgressStore = {
+  getSnapshot(): FormProgress | null
+  subscribe(listener: () => void): () => void
+  publish(progress: FormProgress | null): void
+}
+
+function samePending(a: FormProgress['pending'], b: FormProgress['pending']): boolean {
+  if (a === null || b === null) return a === b
+  return a.id === b.id && a.number === b.number && a.label === b.label
+}
+
+function sameProgress(a: FormProgress | null, b: FormProgress | null): boolean {
+  if (a === null || b === null) return a === b
+  return (
+    a.invoiceCount === b.invoiceCount &&
+    a.maxAdvanceText === b.maxAdvanceText &&
+    samePending(a.pending, b.pending)
+  )
+}
+
+/**
+ * Almacén mínimo entre la isla del formulario, que publica su avance, y el script de la barra fija,
+ * que lo lee. Un avance igual al anterior no avisa: la isla puede publicar en cada render.
+ */
+export function createFormProgressStore(): FormProgressStore {
+  let current: FormProgress | null = null
+  const listeners = new Set<() => void>()
+  return {
+    getSnapshot: () => current,
+    subscribe(listener) {
+      listeners.add(listener)
+      return () => {
+        listeners.delete(listener)
+      }
+    },
+    publish(progress) {
+      if (sameProgress(current, progress)) return
+      current = progress
+      for (const listener of [...listeners]) listener()
+    },
+  }
+}
+
+/**
+ * El avance de la página. Mientras la isla no hidrata (o después de la confirmación) queda en `null`
+ * y la barra se muestra neutra. El script de la barra y la isla lo importan del mismo módulo: Astro
+ * construye los scripts y las islas en un solo build de cliente, así que es una sola instancia.
+ */
+export const formProgress: FormProgressStore = createFormProgressStore()
+
+/**
+ * Resume los pasos por avance (`stepStatuses`) para la barra fija: las facturas y el máximo del
+ * grupo elegido (en `currency`, la del grupo) y el primer paso que no está hecho.
+ */
+export function progressFromSteps(
+  steps: readonly StepStatus[],
+  view: IntakeView | null,
+  currency: Currency | null,
+): FormProgress {
+  const group = view?.chosenGroup ?? null
+  const next = steps.find((step) => step.state !== 'done') ?? null
+  return {
+    invoiceCount: group?.invoices.length ?? 0,
+    maxAdvanceText:
+      group === null ? null : formatMoney(group.maxAdvance, currency ?? group.currency),
+    pending: next === null ? null : { id: next.id, number: next.number, label: next.label },
+  }
+}
+```
+
+Run: `ASTRO_TELEMETRY_DISABLED=1 pnpm --filter @anticipate/landing exec vitest run src/lib/store/form-progress.test.ts`
+Expected: PASS, 7 tests.
+
+- [ ] **Step 4: Escribir los tests del teclado y de los pasos fijos**
+
+Los observadores son clases simuladas que guardan su `callback`: el test decide qué cruza la franja y cuándo cambia el alto. `visualViewport` es un `EventTarget` con `height`.
+
+`apps/landing/src/scripts/keyboard.test.ts`:
+```ts
+import { describe, expect, it, vi } from 'vitest'
+import { isKeyboardOpen, watchKeyboard } from './keyboard'
+
+/** Una ventana de 800 px de alto con su vista visual, las dos con eventos `resize` de verdad. */
+function fakeWindow(withViewport = true) {
+  const target = new EventTarget()
+  const viewport = Object.assign(new EventTarget(), { height: 800 })
+  const win = {
+    innerHeight: 800,
+    visualViewport: withViewport ? viewport : null,
+    addEventListener: target.addEventListener.bind(target),
+    removeEventListener: target.removeEventListener.bind(target),
+  }
+  return { win, target, viewport }
+}
+
+describe('isKeyboardOpen', () => {
+  it.each([
+    [800, 800, false],
+    [600, 800, false],
+    [599, 800, true],
+    [380, 800, true],
+    [0, 0, false],
+  ])('con la vista visual en %i px y la ventana en %i px: %s', (visual, inner, open) => {
+    expect(isKeyboardOpen(visual, inner)).toBe(open)
+  })
+})
+
+describe('watchKeyboard', () => {
+  it('avisa al empezar y cada vez que el teclado se abre o se cierra', () => {
+    const { win, viewport } = fakeWindow()
+    const onChange = vi.fn()
+    watchKeyboard(win, onChange)
+    expect(onChange).toHaveBeenLastCalledWith(false)
+
+    viewport.height = 420
+    viewport.dispatchEvent(new Event('resize'))
+    expect(onChange).toHaveBeenLastCalledWith(true)
+
+    // Otro resize con el teclado abierto no repite el aviso.
+    viewport.height = 410
+    viewport.dispatchEvent(new Event('resize'))
+    expect(onChange).toHaveBeenCalledTimes(2)
+
+    viewport.height = 800
+    viewport.dispatchEvent(new Event('resize'))
+    expect(onChange).toHaveBeenLastCalledWith(false)
+    expect(onChange).toHaveBeenCalledTimes(3)
+  })
+
+  it('recalcula cuando cambia el alto de la ventana (al girar el teléfono)', () => {
+    const { win, target, viewport } = fakeWindow()
+    const onChange = vi.fn()
+    watchKeyboard(win, onChange)
+    viewport.height = 380
+    win.innerHeight = 420
+    target.dispatchEvent(new Event('resize'))
+    expect(onChange).toHaveBeenCalledTimes(1)
+    win.innerHeight = 900
+    target.dispatchEvent(new Event('resize'))
+    expect(onChange).toHaveBeenLastCalledWith(true)
+  })
+
+  it('sin visualViewport da el teclado por cerrado y no escucha nada', () => {
+    const { win, target } = fakeWindow(false)
+    const onChange = vi.fn()
+    const stop = watchKeyboard(win, onChange)
+    target.dispatchEvent(new Event('resize'))
+    expect(onChange).toHaveBeenCalledTimes(1)
+    expect(onChange).toHaveBeenCalledWith(false)
+    stop()
+  })
+
+  it('la función que devuelve deja de escuchar', () => {
+    const { win, viewport } = fakeWindow()
+    const onChange = vi.fn()
+    watchKeyboard(win, onChange)()
+    viewport.height = 300
+    viewport.dispatchEvent(new Event('resize'))
+    expect(onChange).toHaveBeenCalledTimes(1)
+  })
+})
+```
+
+`apps/landing/src/scripts/form-steps-bar.test.ts`:
+```ts
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import {
+  type FormStepId,
+  formStepsDeps,
+  type SeenEntry,
+  STEPS_BAR_HEIGHT_PROPERTY,
+  VISIBLE_STEP_ROOT_MARGIN,
+  visibleStepFrom,
+  watchFormSteps,
+} from './form-steps-bar'
+
+/** Un `IntersectionObserver` simulado: el test decide qué cruza la franja. */
+class FakeObserver {
+  static instances: FakeObserver[] = []
+  readonly callback: (entries: SeenEntry[]) => void
+  readonly options: IntersectionObserverInit | undefined
+  readonly targets: Element[] = []
+  disconnected = false
+
+  constructor(callback: (entries: SeenEntry[]) => void, options?: IntersectionObserverInit) {
+    this.callback = callback
+    this.options = options
+    FakeObserver.instances.push(this)
+  }
+
+  observe(target: Element): void {
+    this.targets.push(target)
+  }
+
+  disconnect(): void {
+    this.disconnected = true
+  }
+}
+
+/** Un `ResizeObserver` simulado: `resize()` avisa como el navegador. */
+class FakeSizeObserver {
+  static instances: FakeSizeObserver[] = []
+  readonly callback: () => void
+  readonly targets: Element[] = []
+  disconnected = false
+
+  constructor(callback: () => void) {
+    this.callback = callback
+    FakeSizeObserver.instances.push(this)
+  }
+
+  observe(target: Element): void {
+    this.targets.push(target)
+  }
+
+  disconnect(): void {
+    this.disconnected = true
+  }
+}
+
+/** La raíz de la isla con la barra de pasos y los tres pasos, como la dibuja `RequestForm`. */
+function mountForm(): { root: HTMLElement; nav: HTMLElement; step: (id: FormStepId) => Element } {
+  document.body.innerHTML = `
+    <div id="isla">
+      <nav aria-label="Pasos de la solicitud"></nav>
+      <form>
+        <fieldset id="paso-facturas"></fieldset>
+        <fieldset id="paso-adelanto"></fieldset>
+        <fieldset id="paso-datos"></fieldset>
+      </form>
+    </div>`
+  const root = document.getElementById('isla')
+  const nav = root?.querySelector<HTMLElement>('nav')
+  if (!root || !nav) throw new Error('falta el formulario de prueba')
+  const step = (id: FormStepId): Element => {
+    const element = document.getElementById(id)
+    if (element === null) throw new Error(`falta ${id}`)
+    return element
+  }
+  return { root, nav, step }
+}
+
+const lastObserver = (): FakeObserver => {
+  const observer = FakeObserver.instances.at(-1)
+  if (observer === undefined) throw new Error('no se creó el observador')
+  return observer
+}
+
+const withHeight = (height: number) => ({ height }) as DOMRect
+
+afterEach(() => {
+  FakeObserver.instances = []
+  FakeSizeObserver.instances = []
+  document.body.innerHTML = ''
+  vi.restoreAllMocks()
+})
+
+describe('visibleStepFrom', () => {
+  it('toma el último paso que cruza la franja y, si ninguno la cruza, sigue el anterior', () => {
+    expect(visibleStepFrom(new Set(), null)).toBeNull()
+    expect(visibleStepFrom(new Set(), 'paso-adelanto')).toBe('paso-adelanto')
+    expect(visibleStepFrom(new Set(['paso-datos']), 'paso-facturas')).toBe('paso-datos')
+    expect(visibleStepFrom(new Set(['paso-adelanto', 'paso-facturas']), null)).toBe('paso-adelanto')
+  })
+})
+
+describe('watchFormSteps', () => {
+  it('avisa el paso que se ve, una vez por cambio, observando la franja bajo la barra', () => {
+    const { root, step } = mountForm()
+    const onVisible = vi.fn()
+    watchFormSteps(root, { Observer: FakeObserver, SizeObserver: null }, onVisible)
+    const observer = lastObserver()
+    expect(observer.options).toEqual({ rootMargin: VISIBLE_STEP_ROOT_MARGIN, threshold: 0 })
+    expect(observer.targets).toEqual([
+      step('paso-facturas'),
+      step('paso-adelanto'),
+      step('paso-datos'),
+    ])
+
+    observer.callback([{ target: step('paso-adelanto'), isIntersecting: true }])
+    expect(onVisible).toHaveBeenLastCalledWith('paso-adelanto')
+
+    // El mismo paso otra vez no repite el aviso; un elemento que no es un paso se ignora.
+    observer.callback([{ target: step('paso-adelanto'), isIntersecting: true }])
+    observer.callback([{ target: root, isIntersecting: true }])
+    expect(onVisible).toHaveBeenCalledTimes(1)
+
+    observer.callback([
+      { target: step('paso-adelanto'), isIntersecting: false },
+      { target: step('paso-datos'), isIntersecting: true },
+    ])
+    expect(onVisible).toHaveBeenLastCalledWith('paso-datos')
+
+    // En el cierre ningún paso cruza la franja: sigue resaltado el último.
+    observer.callback([{ target: step('paso-datos'), isIntersecting: false }])
+    expect(onVisible).toHaveBeenCalledTimes(2)
+  })
+
+  it('deja el alto de la barra de pasos en la raíz y lo actualiza cuando cambia', () => {
+    const { root, nav } = mountForm()
+    const rect = vi.spyOn(nav, 'getBoundingClientRect').mockReturnValue(withHeight(62.4))
+    const stop = watchFormSteps(root, { Observer: null, SizeObserver: FakeSizeObserver }, vi.fn())
+    expect(root.style.getPropertyValue(STEPS_BAR_HEIGHT_PROPERTY)).toBe('63px')
+    const sizes = FakeSizeObserver.instances.at(-1)
+    expect(sizes?.targets).toEqual([nav])
+
+    rect.mockReturnValue(withHeight(80))
+    sizes?.callback()
+    expect(root.style.getPropertyValue(STEPS_BAR_HEIGHT_PROPERTY)).toBe('80px')
+
+    // Una barra sin alto (oculta) no deja un valor: el CSS usa el de respaldo.
+    rect.mockReturnValue(withHeight(0))
+    sizes?.callback()
+    expect(root.style.getPropertyValue(STEPS_BAR_HEIGHT_PROPERTY)).toBe('')
+
+    rect.mockReturnValue(withHeight(64))
+    sizes?.callback()
+    stop()
+    expect(sizes?.disconnected).toBe(true)
+    expect(root.style.getPropertyValue(STEPS_BAR_HEIGHT_PROPERTY)).toBe('')
+  })
+
+  it('sin observadores mide una sola vez y no avisa ningún paso', () => {
+    const { root, nav } = mountForm()
+    vi.spyOn(nav, 'getBoundingClientRect').mockReturnValue(withHeight(64))
+    const onVisible = vi.fn()
+    const stop = watchFormSteps(root, { Observer: null, SizeObserver: null }, onVisible)
+    expect(root.style.getPropertyValue(STEPS_BAR_HEIGHT_PROPERTY)).toBe('64px')
+    expect(FakeObserver.instances).toHaveLength(0)
+    stop()
+    expect(onVisible).not.toHaveBeenCalled()
+  })
+
+  it('la función que devuelve desconecta el observador de los pasos', () => {
+    const { root } = mountForm()
+    watchFormSteps(root, { Observer: FakeObserver, SizeObserver: null }, vi.fn())()
+    expect(lastObserver().disconnected).toBe(true)
+  })
+})
+
+describe('formStepsDeps', () => {
+  it('usa los observadores de la ventana o null si faltan', () => {
+    expect(formStepsDeps({})).toEqual({ Observer: null, SizeObserver: null })
+    expect(
+      formStepsDeps({ IntersectionObserver: FakeObserver, ResizeObserver: FakeSizeObserver }),
+    ).toEqual({ Observer: FakeObserver, SizeObserver: FakeSizeObserver })
+  })
+})
+```
+
+- [ ] **Step 5: Correr los tests y ver que fallan**
+
+Run: `ASTRO_TELEMETRY_DISABLED=1 pnpm --filter @anticipate/landing exec vitest run src/scripts/keyboard.test.ts src/scripts/form-steps-bar.test.ts`
+Expected: FAIL: no se resuelven `./keyboard` ni `./form-steps-bar`.
+
+- [ ] **Step 6: Implementar la detección del teclado y los pasos fijos**
+
+`apps/landing/src/scripts/keyboard.ts`:
+```ts
+/**
+ * Detección del teclado en pantalla. Al abrirse, el navegador achica la vista visual
+ * (`visualViewport`) y deja igual la ventana (`innerHeight`): con menos de tres cuartos del alto, el
+ * teclado está abierto. Sin `visualViewport` no hay forma de saberlo y se da por cerrado.
+ */
+export const KEYBOARD_VIEWPORT_RATIO = 0.75
+
+type ResizeTarget = {
+  addEventListener(type: 'resize', listener: () => void): void
+  removeEventListener(type: 'resize', listener: () => void): void
+}
+
+export type KeyboardViewport = ResizeTarget & { readonly height: number }
+
+export type KeyboardWindow = ResizeTarget & {
+  readonly innerHeight: number
+  readonly visualViewport: KeyboardViewport | null
+}
+
+/** `visualViewport.height < 0.75 * innerHeight`. */
+export function isKeyboardOpen(viewportHeight: number, innerHeight: number): boolean {
+  return viewportHeight < KEYBOARD_VIEWPORT_RATIO * innerHeight
+}
+
+const noop = (): void => undefined
+
+/**
+ * Avisa ya mismo si el teclado está abierto y después cada vez que cambia: escucha el `resize` de la
+ * vista visual y el de la ventana (al girar el teléfono cambia `innerHeight`). Devuelve la función
+ * que deja de escuchar.
+ */
+export function watchKeyboard(win: KeyboardWindow, onChange: (open: boolean) => void): () => void {
+  const viewport = win.visualViewport
+  if (viewport === null) {
+    onChange(false)
+    return noop
+  }
+  let open = isKeyboardOpen(viewport.height, win.innerHeight)
+  onChange(open)
+  const update = (): void => {
+    const next = isKeyboardOpen(viewport.height, win.innerHeight)
+    if (next === open) return
+    open = next
+    onChange(open)
+  }
+  viewport.addEventListener('resize', update)
+  win.addEventListener('resize', update)
+  return () => {
+    viewport.removeEventListener('resize', update)
+    win.removeEventListener('resize', update)
+  }
+}
+```
+
+`apps/landing/src/scripts/form-steps-bar.ts`:
+```ts
+import type { StepStatus } from '../islands/request-form/step-status'
+
+/**
+ * Pasos fijos dentro del formulario (marco 3 de MobileExtras.dc.html): qué paso se está viendo, para
+ * resaltarlo en la barra de pasos, y el alto de esa barra, para el `scroll-margin-top` de cada paso.
+ * Sin framework: la isla lo usa desde un efecto y los tests lo prueban con observadores simulados.
+ */
+export type FormStepId = StepStatus['id']
+
+/** Los pasos en el orden del formulario. */
+export const FORM_STEP_IDS: readonly FormStepId[] = ['paso-facturas', 'paso-adelanto', 'paso-datos']
+
+/** La barra de pasos de la Tarea 10 (`StepsNav`). */
+export const STEPS_NAV_SELECTOR = 'nav[aria-label="Pasos de la solicitud"]'
+
+/** Propiedad CSS con el alto de la barra de pasos, en la raíz de la isla. */
+export const STEPS_BAR_HEIGHT_PROPERTY = '--steps-bar-height'
+
+/**
+ * Franja de la vista que decide el paso visible: el 1 % del alto que empieza al 35 % desde arriba,
+ * debajo de la barra de pasos fija. Los pasos van seguidos, así que casi siempre la cruza uno solo.
+ */
+export const VISIBLE_STEP_ROOT_MARGIN = '-35% 0px -64% 0px'
+
+/** Lo que este módulo lee de una entrada de `IntersectionObserver`. */
+export type SeenEntry = { readonly target: Element; readonly isIntersecting: boolean }
+
+export type ObserverLike = { observe(target: Element): void; disconnect(): void }
+
+/** `IntersectionObserver` o un doble con la misma forma. */
+export type ObserverCtor = new (
+  callback: (entries: SeenEntry[]) => void,
+  options?: IntersectionObserverInit,
+) => ObserverLike
+
+/** `ResizeObserver` o un doble con la misma forma. */
+export type SizeObserverCtor = new (callback: () => void) => ObserverLike
+
+export type FormStepsDeps = { Observer: ObserverCtor | null; SizeObserver: SizeObserverCtor | null }
+
+export type FormStepsWindow = {
+  readonly IntersectionObserver?: ObserverCtor
+  readonly ResizeObserver?: SizeObserverCtor
+}
+
+/** Los observadores de la ventana, o `null` si el navegador no los tiene. */
+export function formStepsDeps(win: FormStepsWindow): FormStepsDeps {
+  return { Observer: win.IntersectionObserver ?? null, SizeObserver: win.ResizeObserver ?? null }
+}
+
+/**
+ * El paso visible: el último, en el orden del formulario, que cruza la franja. Si ninguno la cruza
+ * (arriba del paso 01 o en el cierre), sigue el anterior.
+ */
+export function visibleStepFrom(
+  inBand: ReadonlySet<FormStepId>,
+  previous: FormStepId | null,
+): FormStepId | null {
+  const crossing = FORM_STEP_IDS.filter((id) => inBand.has(id))
+  return crossing.at(-1) ?? previous
+}
+
+function stepIdOf(target: Element): FormStepId | null {
+  return FORM_STEP_IDS.find((id) => id === target.id) ?? null
+}
+
+/**
+ * Observa los pasos dentro de `root` (la raíz de la isla) y avisa con `onVisible` cada vez que cambia
+ * el paso visible. Mide la barra de pasos y deja su alto en `--steps-bar-height` sobre `root`, así
+ * cada paso hereda el valor para su `scroll-margin-top`. Sin `IntersectionObserver` no avisa nada (la
+ * barra resalta el paso actual); sin `ResizeObserver` mide una sola vez. Devuelve la función que
+ * deja de observar y borra el alto.
+ */
+export function watchFormSteps(
+  root: HTMLElement,
+  deps: FormStepsDeps,
+  onVisible: (id: FormStepId | null) => void,
+): () => void {
+  const stops: (() => void)[] = []
+
+  const nav = root.querySelector<HTMLElement>(STEPS_NAV_SELECTOR)
+  if (nav !== null) {
+    const measure = (): void => {
+      const height = Math.ceil(nav.getBoundingClientRect().height)
+      if (height > 0) root.style.setProperty(STEPS_BAR_HEIGHT_PROPERTY, `${height}px`)
+      else root.style.removeProperty(STEPS_BAR_HEIGHT_PROPERTY)
+    }
+    measure()
+    if (deps.SizeObserver !== null) {
+      const sizes = new deps.SizeObserver(measure)
+      sizes.observe(nav)
+      stops.push(() => sizes.disconnect())
+    }
+    stops.push(() => {
+      root.style.removeProperty(STEPS_BAR_HEIGHT_PROPERTY)
+    })
+  }
+
+  if (deps.Observer !== null) {
+    const inBand = new Set<FormStepId>()
+    let current: FormStepId | null = null
+    const observer = new deps.Observer(
+      (entries) => {
+        for (const entry of entries) {
+          const id = stepIdOf(entry.target)
+          if (id === null) continue
+          if (entry.isIntersecting) inBand.add(id)
+          else inBand.delete(id)
+        }
+        const next = visibleStepFrom(inBand, current)
+        if (next === current) return
+        current = next
+        onVisible(next)
+      },
+      { rootMargin: VISIBLE_STEP_ROOT_MARGIN, threshold: 0 },
+    )
+    for (const id of FORM_STEP_IDS) {
+      const step = root.querySelector(`#${id}`)
+      if (step !== null) observer.observe(step)
+    }
+    stops.push(() => observer.disconnect())
+  }
+
+  return () => {
+    for (const stop of stops) stop()
+  }
+}
+```
+
+Run: `ASTRO_TELEMETRY_DISABLED=1 pnpm --filter @anticipate/landing exec vitest run src/scripts/keyboard.test.ts src/scripts/form-steps-bar.test.ts`
+Expected: PASS, 9 tests en `keyboard.test.ts` (5 de la tabla y 4 más) y 6 en `form-steps-bar.test.ts`.
+
+- [ ] **Step 7: Escribir el test de la barra fija**
+
+La página de prueba repite el marcado de `StickyBar.astro` (los mismos atributos `data-sticky-bar-*`); el test de la Container API del Step 10 comprueba que el componente los tiene. El teclado y el avance son dobles controlados por el test.
+
+`apps/landing/src/scripts/sticky-bar.test.ts`:
+```ts
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { invoiceCountText } from '../islands/request-form/form-text'
+import { createFormProgressStore, type FormProgress } from '../lib/store/form-progress'
+import type { SeenEntry } from './form-steps-bar'
+import {
+  barInvoicesText,
+  findStickyBarParts,
+  installStickyBar,
+  isStickyBarVisible,
+  neutralStickyBar,
+  READY_HREF,
+  type StickyBarDeps,
+  type StickyBarParts,
+  stickyBarText,
+} from './sticky-bar'
+
+/** Un `IntersectionObserver` simulado: el test decide qué se ve. */
+class FakeObserver {
+  static instances: FakeObserver[] = []
+  readonly callback: (entries: SeenEntry[]) => void
+  readonly targets: Element[] = []
+  disconnected = false
+
+  constructor(callback: (entries: SeenEntry[]) => void) {
+    this.callback = callback
+    FakeObserver.instances.push(this)
+  }
+
+  observe(target: Element): void {
+    this.targets.push(target)
+  }
+
+  disconnect(): void {
+    this.disconnected = true
+  }
+}
+
+const NEUTRAL = neutralStickyBar(85, 'SEA')
+
+const PROGRESS: FormProgress = {
+  invoiceCount: 2,
+  maxAdvanceText: 'S/ 17,637.50',
+  pending: { id: 'paso-datos', number: '03', label: 'Tus datos' },
+}
+
+/** La página con el hero, la sección del formulario y la barra como la deja `StickyBar.astro`. */
+function mountPage(): { parts: StickyBarParts; hero: Element; request: Element } {
+  document.body.innerHTML = `
+    <section id="top"></section>
+    <section id="solicitud"></section>
+    <aside data-sticky-bar data-variant="neutral" hidden>
+      <p>
+        <span data-sticky-bar-lead>${NEUTRAL.lead}</span>
+        <span data-sticky-bar-sub>${NEUTRAL.sub}</span>
+      </p>
+      <a href="${NEUTRAL.href}" data-sticky-bar-action><span data-sticky-bar-label>${NEUTRAL.action}</span></a>
+    </aside>`
+  const parts = findStickyBarParts(document)
+  const hero = document.getElementById('top')
+  const request = document.getElementById('solicitud')
+  if (parts === null || hero === null || request === null) throw new Error('falta la página')
+  return { parts, hero, request }
+}
+
+/** Instala la barra con dobles: observador, teclado y avance controlados por el test. */
+function setup(overrides: Partial<StickyBarDeps> = {}) {
+  const { parts, hero, request } = mountPage()
+  const progress = createFormProgressStore()
+  let keyboard: (open: boolean) => void = () => undefined
+  const stopKeyboard = vi.fn()
+  const reserveSpace = vi.fn()
+  const stop = installStickyBar(parts, {
+    hero,
+    request,
+    Observer: FakeObserver,
+    watchKeyboard: (onChange) => {
+      keyboard = onChange
+      onChange(false)
+      return stopKeyboard
+    },
+    progress,
+    reserveSpace,
+    ...overrides,
+  })
+  const observer = FakeObserver.instances.at(-1)
+  const see = (target: Element, isIntersecting: boolean) =>
+    observer?.callback([{ target, isIntersecting }])
+  return {
+    parts,
+    hero,
+    request,
+    progress,
+    observer,
+    see,
+    openKeyboard: (open: boolean) => keyboard(open),
+    stopKeyboard,
+    reserveSpace,
+    stop,
+  }
+}
+
+afterEach(() => {
+  FakeObserver.instances = []
+  document.body.innerHTML = ''
+})
+
+describe('textos de la barra', () => {
+  it('neutra: el porcentaje y el nombre corto del pagador, y «Solicitar» al paso 01', () => {
+    expect(NEUTRAL).toEqual({
+      variant: 'neutral',
+      lead: 'Hasta 85 %',
+      sub: 'de tus facturas a SEA',
+      action: 'Solicitar',
+      href: '#paso-facturas',
+    })
+    expect(neutralStickyBar(72.5, 'Minera Andina')).toMatchObject({
+      lead: 'Hasta 72.5 %',
+      sub: 'de tus facturas a Minera Andina',
+    })
+  })
+
+  it('con facturas lleva al primer paso sin terminar (marco 2b)', () => {
+    expect(stickyBarText(PROGRESS, NEUTRAL)).toEqual({
+      variant: 'resume',
+      lead: '2 facturas · S/ 17,637.50',
+      sub: 'Te falta el paso 03 · Tus datos',
+      action: 'Continuar',
+      href: '#paso-datos',
+    })
+    expect(
+      stickyBarText({ invoiceCount: 1, maxAdvanceText: null, pending: PROGRESS.pending }, NEUTRAL)
+        .lead,
+    ).toBe('1 factura')
+  })
+
+  it('sin pasos pendientes lleva a los Términos, en el cierre', () => {
+    expect(stickyBarText({ ...PROGRESS, pending: null }, NEUTRAL)).toMatchObject({
+      sub: 'Revisa y envía tu solicitud',
+      action: 'Continuar',
+      href: READY_HREF,
+    })
+  })
+
+  it('sin avance publicado o sin facturas queda neutra', () => {
+    expect(stickyBarText(null, NEUTRAL)).toBe(NEUTRAL)
+    expect(stickyBarText({ ...PROGRESS, invoiceCount: 0 }, NEUTRAL)).toBe(NEUTRAL)
+  })
+
+  it('cuenta las facturas con el mismo texto que el formulario', () => {
+    for (const count of [1, 2, 10]) expect(barInvoicesText(count)).toBe(invoiceCountText(count))
+  })
+})
+
+describe('isStickyBarVisible', () => {
+  it.each([
+    [false, false, false, true],
+    [true, false, false, false],
+    [false, true, false, false],
+    [false, false, true, false],
+  ])(
+    'hero %s, solicitud %s y teclado %s: %s',
+    (heroInView, requestInView, keyboardOpen, visible) => {
+      expect(isStickyBarVisible({ heroInView, requestInView, keyboardOpen })).toBe(visible)
+    },
+  )
+})
+
+describe('installStickyBar', () => {
+  it('oculta al abrir, aparece al pasar la calculadora y se oculta dentro de #solicitud', () => {
+    const { parts, hero, request, observer, see } = setup()
+    expect(observer?.targets).toEqual([hero, request])
+    expect(parts.bar.hidden).toBe(true)
+
+    see(hero, true)
+    expect(parts.bar.hidden).toBe(true)
+    see(hero, false)
+    expect(parts.bar.hidden).toBe(false)
+    see(request, true)
+    expect(parts.bar.hidden).toBe(true)
+    see(request, false)
+    expect(parts.bar.hidden).toBe(false)
+  })
+
+  it('se oculta mientras el teclado está abierto', () => {
+    const { parts, hero, see, openKeyboard } = setup()
+    see(hero, false)
+    openKeyboard(true)
+    expect(parts.bar.hidden).toBe(true)
+    openKeyboard(false)
+    expect(parts.bar.hidden).toBe(false)
+  })
+
+  it('con facturas en el formulario pasa a «Continuar» y vuelve a la neutra si se vacía', () => {
+    const { parts, progress } = setup()
+    progress.publish(PROGRESS)
+    expect(parts.bar.dataset.variant).toBe('resume')
+    expect(parts.lead).toHaveTextContent('2 facturas · S/ 17,637.50')
+    expect(parts.sub).toHaveTextContent('Te falta el paso 03 · Tus datos')
+    expect(parts.action).toHaveTextContent('Continuar')
+    expect(parts.action).toHaveAttribute('href', '#paso-datos')
+
+    progress.publish({ ...PROGRESS, invoiceCount: 0, maxAdvanceText: null })
+    expect(parts.bar.dataset.variant).toBe('neutral')
+    expect(parts.lead).toHaveTextContent('Hasta 85 %')
+    expect(parts.sub).toHaveTextContent('de tus facturas a SEA')
+    expect(parts.action).toHaveTextContent('Solicitar')
+    expect(parts.action).toHaveAttribute('href', '#paso-facturas')
+  })
+
+  it('reserva el alto de la barra al pie de la página solo mientras se ve', () => {
+    const { parts, hero, see, reserveSpace } = setup()
+    vi.spyOn(parts.bar, 'getBoundingClientRect').mockReturnValue({ height: 80 } as DOMRect)
+    expect(reserveSpace).toHaveBeenLastCalledWith(null)
+    see(hero, false)
+    expect(reserveSpace).toHaveBeenLastCalledWith(80)
+    see(hero, true)
+    expect(reserveSpace).toHaveBeenLastCalledWith(null)
+  })
+
+  it('sin IntersectionObserver queda oculta', () => {
+    const { parts, progress } = setup({ Observer: null })
+    progress.publish(PROGRESS)
+    expect(FakeObserver.instances).toHaveLength(0)
+    expect(parts.bar.hidden).toBe(true)
+    expect(parts.action).toHaveTextContent('Continuar')
+  })
+
+  it('la función que devuelve deja de observar, de escuchar el teclado y el avance', () => {
+    const { parts, progress, observer, stopKeyboard, reserveSpace, stop } = setup()
+    stop()
+    expect(observer?.disconnected).toBe(true)
+    expect(stopKeyboard).toHaveBeenCalledTimes(1)
+    expect(reserveSpace).toHaveBeenLastCalledWith(null)
+    progress.publish(PROGRESS)
+    expect(parts.action).toHaveTextContent('Solicitar')
+  })
+})
+
+describe('findStickyBarParts', () => {
+  it('devuelve null si la página no tiene la barra', () => {
+    document.body.innerHTML = '<main></main>'
+    expect(findStickyBarParts(document)).toBeNull()
+  })
+})
+```
+
+- [ ] **Step 8: Correr el test y ver que falla**
+
+Run: `ASTRO_TELEMETRY_DISABLED=1 pnpm --filter @anticipate/landing exec vitest run src/scripts/sticky-bar.test.ts`
+Expected: FAIL: no se resuelve `./sticky-bar`.
+
+- [ ] **Step 9: Implementar la barra fija**
+
+`apps/landing/src/scripts/sticky-bar.ts`:
+```ts
+import { type FormProgress, type FormProgressStore, formProgress } from '../lib/store/form-progress'
+import type { ObserverCtor } from './form-steps-bar'
+import { type KeyboardWindow, watchKeyboard } from './keyboard'
+
+/**
+ * Barra fija inferior de móvil (marcos 2 y 2b de MobileExtras.dc.html). El HTML del build trae la
+ * versión neutra oculta; este script decide cuándo se ve y, si el formulario ya publicó su avance
+ * con facturas, la cambia por la de «Continuar».
+ */
+export type StickyBarText = {
+  variant: 'neutral' | 'resume'
+  lead: string
+  sub: string
+  action: string
+  href: string
+}
+
+/** El paso 01: adonde lleva «Solicitar». */
+export const REQUEST_HREF = '#paso-facturas'
+
+/**
+ * Sin pasos pendientes, «Continuar» lleva a la casilla de los Términos (`FIELD_IDS.acceptTerms` de la
+ * Tarea 10), en el cierre: falta aceptar y enviar.
+ */
+export const READY_HREF = '#terminos'
+
+/** Propiedad CSS de `<html>` con el alto de la barra mientras se ve (relleno al pie de la página). */
+export const STICKY_BAR_SPACE_PROPERTY = '--sticky-bar-space'
+
+/** "Hasta {advancePercent} %" · "de tus facturas a {shortName}" · «Solicitar» (marco 2). */
+export function neutralStickyBar(advancePercent: number, shortName: string): StickyBarText {
+  return {
+    variant: 'neutral',
+    lead: `Hasta ${advancePercent} %`,
+    sub: `de tus facturas a ${shortName}`,
+    action: 'Solicitar',
+    href: REQUEST_HREF,
+  }
+}
+
+/** "1 factura" o "{n} facturas", como `invoiceCountText` del formulario (un test lo compara). */
+export function barInvoicesText(count: number): string {
+  return count === 1 ? '1 factura' : `${count} facturas`
+}
+
+/**
+ * El texto de la barra: la neutra sin avance o sin facturas; con facturas, el marco 2b
+ * ("{n} facturas · {máximo}" · "Te falta el paso 0X · {paso}" · «Continuar» al paso pendiente).
+ */
+export function stickyBarText(
+  progress: FormProgress | null,
+  neutral: StickyBarText,
+): StickyBarText {
+  if (progress === null || progress.invoiceCount === 0) return neutral
+  const invoices = barInvoicesText(progress.invoiceCount)
+  const lead =
+    progress.maxAdvanceText === null ? invoices : `${invoices} · ${progress.maxAdvanceText}`
+  const { pending } = progress
+  if (pending === null) {
+    return {
+      variant: 'resume',
+      lead,
+      sub: 'Revisa y envía tu solicitud',
+      action: 'Continuar',
+      href: READY_HREF,
+    }
+  }
+  return {
+    variant: 'resume',
+    lead,
+    sub: `Te falta el paso ${pending.number} · ${pending.label}`,
+    action: 'Continuar',
+    href: `#${pending.id}`,
+  }
+}
+
+/** Lo que decide si la barra se ve. */
+export type StickyBarSignals = {
+  heroInView: boolean
+  requestInView: boolean
+  keyboardOpen: boolean
+}
+
+/**
+ * Se ve solo si ya se pasó la calculadora (el hero `#top` no se ve), si no se está dentro de
+ * `#solicitud` y si el teclado está cerrado.
+ */
+export function isStickyBarVisible(signals: StickyBarSignals): boolean {
+  return !signals.heroInView && !signals.requestInView && !signals.keyboardOpen
+}
+
+/** Las piezas de la barra que el script cambia (`StickyBar.astro`). */
+export type StickyBarParts = {
+  bar: HTMLElement
+  lead: HTMLElement
+  sub: HTMLElement
+  action: HTMLAnchorElement
+  label: HTMLElement
+}
+
+export function findStickyBarParts(root: ParentNode): StickyBarParts | null {
+  const bar = root.querySelector<HTMLElement>('[data-sticky-bar]')
+  const lead = bar?.querySelector<HTMLElement>('[data-sticky-bar-lead]') ?? null
+  const sub = bar?.querySelector<HTMLElement>('[data-sticky-bar-sub]') ?? null
+  const action = bar?.querySelector<HTMLAnchorElement>('a[data-sticky-bar-action]') ?? null
+  const label = action?.querySelector<HTMLElement>('[data-sticky-bar-label]') ?? null
+  if (bar === null || lead === null || sub === null || action === null || label === null) {
+    return null
+  }
+  return { bar, lead, sub, action, label }
+}
+
+/** La versión neutra tal como vino en el HTML del build (con los datos del pagador). */
+function readNeutral(parts: StickyBarParts): StickyBarText {
+  return {
+    variant: 'neutral',
+    lead: (parts.lead.textContent ?? '').trim(),
+    sub: (parts.sub.textContent ?? '').trim(),
+    action: (parts.label.textContent ?? '').trim(),
+    href: parts.action.getAttribute('href') ?? REQUEST_HREF,
+  }
+}
+
+function setText(element: HTMLElement, text: string): void {
+  if (element.textContent !== text) element.textContent = text
+}
+
+export type StickyBarDeps = {
+  /** El hero con la calculadora (`#top`) y la sección del formulario (`#solicitud`). */
+  hero: Element
+  request: Element
+  /** `IntersectionObserver`; sin él la barra no se muestra. */
+  Observer: ObserverCtor | null
+  watchKeyboard: (onChange: (open: boolean) => void) => () => void
+  progress: Pick<FormProgressStore, 'getSnapshot' | 'subscribe'>
+  /** Recibe el alto de la barra mientras se ve, o `null` cuando se oculta. */
+  reserveSpace: (height: number | null) => void
+}
+
+/**
+ * Pone en marcha la barra: la muestra u oculta (con `hidden`, no solo fuera de la pantalla) según el
+ * hero, `#solicitud` y el teclado, y cambia su texto con el avance del formulario. Hasta el primer
+ * aviso del observador queda oculta. Devuelve la función que la detiene.
+ */
+export function installStickyBar(parts: StickyBarParts, deps: StickyBarDeps): () => void {
+  const neutral = readNeutral(parts)
+  const signals: StickyBarSignals = { heroInView: true, requestInView: false, keyboardOpen: false }
+
+  const render = (): void => {
+    const text = stickyBarText(deps.progress.getSnapshot(), neutral)
+    if (parts.bar.dataset.variant !== text.variant) parts.bar.dataset.variant = text.variant
+    setText(parts.lead, text.lead)
+    setText(parts.sub, text.sub)
+    setText(parts.label, text.action)
+    if (parts.action.getAttribute('href') !== text.href)
+      parts.action.setAttribute('href', text.href)
+    const visible = deps.Observer !== null && isStickyBarVisible(signals)
+    if (parts.bar.hidden === visible) parts.bar.hidden = !visible
+    deps.reserveSpace(visible ? parts.bar.getBoundingClientRect().height : null)
+  }
+
+  render()
+  const stops: (() => void)[] = [deps.progress.subscribe(render)]
+  stops.push(
+    deps.watchKeyboard((open) => {
+      signals.keyboardOpen = open
+      render()
+    }),
+  )
+  if (deps.Observer !== null) {
+    const observer = new deps.Observer((entries) => {
+      for (const entry of entries) {
+        if (entry.target === deps.hero) signals.heroInView = entry.isIntersecting
+        if (entry.target === deps.request) signals.requestInView = entry.isIntersecting
+      }
+      render()
+    })
+    observer.observe(deps.hero)
+    observer.observe(deps.request)
+    stops.push(() => observer.disconnect())
+  }
+
+  return () => {
+    for (const stop of stops) stop()
+    deps.reserveSpace(null)
+  }
+}
+
+export type StickyBarWindow = KeyboardWindow & {
+  readonly document: Document
+  readonly IntersectionObserver?: ObserverCtor
+}
+
+const noop = (): void => undefined
+
+/** Lo que corre en la página (`StickyBar.astro`): busca la barra y la pone en marcha. */
+export function startStickyBar(win: StickyBarWindow): () => void {
+  const doc = win.document
+  const parts = findStickyBarParts(doc)
+  const hero = doc.getElementById('top')
+  const request = doc.getElementById('solicitud')
+  if (parts === null || hero === null || request === null) return noop
+  const root = doc.documentElement
+  return installStickyBar(parts, {
+    hero,
+    request,
+    Observer: win.IntersectionObserver ?? null,
+    watchKeyboard: (onChange) => watchKeyboard(win, onChange),
+    progress: formProgress,
+    reserveSpace: (height) => {
+      if (height === null) root.style.removeProperty(STICKY_BAR_SPACE_PROPERTY)
+      else root.style.setProperty(STICKY_BAR_SPACE_PROPERTY, `${Math.ceil(height)}px`)
+    },
+  })
+}
+```
+
+Run: `ASTRO_TELEMETRY_DISABLED=1 pnpm --filter @anticipate/landing exec vitest run src/scripts`
+Expected: PASS, 31 tests en 3 archivos (16 en `sticky-bar.test.ts`).
+
+- [ ] **Step 10: El componente de la barra y su lugar en la página**
+
+Con la Container API en entorno node, como los tests de la Tarea 6.
+
+`apps/landing/src/components/site/StickyBar.test.ts`:
+```ts
+// @vitest-environment node
+import type { PublicPayer } from '@anticipate/shared/payer'
+import { describe, expect, it } from 'vitest'
+import { FIXTURE_PAYERS } from '../../lib/build-data/fixtures'
+import { findStickyBarParts } from '../../scripts/sticky-bar'
+import { renderAstro } from '../../test/render-astro'
+import StickyBar from './StickyBar.astro'
+
+const sea = FIXTURE_PAYERS[0] as PublicPayer
+
+describe('StickyBar', () => {
+  it('sale oculta en el HTML, neutra, con los datos del pagador y «Solicitar» al paso 01', async () => {
+    const document = await renderAstro(StickyBar, { props: { payer: sea } })
+    const bar = document.querySelector('aside[data-sticky-bar]')
+    expect(bar).toHaveAttribute('hidden')
+    expect(bar).toHaveAttribute('aria-label', 'Acceso rápido a la solicitud')
+    expect(bar).toHaveAttribute('data-variant', 'neutral')
+    expect(document.querySelector('[data-sticky-bar-lead]')).toHaveTextContent('Hasta 85 %')
+    expect(document.querySelector('[data-sticky-bar-sub]')).toHaveTextContent(
+      'de tus facturas a SEA',
+    )
+    const action = document.querySelector('a[data-sticky-bar-action]')
+    expect(action).toHaveTextContent(/^Solicitar$/)
+    expect(action).toHaveAttribute('href', '#paso-facturas')
+    expect(action?.querySelector('svg')).toHaveAttribute('aria-hidden', 'true')
+  })
+
+  it('el script encuentra todas sus piezas en el HTML', async () => {
+    const document = await renderAstro(StickyBar, { props: { payer: sea } })
+    expect(findStickyBarParts(document)).not.toBeNull()
+  })
+
+  it('interpola el porcentaje y el nombre corto de otro pagador', async () => {
+    const other: PublicPayer = { ...sea, shortName: 'Minera Andina', advancePercent: 72.5 }
+    const document = await renderAstro(StickyBar, { props: { payer: other } })
+    expect(document.querySelector('[data-sticky-bar-lead]')).toHaveTextContent('Hasta 72.5 %')
+    expect(document.querySelector('[data-sticky-bar-sub]')).toHaveTextContent(
+      'de tus facturas a Minera Andina',
+    )
+  })
+})
+```
+
+Run: `ASTRO_TELEMETRY_DISABLED=1 pnpm --filter @anticipate/landing exec vitest run src/components/site/StickyBar.test.ts`
+Expected: FAIL: no se resuelve `./StickyBar.astro`.
+
+`apps/landing/src/components/site/StickyBar.astro`:
+```astro
+---
+import type { PublicPayer } from '@anticipate/shared/payer'
+import { neutralStickyBar } from '../../scripts/sticky-bar'
+import Icon from './Icon.astro'
+
+type Props = { payer: PublicPayer }
+
+const { payer } = Astro.props
+const text = neutralStickyBar(payer.advancePercent, payer.shortName)
+---
+
+<aside
+  class="sticky-bar"
+  aria-label="Acceso rápido a la solicitud"
+  data-sticky-bar
+  data-variant={text.variant}
+  hidden
+>
+  <p class="text">
+    <span class="lead" data-sticky-bar-lead>{text.lead}</span>
+    <span class="sub" data-sticky-bar-sub>{text.sub}</span>
+  </p>
+  <a class="action" href={text.href} data-sticky-bar-action>
+    <span data-sticky-bar-label>{text.action}</span>
+    <Icon name="arrow-right" size={18} strokeWidth={2.5} />
+  </a>
+</aside>
+
+<script>
+  import { startStickyBar } from '../../scripts/sticky-bar'
+
+  startStickyBar(window)
+</script>
+
+<style>
+  /* Barra fija inferior (marcos 2 y 2b de MobileExtras.dc.html). Sale oculta en el HTML y la muestra
+     el script; hasta 1023 px, donde la cabecera no queda fija. */
+  .sticky-bar {
+    position: fixed;
+    inset-inline: 0;
+    bottom: 0;
+    z-index: 25;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 16px calc(16px + env(safe-area-inset-bottom, 0px));
+    background: rgba(255, 255, 255, 0.97);
+    border-top: 1px solid var(--line);
+    box-shadow: 0 -8px 24px rgba(7, 52, 50, 0.1);
+  }
+
+  .sticky-bar[hidden] {
+    display: none;
+  }
+
+  .text {
+    flex: 1;
+    min-width: 0;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .lead {
+    font-size: 17px;
+    line-height: 22px;
+    font-weight: 900;
+    color: var(--teal-700);
+  }
+
+  .sub {
+    font-size: 13px;
+    line-height: 18px;
+    color: var(--muted);
+  }
+
+  /* Marco 2b: con facturas, el resumen en tinta y más chico. */
+  .sticky-bar[data-variant="resume"] .lead {
+    font-size: 15px;
+    line-height: 20px;
+    font-weight: 800;
+    color: var(--ink);
+  }
+
+  .action {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    min-height: 52px;
+    padding: 0 18px;
+    background: var(--teal-600);
+    color: #ffffff;
+    text-decoration: none;
+    font-size: 16px;
+    font-weight: 800;
+  }
+
+  .action:hover {
+    background: var(--teal-700);
+    color: #ffffff;
+  }
+
+  @media (max-width: 1023px) {
+    /* Mientras la barra se ve, el final de la página no queda debajo de ella. */
+    :global(body) {
+      padding-bottom: var(--sticky-bar-space, 0px);
+    }
+  }
+
+  @media (min-width: 768px) {
+    .sticky-bar {
+      padding-inline: max(var(--gutter), calc((100% - var(--page-max)) / 2));
+    }
+  }
+
+  @media (min-width: 1024px) {
+    .sticky-bar {
+      display: none;
+    }
+  }
+
+  @media print {
+    .sticky-bar {
+      display: none;
+    }
+  }
+</style>
+```
+
+La página monta la barra entre `</main>` y el pie. El resto no cambia desde la Tarea 9, salvo el margen lateral de móvil de `#solicitud`, que pasa a `--request-inline`.
+
+`apps/landing/src/pages/[payer].astro`:
+```astro
+---
+import type { GetStaticPaths, InferGetStaticPropsType } from 'astro'
+import Benefits from '../components/site/Benefits.astro'
+import ClosingBand from '../components/site/ClosingBand.astro'
+import Faq from '../components/site/Faq.astro'
+import Hero from '../components/site/Hero.astro'
+import HowItWorks from '../components/site/HowItWorks.astro'
+import Requirements from '../components/site/Requirements.astro'
+import SiteFooter from '../components/site/SiteFooter.astro'
+import SiteHeader from '../components/site/SiteHeader.astro'
+import StickyBar from '../components/site/StickyBar.astro'
+import XmlGuide from '../components/site/XmlGuide.astro'
+import { landingCopy } from '../content/landing-copy'
+import Calculator from '../islands/calculator/Calculator'
+import RequestForm from '../islands/request-form/RequestForm'
+import BaseLayout from '../layouts/BaseLayout.astro'
+import { getBuildData } from '../lib/build-data/build-data.server'
+import { islandConfig } from '../lib/island-config'
+
+export const getStaticPaths = (async () => {
+  const { payers } = await getBuildData()
+  return payers.map((payer) => ({ params: { payer: payer.slug }, props: { payer } }))
+}) satisfies GetStaticPaths
+
+type Props = InferGetStaticPropsType<typeof getStaticPaths>
+
+const { payer } = Astro.props
+const data = await getBuildData()
+const config = islandConfig(payer, data)
+const copy = landingCopy(payer)
+---
+
+<BaseLayout
+  title={copy.meta.title}
+  description={copy.meta.description}
+  canonicalPath={`/${payer.slug}`}
+  payer={payer}
+>
+  <SiteHeader copy={copy} />
+  <main id="contenido">
+    <Hero copy={copy} payer={payer}>
+      <Calculator slot="calculator" client:load config={config} />
+    </Hero>
+    <Benefits copy={copy} />
+    <HowItWorks copy={copy} />
+    <Requirements copy={copy} />
+    <XmlGuide copy={copy} payer={payer} pageUrl={config.pageUrl} />
+    <section id="solicitud" class="request">
+      <RequestForm client:idle config={config} />
+    </section>
+    <Faq copy={copy} />
+    <ClosingBand copy={copy} />
+  </main>
+  <StickyBar payer={payer} />
+  <SiteFooter copy={copy} legal={data.legal} />
+</BaseLayout>
+
+<style>
+  /* Sección de la solicitud: fondo y márgenes de Main.dc.html y MobileForm.dc.html. La isla dibuja
+     las dos columnas; la confirmación de la Tarea 11 la reemplaza dentro de esta misma sección.
+     --request-inline es el margen lateral de móvil: la barra de pasos fija (Tarea 13) lo usa para ir
+     de lado a lado. */
+  .request {
+    --request-inline: 16px;
+    padding: 56px var(--request-inline);
+    background: linear-gradient(180deg, var(--teal-100) 0%, var(--surface) 100%);
+  }
+
+  @media (min-width: 768px) {
+    .request {
+      padding: 72px max(var(--gutter), calc((100% - var(--page-max)) / 2));
+    }
+  }
+
+  @media (min-width: 1024px) {
+    .request {
+      padding-block: 96px;
+    }
+  }
+</style>
+```
+
+Run: `ASTRO_TELEMETRY_DISABLED=1 pnpm --filter @anticipate/landing exec vitest run src/components/site/StickyBar.test.ts`
+Expected: PASS, 3 tests.
+
+Run: `pnpm --filter @anticipate/landing typecheck`
+Expected: `astro check` termina con `0 errors`, `0 warnings` y `0 hints` (el `<script>` de `StickyBar.astro` pasa `window` como `StickyBarWindow`).
+
+- [ ] **Step 11: Escribir el test de la isla en móvil**
+
+Con el almacén real y `user-event`, como `RequestForm.steps.test.tsx` de la Tarea 10, en modo demostración (`apiBaseUrl: ''`): el envío confirma sin red. `IntersectionObserver` se reemplaza con `vi.stubGlobal`: jsdom no lo trae, y en el entorno jsdom de Vitest `window` es el objeto global, así que la isla lo encuentra en `window`. `ResizeObserver` queda sin definir (la isla mide una sola vez).
+
+`apps/landing/src/islands/request-form/RequestForm.mobile.test.tsx`:
+```tsx
+import type { IntakeLimits } from '@anticipate/shared/api'
+import type { PublicPayer } from '@anticipate/shared/payer'
+import { buildInvoiceXml, type TestXmlOptions } from '@anticipate/shared/testing'
+import { act, cleanup, render, screen, within } from '@testing-library/react'
+import userEvent, { type UserEvent } from '@testing-library/user-event'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { readXmlBytes } from '../../lib/intake/read-intake-file'
+import type { FileReading } from '../../lib/intake/types'
+import type { IslandConfig } from '../../lib/island-config'
+import { formProgress } from '../../lib/store/form-progress'
+import { intakeStore } from '../../lib/store/intake-store'
+import { type SeenEntry, VISIBLE_STEP_ROOT_MARGIN } from '../../scripts/form-steps-bar'
+import { READY_HREF } from '../../scripts/sticky-bar'
+import RequestForm from './RequestForm'
+
+const MiB = 1024 * 1024
+const SEA: PublicPayer = {
+  slug: 'sea',
+  ruc: '20131312955',
+  legalName: 'SERVICIOS ENERGETICOS AMBIENTALES S.R.L. - SEA S.R.L.',
+  shortName: 'SEA',
+  advancePercent: 85,
+  minTermDays: 15,
+  maxInvoices: 10,
+  allowedCurrencies: ['PEN', 'USD'],
+  accentColor: '#0E7C86',
+  logoUrl: null,
+  texts: {},
+}
+const LIMITS: IntakeLimits = {
+  maxFiles: 20,
+  maxXmlBytes: MiB,
+  maxPdfBytes: 10 * MiB,
+  maxBodyBytes: 95_000_000,
+}
+
+/** Modo demostración (`apiBaseUrl` vacío): el envío confirma sin red ni Turnstile. */
+const configFor = (): IslandConfig => ({
+  payer: SEA,
+  intakeLimits: LIMITS,
+  legal: {
+    termsVersion: '2026-09',
+    termsUrl: 'https://anticipate.pe/terminos',
+    privacyVersion: '2026-09',
+    privacyUrl: 'https://anticipate.pe/privacidad',
+  },
+  apiBaseUrl: '',
+  turnstileSiteKey: '1x00000000000000000000AA',
+  siteUrl: 'https://factoring.example.pe',
+  pageUrl: 'https://factoring.example.pe/sea',
+})
+
+const encoder = new TextEncoder()
+
+const credit = (seriesNumber: string, net: string): TestXmlOptions => ({
+  seriesNumber,
+  total: net,
+  netPendingAmount: net,
+  detraction: null,
+  installments: [{ id: 'Cuota001', amount: net, dueDate: '2026-11-30' }],
+})
+
+const reading = (name: string, options: TestXmlOptions): FileReading =>
+  readXmlBytes(name, encoder.encode(buildInvoiceXml(options)), LIMITS.maxXmlBytes)
+
+/** Dos facturas en soles que llegan por fuera del formulario, como las de la calculadora. */
+function bringTwoInvoices(): void {
+  act(() => {
+    intakeStore.dispatch({
+      type: 'add',
+      readings: [
+        reading('F001-00001234.xml', credit('F001-00001234', '12450.00')),
+        reading('F001-00001240.xml', credit('F001-00001240', '8300.00')),
+      ],
+    })
+  })
+}
+
+/** Un `IntersectionObserver` simulado: el test decide qué paso cruza la franja. */
+class FakeObserver {
+  static instances: FakeObserver[] = []
+  readonly callback: (entries: SeenEntry[]) => void
+  readonly options: IntersectionObserverInit | undefined
+  readonly targets: Element[] = []
+  disconnected = false
+
+  constructor(callback: (entries: SeenEntry[]) => void, options?: IntersectionObserverInit) {
+    this.callback = callback
+    this.options = options
+    FakeObserver.instances.push(this)
+  }
+
+  observe(target: Element): void {
+    this.targets.push(target)
+  }
+
+  disconnect(): void {
+    this.disconnected = true
+  }
+}
+
+/** El observador de los pasos que está activo (el último que se creó y sigue conectado). */
+function stepsObserver(): FakeObserver {
+  const observer = FakeObserver.instances
+    .filter((item) => item.options?.rootMargin === VISIBLE_STEP_ROOT_MARGIN && !item.disconnected)
+    .at(-1)
+  if (observer === undefined) throw new Error('la isla no observa los pasos')
+  return observer
+}
+
+function stepElement(id: string): Element {
+  const element = document.getElementById(id)
+  if (element === null) throw new Error(`falta #${id}`)
+  return element
+}
+
+const stepsNav = () => screen.getByRole('navigation', { name: 'Pasos de la solicitud' })
+const currentHref = () =>
+  within(stepsNav())
+    .getAllByRole('link')
+    .find((link) => link.getAttribute('aria-current') === 'step')
+    ?.getAttribute('href')
+
+const group = (name: string) => screen.getByRole('group', { name })
+const contact = () => group('03 · Tus datos')
+
+/** Cavali, el paso 03 y los consentimientos; el monto queda en el máximo del grupo. */
+async function fillForm(user: UserEvent): Promise<void> {
+  const choose = (legend: string, option: string) =>
+    user.click(within(group(legend)).getByRole('radio', { name: option }))
+  await choose('¿Tus facturas ya están registradas en Cavali?', 'Sí')
+  await user.type(within(contact()).getByLabelText('Nombre completo'), 'Carla Quispe Mamani')
+  await user.type(within(contact()).getByLabelText('DNI'), '45678912')
+  await user.type(within(contact()).getByLabelText(/^Celular/), '987654321')
+  await user.type(within(contact()).getByLabelText('Correo electrónico'), 'carla@empresa.pe')
+  await choose('¿Eres representante legal de la empresa?', 'Sí')
+  await choose('¿Cuándo prefieres que te llamemos?', 'Cualquier horario')
+  await user.click(screen.getByRole('checkbox', { name: /^Acepto los Términos/ }))
+  await user.click(screen.getByRole('checkbox', { name: /^Autorizo el tratamiento/ }))
+}
+
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ['Date'] })
+  // 26/09/2026 a las 10:00 en Lima.
+  vi.setSystemTime(new Date('2026-09-26T15:00:00Z'))
+  FakeObserver.instances = []
+  vi.stubGlobal('IntersectionObserver', FakeObserver)
+})
+
+afterEach(() => {
+  cleanup()
+  intakeStore.dispatch({ type: 'reset' })
+  formProgress.publish(null)
+  vi.unstubAllGlobals()
+  vi.useRealTimers()
+})
+
+describe('RequestForm en móvil: avance para la barra fija', () => {
+  it('publica las facturas, el máximo y el paso pendiente, y lo retira al desmontarse', async () => {
+    const user = userEvent.setup()
+    const { unmount } = render(<RequestForm config={configFor()} />)
+    expect(formProgress.getSnapshot()).toEqual({
+      invoiceCount: 0,
+      maxAdvanceText: null,
+      pending: { id: 'paso-facturas', number: '01', label: 'Tus facturas' },
+    })
+
+    bringTwoInvoices()
+    expect(formProgress.getSnapshot()).toEqual({
+      invoiceCount: 2,
+      maxAdvanceText: 'S/ 17,637.50',
+      pending: { id: 'paso-facturas', number: '01', label: 'Tus facturas' },
+    })
+
+    // Con Cavali el paso 01 queda hecho y el monto ya sigue al máximo: falta el paso 03.
+    await user.click(
+      within(group('¿Tus facturas ya están registradas en Cavali?')).getByRole('radio', {
+        name: 'No sé',
+      }),
+    )
+    expect(formProgress.getSnapshot()?.pending).toEqual({
+      id: 'paso-datos',
+      number: '03',
+      label: 'Tus datos',
+    })
+
+    unmount()
+    expect(formProgress.getSnapshot()).toBeNull()
+  })
+
+  it('la confirmación retira el avance y «Enviar otra solicitud» lo vuelve a publicar', async () => {
+    const user = userEvent.setup()
+    render(<RequestForm config={configFor()} />)
+    bringTwoInvoices()
+    await fillForm(user)
+    expect(formProgress.getSnapshot()?.pending).toBeNull()
+    // Sin pasos pendientes, «Continuar» de la barra lleva a la casilla de los Términos.
+    expect(document.querySelector(READY_HREF)).toHaveAttribute('type', 'checkbox')
+
+    await user.click(screen.getByRole('button', { name: 'Enviar solicitud' }))
+    await screen.findByRole('button', { name: 'Enviar otra solicitud' })
+    expect(screen.queryByRole('navigation', { name: 'Pasos de la solicitud' })).toBeNull()
+    expect(formProgress.getSnapshot()).toBeNull()
+
+    await user.click(screen.getByRole('button', { name: 'Enviar otra solicitud' }))
+    expect(formProgress.getSnapshot()).toEqual({
+      invoiceCount: 0,
+      maxAdvanceText: null,
+      pending: { id: 'paso-facturas', number: '01', label: 'Tus facturas' },
+    })
+  })
+})
+
+describe('RequestForm en móvil: pasos fijos', () => {
+  it('resalta en la barra de pasos el paso que se ve', () => {
+    render(<RequestForm config={configFor()} />)
+    // Sin aviso del observador, el resalte va en el paso actual.
+    expect(currentHref()).toBe('#paso-facturas')
+    const observer = stepsObserver()
+    expect(observer.targets.map((target) => target.id)).toEqual([
+      'paso-facturas',
+      'paso-adelanto',
+      'paso-datos',
+    ])
+
+    act(() => observer.callback([{ target: stepElement('paso-datos'), isIntersecting: true }]))
+    expect(currentHref()).toBe('#paso-datos')
+
+    act(() =>
+      observer.callback([
+        { target: stepElement('paso-datos'), isIntersecting: false },
+        { target: stepElement('paso-adelanto'), isIntersecting: true },
+      ]),
+    )
+    expect(currentHref()).toBe('#paso-adelanto')
+  })
+
+  it('tras «Enviar otra solicitud» observa los pasos nuevos', async () => {
+    const user = userEvent.setup()
+    render(<RequestForm config={configFor()} />)
+    bringTwoInvoices()
+    const first = stepsObserver()
+    await fillForm(user)
+    await user.click(screen.getByRole('button', { name: 'Enviar solicitud' }))
+    await screen.findByRole('button', { name: 'Enviar otra solicitud' })
+    expect(first.disconnected).toBe(true)
+
+    await user.click(screen.getByRole('button', { name: 'Enviar otra solicitud' }))
+    const second = stepsObserver()
+    expect(second).not.toBe(first)
+    expect(second.targets).toContain(stepElement('paso-datos'))
+  })
+})
+```
+
+- [ ] **Step 12: Correr el test y ver que falla**
+
+Run: `ASTRO_TELEMETRY_DISABLED=1 pnpm --filter @anticipate/landing exec vitest run src/islands/request-form/RequestForm.mobile.test.tsx`
+Expected: FAIL, 4 tests: los dos del avance porque `formProgress` sigue en `null` (la isla todavía no publica nada) y los dos de los pasos con `Error: la isla no observa los pasos`.
+
+- [ ] **Step 13: Enganchar el avance y el paso visible en `RequestForm.tsx`**
+
+`RequestForm.tsx` tal como lo dejó la Tarea 12. Esta tarea no reescribe el archivo: aplica estos cambios. Los nombres locales `model`, `view`, `group`, `steps` y el `useEffect` del foco del resumen son los de la Tarea 10; `submission`, el de la Tarea 11. Si alguno se llama distinto en el archivo, se usa el nombre real: son variables locales, no interfaces.
+
+1. Imports nuevos (`useEffect`, `useRef`, `useState` y `stepStatuses` ya están importados desde la Tarea 10):
+```tsx
+import { formProgress, progressFromSteps } from '../../lib/store/form-progress'
+import { type FormStepId, formStepsDeps, watchFormSteps } from '../../scripts/form-steps-bar'
+```
+
+2. Inmediatamente después del `useEffect` que enfoca el resumen de errores (`if (summaryFocus > 0) summaryRef.current?.focus()`), y por lo tanto antes del `if` de la confirmación de la Tarea 11 (los hooks no pueden ir después de un `return`):
+```tsx
+  // Tarea 13: el paso que se ve (lo resalta la barra de pasos) y el avance que lee la barra fija
+  // de móvil. Con la confirmación el avance vuelve a null y la barra queda neutra.
+  const rootRef = useRef<HTMLDivElement>(null)
+  const [visibleStep, setVisibleStep] = useState<FormStepId | null>(null)
+  const confirmed = submission.state.phase.kind === 'confirmed'
+  const steps = stepStatuses(model, view, group?.currency ?? null)
+  const progress = confirmed ? null : progressFromSteps(steps, view, group?.currency ?? null)
+
+  useEffect(() => {
+    formProgress.publish(progress)
+  }, [progress])
+
+  useEffect(() => () => formProgress.publish(null), [])
+
+  useEffect(() => {
+    const root = rootRef.current
+    if (confirmed || root === null) return
+    return watchFormSteps(root, formStepsDeps(window), setVisibleStep)
+  }, [confirmed])
+```
+
+3. Se borra la línea de la Tarea 10 que calculaba los pasos más abajo, justo antes del `return` del formulario (ahora se calculan en el punto 2):
+```tsx
+  const steps = stepStatuses(model, view, group?.currency ?? null)
+```
+
+4. En el JSX del formulario, la raíz de la isla recibe la referencia y la barra de pasos, el paso visible:
+```tsx
+    <div className={styles.root} ref={rootRef}>
+```
+```tsx
+        <StepsNav
+          steps={steps}
+          activeId={visibleStep}
+          invoiceCount={view?.submission?.invoiceNumbers.length ?? 0}
+        />
+```
+
+`apps/landing/src/islands/request-form/closing/StepsNav.module.css`: agregar al final del archivo, sin cambiar lo demás:
+```css
+/*
+ * Tarea 13: hasta 767 px la barra de pasos queda fija arriba mientras se recorre el formulario (marco
+ * 3 de MobileExtras.dc.html): franja blanca de lado a lado, con borde y sombra abajo, y textos de 12 y
+ * 11 px. Su bloque contenedor es la raíz de la isla (la columna izquierda es display: contents), así
+ * que se suelta al terminar el formulario. El resalte (barra de 4 px en --teal-600 y texto en 800)
+ * sigue a aria-current, que la isla pone en el paso que se ve.
+ */
+@media (max-width: 767px) {
+  .nav {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    margin: 4px calc(-1 * var(--request-inline, 16px)) 0;
+    padding: 10px var(--request-inline, 16px) 8px;
+    background: rgba(255, 255, 255, 0.97);
+    border-bottom: 1px solid var(--line);
+    box-shadow: 0 8px 20px -14px rgba(7, 52, 50, 0.35);
+  }
+
+  .link {
+    row-gap: 3px;
+    font-size: 12px;
+  }
+
+  .link .mark,
+  .link[data-state] .mark {
+    font-size: 12px;
+  }
+
+  .shortText {
+    font-size: 11px;
+  }
+}
+```
+
+`apps/landing/src/islands/request-form/RequestForm.module.css`: agregar al final del archivo, sin cambiar lo demás:
+```css
+/*
+ * Tarea 13: al saltar a un paso (barra de pasos, «Solicitar», «Continuar», «Cambiar», resumen de
+ * errores) su título queda debajo de lo que está fijo arriba, con 16 px de aire, y un control que
+ * recibe el foco no queda tapado. Hasta 767 px lo fijo es la barra de pasos, cuyo alto mide
+ * form-steps-bar.ts en --steps-bar-height; desde 1024 px, la cabecera (--header-height); entre los
+ * dos no hay nada fijo arriba. Los id van como [id="…"]: CSS Modules renombraría un #id.
+ */
+.root [id="paso-facturas"],
+.root [id="paso-adelanto"],
+.root [id="paso-datos"],
+.root [id="terminos"] {
+  scroll-margin-top: 16px;
+}
+
+@media (max-width: 767px) {
+  .root [id="paso-facturas"],
+  .root [id="paso-adelanto"],
+  .root [id="paso-datos"],
+  .root [id="terminos"],
+  .root :where(a, button, input, select, textarea, [tabindex="-1"]) {
+    scroll-margin-top: calc(var(--steps-bar-height, 64px) + 16px);
+  }
+}
+
+@media (min-width: 1024px) {
+  .root [id="paso-facturas"],
+  .root [id="paso-adelanto"],
+  .root [id="paso-datos"],
+  .root [id="terminos"],
+  .root :where(a, button, input, select, textarea, [tabindex="-1"]) {
+    scroll-margin-top: calc(var(--header-height) + 16px);
+  }
+}
+```
+
+Run: `ASTRO_TELEMETRY_DISABLED=1 pnpm --filter @anticipate/landing exec vitest run src/islands/request-form`
+Expected: PASS de todos los tests de la isla: los de las Tareas 9 a 12 y los 4 de `RequestForm.mobile.test.tsx`, sin avisos de `act(...)` ni de hidratación en la consola.
+
+Run: `pnpm --filter @anticipate/landing typecheck`
+Expected: `astro check` con `0 errors`, `0 warnings` y `0 hints`.
+
+- [ ] **Step 14: Build con fixtures y comprobación del HTML**
+
+Run: `rm -rf apps/landing/dist && LANDING_DATA=fixtures pnpm --filter @anticipate/landing build`
+Expected: build completo con `/404.html`, `/sea.html` e `/index.html`.
+
+Run:
+```bash
+node --input-type=module -e "import { readFileSync } from 'node:fs'; const html = readFileSync('apps/landing/dist/sea.html', 'utf8'); const bar = html.match(/<aside[^>]*data-sticky-bar[\s\S]*?<\/aside>/)?.[0] ?? ''; const open = bar.slice(0, bar.indexOf('>') + 1); console.log(html.indexOf('</main>') < html.indexOf('data-sticky-bar') && html.indexOf('data-sticky-bar') < html.indexOf('<footer'), /\shidden[\s=>]/.test(open), bar.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim())"
+```
+Expected: `true true Hasta 85 % de tus facturas a SEA Solicitar` (la barra va entre `</main>` y el pie, sale oculta y neutra, con los datos de SEA de los fixtures).
+
+Run: `grep -c 'client:visible' "apps/landing/src/pages/[payer].astro"; grep -o 'client="idle"' apps/landing/dist/sea.html`
+Expected: `0`; `client="idle"`.
+
+- [ ] **Step 15: Revisión visual contra los tableros**
+
+Run: `LANDING_DATA=fixtures ASTRO_TELEMETRY_DISABLED=1 pnpm --filter @anticipate/landing exec astro dev --port 4321 --ignore-lock`, en segundo plano.
+
+Los archivos de prueba son los del Step 14 de la Tarea 9 (en `$TMPDIR` o `/tmp`); si ya no están, se generan con el mismo comando.
+
+Abrir `http://localhost:4321/sea` en el modo de dispositivo del navegador a 390 × 844 y a 360 × 740, y después a 768, 1024 y 1440 px de ancho, y comparar con los marcos 2, 2b y 3 de `MobileExtras.dc.html`, con `Mobile.dc.html` y con `MobileForm.dc.html`:
+1. Cargar la página y bajar despacio hasta "Cómo funciona"; seguir hasta el pie.
+2. Tocar «Solicitar» en la barra.
+3. Subir por la calculadora `F001-00001234.xml` y `F001-00001240.xml` y seguir con "Continuar con estas 2 facturas"; volver a "Cómo funciona".
+4. Marcar Cavali en el paso 01 y volver a "Cómo funciona"; tocar «Continuar».
+5. Recorrer el formulario hacia abajo y hacia arriba; tocar "Adelanto" y "Datos" en la barra de pasos y los dos "Cambiar" del cierre.
+6. Desde «Enviar solicitud», recorrer con Mayús+Tab hacia arriba hasta el paso 01; después pulsar «Enviar solicitud» con los datos incompletos.
+7. Recorrer todas las secciones a 360 y 390 px con la barra a la vista.
+
+Al terminar, detener el servidor (Ctrl+C sobre el proceso, o `kill` de su PID) y comprobar con `ss -ltnp | grep 4321` que no queda nada escuchando.
+
+Expected:
+- a 390 px, en el primer pantallazo no hay barra; aparece al pasar la calculadora con el marco 2: franja blanca con borde superior y sombra, "Hasta 85 %" de 17 px en negrita `--teal-700`, "de tus facturas a SEA" de 13 px en gris y el botón «Solicitar →» de 52 px de alto en `--teal-600`; al llegar al formulario desaparece y vuelve después de él, en las preguntas y la franja final; al final de la página el pie termina encima de la barra, sin quedar tapado;
+- «Solicitar» lleva al paso 01 con su título debajo de la barra de pasos y la barra fija oculta;
+- con las dos facturas, el marco 2b: "2 facturas · S/ 17,637.50" de 15 px en tinta, "Te falta el paso 01 · Tus facturas" y «Continuar →»; con Cavali marcado, "Te falta el paso 03 · Tus datos", y «Continuar» lleva al paso 03 con su título 16 px debajo de la barra de pasos;
+- dentro del formulario, la barra de pasos del marco 3 queda fija arriba de lado a lado (franja blanca, borde y sombra abajo, tres columnas con barra de 4 px y textos de 12 y 11 px), la cabecera del sitio no se ve, el resalte (barra `--teal-600` y texto en 800) sigue al paso que está en pantalla y el ✓ aparece solo en los pasos completos; la barra de pasos se suelta al terminar el formulario, antes de "¿Tienes dudas?";
+- "Adelanto", "Datos" y los "Cambiar" dejan el título del paso debajo de la barra de pasos; con Mayús+Tab ningún control con el foco queda tapado por ella; el resumen de errores queda a la vista, debajo de la barra, con el foco;
+- a 360 px, la barra de pasos y la barra fija no causan desplazamiento horizontal y los textos largos de la barra fija se parten sin empujar el botón fuera de la pantalla;
+- todas las secciones siguen como `Mobile.dc.html` y `MobileForm.dc.html` a 360 y 390 px, con la barra a la vista y sin nada tapado;
+- a 768 px, la barra fija aparece fuera del formulario con su contenido alineado a la columna de la página, la barra de pasos es la lista vertical arriba del formulario, sin fijar, y al saltar a un paso su título queda a 16 px del borde;
+- a 1024 y 1440 px no hay barra fija; la cabecera queda fija y, al tocar "Tus datos" en la columna izquierda, la `legend` del paso 03 queda 16 px debajo de ella; la columna izquierda resalta el paso que está en pantalla;
+- el teclado en pantalla no se puede simular en el navegador de escritorio: lo cubren los tests de `keyboard.ts` y `sticky-bar.ts`, y el E2E móvil de la Tarea 15;
+- `ss` no muestra nada en el 4321.
+
+Si una medida difiere del tablero, se corrige en el CSS del componente (el `<style>` de `StickyBar.astro`, los bloques de la Tarea 13 en los CSS Modules, o el CSS de la sección o de la isla que difiera) y se sigue: el Step 16 vuelve a correr los tests y el lint.
+
+- [ ] **Step 16: Verificación completa**
+
+Run: `pnpm turbo run test --filter=@anticipate/landing`
+Expected: PASS de toda la landing: los tests de las Tareas 5 a 12 y los 45 de esta en 6 archivos (7 del avance, 9 del teclado, 6 de los pasos fijos, 16 de la barra, 3 del componente y 4 de la isla). La cobertura de `src/lib/**` sigue sobre los umbrales; `src/lib/store/form-progress.ts` queda cubierto entero por su test.
+
+Run: `pnpm turbo run typecheck --filter=@anticipate/landing`
+Expected: `0 errors`, `0 warnings` y `0 hints`.
+
+Run: `pnpm lint`
+Expected: `biome check .` sin errores ni avisos. Si solo marca formato: `pnpm lint:fix` y otra vez `pnpm lint`.
+
+Run: `grep -rnE "SEA|\b85\b|\b15\b" apps/landing/src/scripts apps/landing/src/lib/store/form-progress.ts apps/landing/src/components/site/StickyBar.astro apps/landing/src/islands/request-form --include=*.ts --include=*.tsx --include=*.astro --include=*.css --exclude=*.test.ts --exclude=*.test.tsx`
+Expected: ninguna línea: los datos del pagador salen de `payer` y de `config.payer`.
+
+Run: `grep -rln "@anticipate/shared/testing" apps/landing/src --include=*.ts --include=*.tsx | grep -v '\.test\.'`
+Expected: ninguna línea.
+
+Run: `pnpm verify`
+Expected: todo en verde; la landing se construye con fixtures.
+
+Run: `git status --short`
+Expected: solo los archivos de `Files` de esta tarea, más el `M .vscode/settings.json` que ya estaba, que no se agrega.
+
+- [ ] **Step 17: Commit**
+
+```bash
+git add apps/landing/src/lib/store/form-progress.ts apps/landing/src/lib/store/form-progress.test.ts apps/landing/src/scripts apps/landing/src/components/site/StickyBar.astro apps/landing/src/components/site/StickyBar.test.ts "apps/landing/src/pages/[payer].astro" apps/landing/src/islands/request-form/RequestForm.tsx apps/landing/src/islands/request-form/RequestForm.mobile.test.tsx apps/landing/src/islands/request-form/RequestForm.module.css apps/landing/src/islands/request-form/closing/StepsNav.module.css
+git commit -m "feat(landing): barra fija móvil con continuar, pasos fijos en el formulario y scroll-margin-top"
+```
+
+---
 
 ---
 
